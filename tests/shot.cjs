@@ -135,8 +135,50 @@ const PREPARE = `(() => {
   const clipped = [...document.querySelectorAll('.sw-meta, .sw-time, .sw-pt, .sw-bt, .sw-st')]
     .filter(el => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow !== 'ellipsis')
     .map(el => (el.className + ' [' + (el.textContent || '').slice(0, 24) + ']'))
+  // LAYOUT: nothing inside a frame may be wider than the frame (a horizontal scrollbar on the page),
+  // and the header's pieces must not paint over each other or wrap a pill onto two lines.
+  const overflow = [...document.querySelectorAll('.swp-frame')].flatMap((f, i) => {
+    const edge = f.getBoundingClientRect().right + 0.5
+    return [...f.querySelectorAll('*')]
+      .filter(el => el.getBoundingClientRect().right > edge && getComputedStyle(el).display !== 'none')
+      .filter(el => !el.parentElement || el.parentElement.getBoundingClientRect().right <= edge)
+      .map(el => 'frame ' + (i + 1) + ' .' + String(el.className).split(' ')[0] + ' ends '
+        + Math.round(el.getBoundingClientRect().right - edge + 0.5) + 'px past the frame')
+  })
+  const overlaps = []
+  for (const hd of document.querySelectorAll('.sw-hd')) {
+    const kids = [...hd.children].map(el => ({ el, r: el.getBoundingClientRect() })).filter(k => k.r.width > 0)
+    for (let a = 0; a < kids.length; a++) {
+      for (let b = a + 1; b < kids.length; b++) {
+        const x = kids[a].r, y = kids[b].r
+        if (x.left < y.right - 1 && y.left < x.right - 1 && x.top < y.bottom - 1 && y.top < x.bottom - 1) {
+          overlaps.push('.' + String(kids[a].el.className).split(' ')[0] + ' overlaps .' + String(kids[b].el.className).split(' ')[0])
+        }
+      }
+    }
+    // A box can keep its size while its text spills out of it: measure the TEXT, not the box.
+    for (const pill of hd.querySelectorAll('.sw-stat, .sw-pill')) {
+      // Text nodes only: the icon sits on its own baseline and is not a second line.
+      const lines = new Set()
+      const walk = document.createTreeWalker(pill, NodeFilter.SHOW_TEXT)
+      for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+        const range = document.createRange()
+        range.selectNodeContents(n)
+        for (const r of range.getClientRects()) if (r.width > 0) lines.add(Math.round(r.top))
+      }
+      if (lines.size > 1) overlaps.push('header pill wraps onto ' + lines.size + ' lines: [' + pill.textContent + ']')
+    }
+    for (const el of hd.querySelectorAll('.sw-ht')) {
+      const cs = getComputedStyle(el)
+      if (el.scrollWidth > el.clientWidth + 1 && cs.textOverflow !== 'ellipsis') {
+        overlaps.push('the title spills ' + (el.scrollWidth - el.clientWidth) + 'px under its neighbours')
+      }
+    }
+  }
   return {
     frames: document.querySelectorAll('.swp-frame').length,
+    overflow,
+    overlaps,
     rawKeyOnScreen: (document.body.textContent || '').match(/\\\\bsw\\\\.[a-z][a-zA-Z.]*/g),
     clipped,
     contrast: {
@@ -187,7 +229,9 @@ app.whenReady().then(async () => {
       + ` (${row.klass}) ink ${row.ink} a${row.inkAlpha} on ${row.fill}`)
   }
   if (!ct.rows.length) red.push('no text node was measured')
-  if (measured.frames !== 3) red.push(`expected 3 preview frames, found ${measured.frames}`)
+  if (measured.frames !== 4) red.push(`expected 4 preview frames, found ${measured.frames}`)
+  for (const o of measured.overflow) red.push(`horizontal overflow: ${o}`)
+  for (const o of measured.overlaps) red.push(`header: ${o}`)
   if (measured.rawKeyOnScreen) red.push(`raw i18n key on screen: ${measured.rawKeyOnScreen.join(', ')}`)
   for (const c of measured.clipped) red.push(`clipped text: ${c}`)
   const engineErrors = measured.console.filter(line => !line.startsWith('WARN'))

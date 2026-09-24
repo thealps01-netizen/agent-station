@@ -69,7 +69,7 @@ const HISTORY = {
 }
 const PROCS = [
   { id: 'proc_run', command: 'npm run dev -- --port 5174', cwd: 'C:/work/panel', status: 'running', started_at: NOW - 95, duration_s: null, exit_code: null },
-  { id: 'proc_ok', command: 'python -m pytest tests/ -q', cwd: 'C:/work/panel', status: 'completed', started_at: NOW - 900, duration_s: 42, exit_code: 0 },
+  { id: 'proc_ok', command: 'python -m pytest tests/ -q --maxfail=1 --durations=10 --basetemp=C:/Users/someone/AppData/Local/hermes/cache/scratch/pytest', cwd: 'C:/Users/someone/AppData/Local/hermes/plugins/subagent-watch/tests', status: 'completed', started_at: NOW - 900, duration_s: 42, exit_code: 0 },
   { id: 'proc_bad', command: 'node build.mjs --release', cwd: 'C:/work/panel', status: 'failed', started_at: NOW - 1200, duration_s: 5, exit_code: 1 },
   { id: 'proc_kill', command: 'sleep 999', cwd: 'C:/work/panel', status: 'stopped', started_at: NOW - 3000, duration_s: 100, exit_code: -15 }
 ]
@@ -92,7 +92,11 @@ function makeCtx(fail) {
       if (fail) throw new Error(path.startsWith('/children') ? 'backend 503: state.db not found' : 'backend 503: processes.json unreadable')
       if (path.startsWith('/children')) return HISTORY
       if (path.startsWith('/processes')) return { session_id: 'st-1', processes: PROCS, unreadable: 1 }
-      if (path.startsWith('/process_output')) return { id: 'proc_bad', command: 'node build.mjs --release', output: OUTPUT, output_truncated: false }
+      if (path.startsWith('/process_output')) {
+        const id = new URLSearchParams(path.split('?')[1]).get('process_id')
+        const p = PROCS.find(x => x.id === id)
+        return { id, command: p.command, output: id === 'proc_bad' ? OUTPUT : '12 passed in 41.8s', output_truncated: false }
+      }
       if (path.startsWith('/output')) return { text: 'answer' }
       throw new Error(`unexpected ${path}`)
     },
@@ -106,7 +110,7 @@ const tick = ms => act(() => new Promise(r => setTimeout(r, ms)))
 const problems = []
 const frames = []
 
-async function frame(label, { fail = false, live = false, open = null } = {}) {
+async function frame(label, { fail = false, live = false, open = null, narrow = false } = {}) {
   const { ctx, registered, emit } = makeCtx(fail)
   stub.state.listFails = fail
   stub.state.list['rt-1'] = []
@@ -128,6 +132,16 @@ async function frame(label, { fail = false, live = false, open = null } = {}) {
     await emit('subagent.tool', { subagent_id: 's1', tool_name: 'terminal', tool_preview: 'node preview.mjs' })
     await emit('subagent.complete', { subagent_id: 's2', status: 'error', summary: 'boom', duration_seconds: 12 })
   }
+  if (narrow) {
+    // The page docked beside the chat: six running workers and a finished command with a long path.
+    for (let i = 1; i <= 6; i++) {
+      await emit('subagent.start', { subagent_id: `n${i}`, delegation_id: 'dn', goal: `Blind-review desktop panel ${i}: score CODE and UI`, model: 'anthropic/claude-opus-5-5', started_at: NOW - 28 })
+      await emit('subagent.tool', { subagent_id: `n${i}`, tool_name: 'read_file', tool_preview: 'plugin.js' })
+    }
+    const ok = [...host.querySelectorAll('.sw-pr')].find(p => p.dataset.st === 'completed')
+    await act(async () => { ok.click() })
+    await tick(20)
+  }
   if (fail) {
     for (let i = 0; i < 3; i++) await tick(3100)
   }
@@ -144,7 +158,7 @@ async function frame(label, { fail = false, live = false, open = null } = {}) {
   if (raw.length) problems.push(`${label}: raw i18n key(s) on screen: ${raw.join(', ')}`)
   const titled = host.querySelectorAll('[title]').length
   if (titled) problems.push(`${label}: ${titled} native title= attribute(s) — the themed Tip owns hover text`)
-  frames.push({ label, html })
+  frames.push({ label, html, narrow })
   await act(async () => root.unmount())
   host.remove()
 }
@@ -152,6 +166,7 @@ async function frame(label, { fail = false, live = false, open = null } = {}) {
 await frame('1 · Now — a running batch as a live tree, earlier batches and background commands', { live: true })
 await frame('2 · Earlier — a batch, a worker and a failed command opened', { open: 'earlier' })
 await frame('3 · Failures — every read failing: nothing is swallowed', { fail: true })
+await frame('4 · Narrow (380 px) — six running workers and a command with a long working directory', { narrow: true })
 stub.state.listFails = false
 
 const DIST_ASSETS = DESKTOP_APP ? `${DESKTOP_APP.replace(/\\/g, '/')}/dist/assets` : null
@@ -177,7 +192,7 @@ if (!appCss) console.log(`warning: ${styles}`)
 const DARK_SEEDS = ':root.dark { --theme-background-seed: #0d0d0e; --theme-sidebar-seed: #0a0a0b;'
   + ' --theme-card-seed: #161618; --theme-neutral-card: #161618; --theme-foreground: #f4f4f6; }'
 
-const body = frames.map(f => `<section class="swp-wrap">
+const body = frames.map(f => `<section class="swp-wrap${f.narrow ? ' is-narrow' : ''}">
   <p class="swp-label">${f.label}</p>
   <div class="swp-frame">${f.html}</div>
 </section>`).join('\n')
@@ -192,6 +207,7 @@ html,body{margin:0;background:var(--ui-bg-sidebar);color:var(--ui-text-primary);
 *,*::before,*::after{box-sizing:border-box}
 body{padding:16px 18px 28px}
 .swp-wrap{margin:0 0 22px;width:640px}
+.swp-wrap.is-narrow{width:380px}
 .swp-label{font-size:11px;color:var(--ui-text-tertiary);margin:0 0 6px}
 .swp-frame{border:1px solid var(--ui-stroke-primary);border-radius:10px;overflow:hidden;background:var(--ui-bg-primary)}
 </style>

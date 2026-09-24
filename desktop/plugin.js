@@ -777,13 +777,20 @@ export function Page() {
             children: [
               jsx('span', { className: 'sw-hi', children: ICON.tree() }, 'i'),
               jsx('span', { className: 'sw-ht', children: t('sw.title') }, 't'),
-              jsx(Tip, { label: t('sw.nBatches', totals.batches), children: jsxs('span', { className: 'sw-stat', children: [ICON.stack(), totals.batches] }) }, 'sb'),
-              jsx(Tip, { label: t('sw.nWorkers', totals.workers), children: jsxs('span', { className: 'sw-stat', children: [ICON.bot(), totals.workers] }) }, 'sw'),
-              jsx(Tip, { label: t('sw.nProcs', procRows.length), children: jsxs('span', { className: 'sw-stat', children: [ICON.term(), procRows.length] }) }, 'sp'),
-              runningN
-                ? jsxs('span', { className: 'sw-pill', children: [MARKS.running(), t('sw.running', runningN)] }, 'p')
-                : null,
-              jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: () => { history.reload(); procs.reload() }, disabled: !storedId }, 'r')
+              // Counts and refresh are one group: on a narrow pane it drops under the title as a
+              // whole instead of squeezing the title or wrapping a pill onto two lines.
+              jsxs('div', {
+                className: 'sw-hs',
+                children: [
+                  jsx(Tip, { label: t('sw.nBatches', totals.batches), children: jsxs('span', { className: 'sw-stat', children: [ICON.stack(), totals.batches] }) }, 'sb'),
+                  jsx(Tip, { label: t('sw.nWorkers', totals.workers), children: jsxs('span', { className: 'sw-stat', children: [ICON.bot(), totals.workers] }) }, 'sw'),
+                  jsx(Tip, { label: t('sw.nProcs', procRows.length), children: jsxs('span', { className: 'sw-stat', children: [ICON.term(), procRows.length] }) }, 'sp'),
+                  runningN
+                    ? jsxs('span', { className: 'sw-pill', children: [MARKS.running(), t('sw.running', runningN)] }, 'p')
+                    : null,
+                  jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: () => { history.reload(); procs.reload() }, disabled: !storedId }, 'r')
+                ]
+              }, 'hs')
             ]
           }, 'h'),
           errors.length
@@ -799,20 +806,23 @@ export function Page() {
 
 const CSS = `
 .sw-page{height:100%;min-height:0;overflow:auto;padding:20px 24px;color:var(--ui-text-primary);font-size:12px}
-.sw-panel{max-width:560px;position:relative}
+.sw-panel{max-width:560px;position:relative;container-type:inline-size}
+/* Docked beside the chat the worker name needs every pixel: a model chip cut to 'c…' says nothing. */
+@container (max-width:420px){.sw-model{display:none}}
 .sw-page svg{width:100%;height:100%;display:block}
 .sw-spin{animation:sw-rot 1.1s linear infinite;transform-origin:50% 50%}
 @keyframes sw-rot{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.sw-spin{animation:none}}
 .sw-mk{width:15px;height:15px;flex:none;display:inline-block}
-.sw-hd{display:flex;align-items:center;gap:10px;padding:10px 10px 10px 14px;margin:0 0 14px}
+.sw-hd{display:flex;align-items:center;flex-wrap:wrap;row-gap:8px;gap:10px;padding:10px 10px 10px 14px;margin:0 0 14px}
 .sw-hi{width:30px;height:30px;padding:6px;border-radius:8px;flex:none;color:var(--sw-tint);
  background:color-mix(in srgb,var(--sw-tint) 14%,transparent);border:1px solid color-mix(in srgb,var(--sw-tint) 30%,transparent)}
-.sw-ht{font-size:14px;font-weight:600;flex:1;min-width:0}
-.sw-stat{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px 0 6px;border-radius:99px;font-size:11.5px;
+.sw-ht{font-size:14px;font-weight:600;flex:1 0 auto;white-space:nowrap}
+.sw-hs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:auto}
+.sw-stat{display:inline-flex;align-items:center;gap:5px;flex:none;white-space:nowrap;height:22px;padding:0 8px 0 6px;border-radius:99px;font-size:11.5px;
  color:var(--ui-text-secondary);background:var(--ui-bg-tertiary);font-variant-numeric:tabular-nums}
 .sw-stat svg{width:13px;height:13px}
-.sw-pill{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px 0 6px;border-radius:99px;font-size:11.5px;
+.sw-pill{display:inline-flex;align-items:center;gap:6px;flex:none;white-space:nowrap;height:22px;padding:0 9px 0 6px;border-radius:99px;font-size:11.5px;
  color:var(--ui-text-secondary);background:var(--ui-bg-tertiary)}
 .sw-pill svg{width:13px;height:13px}
 .sw-ib{width:26px;height:26px;padding:5px;border-radius:6px;color:var(--ui-text-secondary);background:transparent;
@@ -857,7 +867,7 @@ const CSS = `
 .sw-box .sw-bb>.sw-nwrap:first-child::before{top:-4px}
 .sw-wn{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .sw-nl{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
-.sw-nl .sw-wn{flex:0 0 auto;max-width:70%}
+.sw-nl .sw-wn{flex:1 1 auto}
 .sw-model{font:10.5px var(--dt-font-mono,ui-monospace,monospace);color:var(--ui-text-tertiary);border:1px solid var(--ui-stroke-tertiary);
  border-radius:4px;padding:0 5px;line-height:15px;white-space:nowrap;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sw-muted{color:var(--ui-text-tertiary)!important}
@@ -870,7 +880,7 @@ const CSS = `
 .sw-dtg>span{font-size:12px;line-height:18px;color:var(--ui-text-secondary);display:-webkit-box;-webkit-line-clamp:3;
  -webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
 .sw-dta{display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
-.sw-dtm{margin-left:auto;font-size:11px;color:var(--ui-text-tertiary);white-space:nowrap}
+.sw-dtm{margin-left:auto;min-width:0;font-size:11px;color:var(--ui-text-tertiary);text-align:right;overflow-wrap:anywhere}
 .sw-fl{display:flex;flex-direction:column;align-items:stretch;padding:10px 10px 12px;margin:0 0 4px}
 .sw-fn{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:8px;border:1px solid var(--ui-stroke-tertiary);
  background:var(--ui-bg-secondary);font-size:12.5px;white-space:nowrap}
@@ -910,7 +920,7 @@ const CSS = `
 .sw-pc,.sw-po{margin:0;padding:8px 10px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary);
  font:11px/16px var(--dt-font-mono,ui-monospace,monospace);color:var(--ui-text-secondary);white-space:pre-wrap;word-break:break-word;overflow:auto}
 .sw-pc{max-height:96px}
-.sw-po{height:180px}
+.sw-po{min-height:48px;max-height:180px}
 .sw-pob{display:flex;flex-direction:column;gap:4px}
 .sw-pol{font-size:11px;color:var(--ui-text-tertiary);padding:0 2px}
 .sw-po-note{font-size:12px;color:var(--ui-text-tertiary);padding:8px 10px}

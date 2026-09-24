@@ -3,6 +3,22 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.1.2 — 2026-09-25
+
+Narrow-pane layout, reported from the docked app (about 380 px wide):
+
+- **Header.** The count pills painted over the "Subagents" title and "6 running" broke onto two
+  lines. The counts and refresh are now one group that drops under the title as a whole when the
+  pane is narrow; the title and every pill stay on one line.
+- **Command detail.** The `exit 0 · in <working directory>` line ran past the right edge and made
+  the whole page scroll sideways. It now wraps inside its box.
+- **Worker rows.** Below 420 px the model chip (cut to `c…`, saying nothing) is hidden, and the
+  worker name takes the freed width instead of stopping at 70%.
+- **Output box** sizes to its content (48–180 px) instead of a fixed 180 px of empty space.
+- **The measured render now catches this class.** `preview.mjs` draws a fourth, 380 px frame; `shot.cjs`
+  fails on anything wider than its frame, on header pieces that overlap and on a pill whose text wraps.
+  It was red on all three before the fix (16 violations) and is green after it.
+
 ## 1.1.1 — 2026-09-24
 
 Release hardening. Two visible changes, both found by the new measured render:
