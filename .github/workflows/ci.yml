@@ -11,6 +11,7 @@ permissions:
   contents: read
 
 env:
+  PYTHONUTF8: "1"   # Windows runners print cp1252 otherwise; audit messages carry non-ASCII
   # The core revision this panel's contract is verified against. Bump deliberately.
   CORE_REPO: https://github.com/NousResearch/hermes-agent.git
   CORE_SHA: 54718306e348dbf62ab18a256cb8299615cc0493
@@ -50,7 +51,8 @@ jobs:
           git init -q "$core"
           git -C "$core" remote add origin "$CORE_REPO"
           git -C "$core" sparse-checkout init --no-cone
-          git -C "$core" sparse-checkout set /hermes_state_common.py /tools/ /agent/conversation_compression.py \
+          # MSYS_NO_PATHCONV: Git Bash on Windows would rewrite /tools/ into C:/Program Files/Git/tools/
+          MSYS_NO_PATHCONV=1 git -C "$core" sparse-checkout set /hermes_state_common.py /tools/ /agent/conversation_compression.py \
             /tui_gateway/contracts/ /apps/desktop/src/sdk/
           for i in 1 2 3; do git -C "$core" fetch -q --depth 1 origin "$CORE_SHA" && break; sleep $((i*20)); done
           git -C "$core" checkout -q FETCH_HEAD
