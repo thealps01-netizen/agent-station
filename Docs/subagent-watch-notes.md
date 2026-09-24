@@ -28,7 +28,7 @@ Sidebar entry "Subagents" → route `/subagent-watch`.
 |---|---|
 | Live workers | gateway events `subagent.spawn_requested/start/progress/tool/complete`, filtered to the focused runtime session id; reconciled every 3 s by `subagent.list({session_id})` |
 | Earlier batches | `GET /api/plugins/subagent-watch/children?session_id=<stored id>` — `dashboard/plugin_api.py` |
-| Full output | `GET /api/plugins/subagent-watch/output?session_id=<child id>` |
+| Full output | `GET /api/plugins/subagent-watch/output?session_id=<stored id>&worker_id=<child id>` — 403 unless the child was delegated from that chat (or a worker of it) |
 | Background commands | `GET /api/plugins/subagent-watch/processes?session_id=<stored id>`, polled every 3 s |
 | Command output tail | `GET /api/plugins/subagent-watch/process_output?session_id=<stored id>&process_id=<proc_…>` |
 
@@ -78,11 +78,11 @@ Interrupt / steer / live transcript — the composer status stack already owns t
 - `cd tests && npm install && node render_check.mjs` — jsdom render with real React (pinned
   jsdom 30.1.0, react 18.3.1): session scoping, status marks, tree nesting, history, copy/open,
   visible failures, chat switch.
-- `python tests/canary_audit.py` — the mutation canaries, no longer by hand: 32 mutations (render,
+- `python tests/canary_audit.py` — the mutation canaries, no longer by hand: 42 mutations (render,
   backend, static audit), each applied to a copy and required to turn its owning gate red. The first
   run found two behaviours no check covered (a failed command-output read, cards left open after a
   chat switch); both are now render checks.
-- `python tests/audit_static.py` — i18n, native `title`, icon names, `aria-expanded`, hard-coded
+- `python tests/audit_static.py` — i18n, native `title`, icon names, `aria-expanded`, status-mark / header-count names, hard-coded
   colour, tone used as text ink, silent catches, read-only backend, release gate.
 - `python tests/contract_core.py [--selftest]` — every column, marker, field, event and SDK export
   read from the core still exists (source read, no import).

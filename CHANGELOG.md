@@ -3,6 +3,27 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.1.6 — 2026-09-25
+
+Fixes from a blind review:
+
+- **A running worker no longer reads as done.** Status used to come from "has it written any
+  answer text", so a worker that had replied once but was still working showed a green check. It
+  now comes from the session's end: a worker whose session has not ended is running.
+- **Full output is served only to the chat that delegated the worker.** `/output` used to return any
+  delegated worker's answer to any caller. It now takes the chat (`session_id`) and the worker
+  (`worker_id`) and refuses (403) a worker delegated from another conversation, the same rule
+  `/process_output` applies.
+- **Refresh restarts live updates.** After three failed polls the live view stopped for good and
+  Refresh did not bring it back; Refresh now resets the failure count and polls again.
+- **A refused clipboard is a "Copy failed" toast** on both copy buttons, not an unhandled error.
+- **A change in the core's private PID check no longer breaks the command list** with a 500: any
+  failure is logged and the process is treated as alive (unknown), as before for a missing module.
+- **Plurals:** "1 batch", "1 worker", "1 background command".
+- **Screen readers hear the status marks and header counts:** each carries the same text as its
+  tooltip as an accessible name (new `markName` audit rule and canaries).
+- **Counts whose source failed read "—"** instead of a 0 that looks like real data.
+
 ## 1.1.5 — 2026-09-25
 
 - **Background commands share the Earlier batches' structure.** A command used to open as a row

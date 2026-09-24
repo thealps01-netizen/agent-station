@@ -12,6 +12,8 @@ Rules
                such as PanelEmpty / ErrorState take `title` as their heading and are allowed)
   iconLabel    every icon-only button goes through IconButton, which sets `aria-label`
   expanded     every accordion row (`sw-acc`) carries `aria-expanded`
+  markName     every status mark (`sw-mk`) and header count (`sw-stat`) carries `aria-label` — the svg is
+               aria-hidden and the Tip is hover-only, so without it a screen reader hears nothing / a bare number
   hexColor     no hard-coded colour in the page's CSS or SVG — tokens only, so every skin follows
   toneInk      no theme tone (--ui-red / green / yellow / blue) as the `color:` of text — the tone rides
                the mark, the text uses a reading token (tone red on the dark card measured 3.3:1 < 4.5)
@@ -116,6 +118,12 @@ def check_markup(js: str) -> None:
         if "'aria-expanded'" not in props:
             line_no = js[:match.start()].count("\n") + 1
             report(f"expanded: line {line_no} is an accordion row without `aria-expanded`")
+    for match in re.finditer(r"className:\s*'(sw-mk|sw-stat)'", js):
+        props = js[match.end():match.end() + 200].split("children")[0]
+        if "'aria-label'" not in props:
+            line_no = js[:match.start()].count("\n") + 1
+            report(f"markName: line {line_no} draws a `{match.group(1)}` without `aria-label` — "
+                   "its meaning is only in a hover tooltip")
     for match in re.finditer(r"jsx\(IconButton,\s*\{([^}]*)\}", js):
         if not re.search(r"\blabel:\s*t\(", match.group(1)):
             report(f"iconLabel: an IconButton has no translated `label` ({match.group(1)[:60].strip()}…)")

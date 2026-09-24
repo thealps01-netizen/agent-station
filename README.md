@@ -51,7 +51,7 @@ node render_check.mjs               # jsdom + real React, driven like a user
 python audit_static.py              # i18n, a11y, colours, silent catches, read-only backend, release
 python contract_core.py             # everything read from the core still exists (--selftest)
 python release_gate.py              # version / changelog / installed copy rules each fire
-python canary_audit.py              # 32 mutations, each must turn its gate red
+python canary_audit.py              # 42 mutations, each must turn its gate red
 node preview.mjs && <electron> shot.cjs preview.html preview.png   # 4 frames (one 380 px) + WCAG / overflow / overlap gate
 ```
 

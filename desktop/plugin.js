@@ -41,8 +41,9 @@ const BUNDLES = {
     sw: {
       title: 'Subagents',
       running: n => `${n} running`,
-      nBatches: n => `${n} batches`,
-      nWorkers: n => `${n} workers`,
+      nBatches: n => `${n} batch${n === 1 ? '' : 'es'}`,
+      nWorkers: n => `${n} worker${n === 1 ? '' : 's'}`,
+      countFailed: 'Unknown — its source could not be read',
       now: 'Now',
       earlier: 'Earlier',
       older: n => `${n} older`,
@@ -60,7 +61,7 @@ const BUNDLES = {
       open: 'Open session',
       refresh: 'Refresh',
       procs: 'Background commands',
-      nProcs: n => `${n} background commands`,
+      nProcs: n => `${n} background command${n === 1 ? '' : 's'}`,
       proc: {
         status: {
           running: 'Running', completed: 'Finished (exit 0)', failed: 'Failed', stopped: 'Stopped before it finished'
@@ -233,9 +234,16 @@ const ICON = {
   }))
 }
 
-function Mark({ status, t }) {
+// The svg is aria-hidden, so the mark itself carries the Tip's text as its accessible name.
+function Mark({ status, t, label }) {
   const st = MARKS[status] ? status : 'stopped'
-  return jsx(Tip, { label: t(`sw.status.${st}`), children: jsx('span', { className: 'sw-mk', 'data-st': st, children: MARKS[st]() }) })
+  const name = label || t(`sw.status.${st}`)
+  return jsx(Tip, { label: name, children: jsx('span', { className: 'sw-mk', 'data-st': st, role: 'img', 'aria-label': name, children: MARKS[st]() }) })
+}
+
+// A header count: the number (or — when its source failed) with the Tip's text as its name.
+function Stat({ label, icon, value }) {
+  return jsx(Tip, { label, children: jsxs('span', { className: 'sw-stat', role: 'img', 'aria-label': label, children: [icon(), value] }) })
 }
 
 function Strip({ statuses }) {
@@ -323,6 +331,7 @@ function useLive(runtimeId, onBatchEnded) {
   const [records, setRecords] = useState({})
   const [error, setError] = useState(null)
   const fails = useRef(0)
+  const pollRef = useRef(null)
   const endedRef = useRef(onBatchEnded)
   endedRef.current = onBatchEnded
 
@@ -381,10 +390,12 @@ function useLive(runtimeId, onBatchEnded) {
         if (alive && fails.current >= MAX_POLL_FAILS) setError(String(err?.message || err))
       }
     }
+    pollRef.current = poll
     void poll()
     const stop = ctxRef.setInterval(() => void poll(), POLL_MS)
     return () => {
       alive = false
+      pollRef.current = null
       stop()
       offs.forEach(off => off())
     }
@@ -405,21 +416,40 @@ function useLive(runtimeId, onBatchEnded) {
     })
   }, [finished])
 
-  return { batches: batches.filter(b => !b.rows.every(r => TERMINAL.has(r.status))), error }
+  // Refresh after polling gave up: reset the failure count so the interval polls again, and poll now.
+  const retry = useCallback(() => {
+    fails.current = 0
+    setError(null)
+    void pollRef.current?.()
+  }, [])
+
+  return { batches: batches.filter(b => !b.rows.every(r => TERMINAL.has(r.status))), error, retry }
 }
 
 // ── pieces ───────────────────────────────────────────────────────────────────
 
+/** Clipboard write that never rejects out of a click handler: a refusal is a "Copy failed" toast. */
+async function writeClip(text, t, onToast) {
+  let ok = false
+  try {
+    ok = await ctxRef.os.writeClipboard(text)
+  } catch (err) {
+    console.warn(`[${ID}] clipboard write failed`, err)
+  }
+  onToast(ok ? t('sw.copied') : t('sw.copyFailed'), !ok)
+}
+
 function Detail({ t, worker, onToast }) {
   const [busy, setBusy] = useState(false)
+  // The backend serves a worker's output only to the chat that delegated it.
+  const storedId = useValue(host.state.focusedStoredSessionId)
   const sid = worker.session_id || worker.child_session_id
   const copy = async () => {
     if (!sid) return
     setBusy(true)
     try {
-      const out = await ctxRef.rest(`/output?session_id=${encodeURIComponent(sid)}`)
-      const ok = await ctxRef.os.writeClipboard(out?.text || '')
-      onToast(ok ? t('sw.copied') : t('sw.copyFailed'), !ok)
+      const out = await ctxRef.rest(`/output?session_id=${encodeURIComponent(storedId || '')}&worker_id=${encodeURIComponent(sid)}`)
+      await writeClip(out?.text || '', t, onToast)
     } catch (err) {
       console.warn(`[${ID}] output read failed`, err)
       onToast(`${t('sw.err.output')}: ${String(err?.message || err)}`, true)
@@ -591,10 +621,7 @@ function ProcDetail({ t, p, storedId, onToast }) {
     )
     return () => { alive = false }
   }, [p.id, p.status, storedId])
-  const copy = async () => {
-    const ok = await ctxRef.os.writeClipboard(out.data?.command || p.command || '')
-    onToast(ok ? t('sw.copied') : t('sw.copyFailed'), !ok)
-  }
+  const copy = () => writeClip(out.data?.command || p.command || '', t, onToast)
   let body
   if (p.status === 'running') body = jsx('div', { className: 'sw-po-note', children: t('sw.proc.whileRunning') })
   else if (out.loading) body = jsx(Loader, { label: t('sw.proc.output') })
@@ -649,7 +676,7 @@ function ProcItem({ t, p, now, open, onToggle, storedId, onToast }) {
     ? fmtDuration(p.started_at ? now - p.started_at : null)
     : p.status === 'stopped' ? '—' : fmtDuration(p.duration_s)
   const head = [
-    jsx(Tip, { label: t(`sw.proc.status.${p.status}`), children: jsx('span', { className: 'sw-mk', 'data-st': p.status, children: (MARKS[p.status] || MARKS.stopped)() }) }, 'm'),
+    jsx(Mark, { t, status: p.status, label: t(`sw.proc.status.${p.status}`) }, 'm'),
     jsx(Tip, { label: p.command, children: jsx('code', { className: 'sw-pn', children: commandLine(p.command) }) }, 'n'),
     p.status === 'failed' && p.exit_code !== null && p.exit_code !== undefined
       ? jsx('span', { className: 'sw-px', children: t('sw.proc.exit', p.exit_code) }, 'x')
@@ -806,13 +833,14 @@ export function Page() {
               jsxs('div', {
                 className: 'sw-hs',
                 children: [
-                  jsx(Tip, { label: t('sw.nBatches', totals.batches), children: jsxs('span', { className: 'sw-stat', children: [ICON.stack(), totals.batches] }) }, 'sb'),
-                  jsx(Tip, { label: t('sw.nWorkers', totals.workers), children: jsxs('span', { className: 'sw-stat', children: [ICON.bot(), totals.workers] }) }, 'sw'),
-                  jsx(Tip, { label: t('sw.nProcs', procRows.length), children: jsxs('span', { className: 'sw-stat', children: [ICON.term(), procRows.length] }) }, 'sp'),
+                  // A count whose source failed reads —, never a 0 that looks like real data.
+                  jsx(Stat, { icon: ICON.stack, value: history.error ? '—' : totals.batches, label: history.error ? t('sw.countFailed') : t('sw.nBatches', totals.batches) }, 'sb'),
+                  jsx(Stat, { icon: ICON.bot, value: history.error ? '—' : totals.workers, label: history.error ? t('sw.countFailed') : t('sw.nWorkers', totals.workers) }, 'sw'),
+                  jsx(Stat, { icon: ICON.term, value: procs.error ? '—' : procRows.length, label: procs.error ? t('sw.countFailed') : t('sw.nProcs', procRows.length) }, 'sp'),
                   runningN
                     ? jsxs('span', { className: 'sw-pill', children: [MARKS.running(), t('sw.running', runningN)] }, 'p')
                     : null,
-                  jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: () => { history.reload(); procs.reload() }, disabled: !storedId }, 'r')
+                  jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: () => { history.reload(); procs.reload(); live.retry() }, disabled: !storedId }, 'r')
                 ]
               }, 'hs')
             ]

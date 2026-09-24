@@ -16,7 +16,8 @@ receipt (tools/process_registry_results.py::_owns_result).
 Routes (mounted at /api/plugins/subagent-watch/):
   GET /children?session_id=<id>  -> workers delegated from that conversation, grouped into
                                     batches (children started within BATCH_GAP_S of each other)
-  GET /output?session_id=<child> -> the child's final answer, full length
+  GET /output?session_id=<id>&worker_id=<child> -> the child's final answer, full length; 403 when
+                                    the child was not delegated from that conversation
   GET /processes?session_id=<id> -> that conversation's background processes, running and finished
   GET /process_output?session_id=<id>&process_id=<proc_...> -> a finished process's output tail
 """
@@ -24,6 +25,7 @@ Routes (mounted at /api/plugins/subagent-watch/):
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 from pathlib import Path
@@ -31,6 +33,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 BATCH_GAP_S = 2.0  # delegate_task starts a batch's children within ~1 s of each other
 MAX_CHAIN = 100  # compression chains deeper than this are pathological
@@ -132,10 +135,12 @@ def _goal(conn: sqlite3.Connection, sid: str) -> str:
 def _worker(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     final = _final_text(conn, row["id"])
     ended = row["ended_at"]
-    if final:
-        status = "completed"
-    elif ended is None:
+    # The session's end is the only end state: a worker that has not ended is running even when
+    # it has already written assistant text (an interim reply is not a final answer).
+    if ended is None:
         status = "running"
+    elif final:
+        status = "completed"
     else:
         # Closed without an answer: the app or the parent went away mid-run.
         status = "stopped"
@@ -175,13 +180,31 @@ def list_children(conn: sqlite3.Connection, session_id: str) -> dict:
     return {"session_id": session_id, "lineage": ids, "batches": batches}
 
 
-def read_output(conn: sqlite3.Connection, child_id: str) -> dict:
+def _owned_by(conn: sqlite3.Connection, parent: str, owners: set[str]) -> bool:
+    """True when a worker's delegating session is one of `owners`, directly or via nested workers."""
+    seen: set[str] = set()
+    for _ in range(MAX_CHAIN):
+        if parent in owners:
+            return True
+        if parent in seen:
+            return False
+        seen.add(parent)
+        row = conn.execute("select model_config from sessions where id = ?", (parent,)).fetchone()
+        parent = _delegate_from(row["model_config"]) if row else None
+        if not parent:
+            return False
+    return False
+
+
+def read_output(conn: sqlite3.Connection, session_id: str, child_id: str) -> dict:
     row = conn.execute("select model_config from sessions where id = ?", (child_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail=f"session not found: {child_id}")
     parent = _delegate_from(row["model_config"])
     if not parent:
         raise HTTPException(status_code=403, detail="not a delegated worker session")
+    if not _owned_by(conn, parent, set(_lineage(conn, session_id))):
+        raise HTTPException(status_code=403, detail="worker belongs to another conversation")
     return {"session_id": child_id, "parent": parent, "text": _final_text(conn, child_id)}
 
 
@@ -191,9 +214,12 @@ def _pid_is_ours(pid, start) -> bool:
         return False
     try:
         from tools.process_registry import ProcessRegistry
-    except ImportError:
+
+        return bool(ProcessRegistry._host_pid_is_ours(pid, start))
+    except Exception as exc:  # noqa: BLE001 - a private core API; any change must not become a 500
+        log.warning("subagent-watch: PID liveness check unavailable (%s: %s); treating as alive",
+                    type(exc).__name__, exc)
         return True
-    return bool(ProcessRegistry._host_pid_is_ours(pid, start))
 
 
 def _read_running() -> list[dict]:
@@ -314,9 +340,9 @@ def children(session_id: str) -> dict:
 
 
 @router.get("/output")
-def output(session_id: str) -> dict:
+def output(session_id: str, worker_id: str) -> dict:
     with _connect() as conn:
-        return read_output(conn, session_id)
+        return read_output(conn, session_id, worker_id)
 
 
 @router.get("/processes")

@@ -10,8 +10,9 @@ machine's own history happens to contain. It holds one conversation compressed i
 running worker from P2, and a worker of an unrelated conversation that must never show up.
 
 Locks: the database handle cannot write; batches follow the compression chain; each worker's
-status, duration and summary are derived as documented in plugin_api; /output serves only
-delegated worker sessions and returns the full answer. Background commands: only the chain's own
+status, duration and summary are derived as documented in plugin_api (a worker that has not ended
+is running even after it wrote text); /output serves only delegated workers of the asking chat
+(403 for another chat's) and returns the full answer; a changed core liveness API is not a 500. Background commands: only the chain's own
 processes are listed; running / stopped / completed / failed are derived from Hermes' own files;
 unreadable files are reported, never silently dropped; /process_output refuses another chat's
 process and anything that is not a process id.
@@ -84,6 +85,13 @@ def build_fixture() -> None:
     message("W3", "user", "Wait")
     session("W4", 1000.2, 1010, "completed", delegate_from="Q")
     message("W4", "assistant", "other conversation")
+    # Still working, but it has already said something: an answer so far is not an end state.
+    session("W5", 2000.5, delegate_from="P2")
+    message("W5", "user", "Keep going")
+    message("W5", "assistant", "halfway there")
+    # Delegated by a worker of this chat (nested): its output belongs to the chat too.
+    session("N1", 1001, 1020, "agent_close", delegate_from="W1")
+    message("N1", "assistant", "nested answer")
     db.commit()
     db.close()
 
@@ -101,27 +109,33 @@ def run_fixture() -> None:
         data = api.list_children(conn, "P2")
         check(data["lineage"] == ["P1", "P2"], f"lineage follows compression ({data['lineage']})")
         sizes = [len(b["workers"]) for b in data["batches"]]
-        check(sizes == [2, 1], f"workers grouped into batches by start time ({sizes})")
+        check(sizes == [2, 2], f"workers grouped into batches by start time ({sizes})")
         workers = {w["session_id"]: w for b in data["batches"] for w in b["workers"]}
         check("W4" not in workers, "an unrelated conversation's worker is not listed")
 
-        w1, w2, w3 = workers["W1"], workers["W2"], workers["W3"]
+        w1, w2, w3, w5 = workers["W1"], workers["W2"], workers["W3"], workers["W5"]
         check(w1["status"] == "completed" and w1["duration_s"] == 42, "answered worker: completed, 42 s")
         check(w1["goal"] == "Read the notes", "goal is the first line of the task")
         check(w1["model"] == "claude-sonnet-5", "worker model is reported")
         check(len(w1["summary"]) == 600 and w1["summary_truncated"], "summary capped at 600 chars and flagged")
         check(w2["status"] == "stopped" and w2["duration_s"] is None, "closed without answer: stopped, no duration")
         check(w3["status"] == "running" and w3["duration_s"] is None, "open worker: running, no duration")
+        check(w5["status"] == "running" and w5["duration_s"] is None,
+              f"open worker that already wrote text: still running ({w5['status']})")
         check(w1["tokens"] == 120 and w1["tool_calls"] == 3, "tokens and tool calls summed from the session")
 
-        check(api.read_output(conn, "W1")["text"] == LONG_ANSWER, "/output returns the full answer")
-        for sid, code, what in (("P1", 403, "a non-worker session is refused (403)"),
-                                ("nope", 404, "an unknown session is 404")):
+        check(api.read_output(conn, "P2", "W1")["text"] == LONG_ANSWER, "/output returns the full answer")
+        check(api.read_output(conn, "P2", "N1")["text"] == "nested answer", "/output serves a nested worker of this chat")
+        # Each refusal is named: a non-worker is refused as such, before any ownership walk.
+        for sid, code, detail, what in (("P1", 403, "not a delegated worker session", "a non-worker session is refused (403)"),
+                                        ("W4", 403, "worker belongs to another conversation",
+                                         "another conversation's worker output is refused (403)"),
+                                        ("nope", 404, "session not found", "an unknown session is 404")):
             try:
-                api.read_output(conn, sid)
+                api.read_output(conn, "P2", sid)
                 check(False, what)
             except HTTPException as exc:
-                check(exc.status_code == code, what)
+                check(exc.status_code == code and str(exc.detail).startswith(detail), f"{what} [{exc.detail}]")
 
         run_processes(conn)
 
@@ -204,6 +218,23 @@ def run_processes(conn) -> None:
             check(False, what)
         except HTTPException as exc:
             check(exc.status_code == code, what)
+
+    import types
+    fake = types.ModuleType("tools.process_registry")
+    fake.ProcessRegistry = type("ProcessRegistry", (), {})  # the private liveness test is gone
+    saved = {k: sys.modules.get(k) for k in ("tools", "tools.process_registry")}
+    sys.modules["tools"] = types.ModuleType("tools")
+    sys.modules["tools.process_registry"] = fake
+    try:
+        check(api._pid_is_ours(live_pid, None) is True, "a changed liveness API reads unknown (fail-open), never a 500")
+    except Exception as exc:  # noqa: BLE001
+        check(False, f"a changed liveness API reads unknown (fail-open), never a 500 ({type(exc).__name__})")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
 
     shutil.rmtree(PROC_RESULTS)
     (PROC_HOME / "processes.json").unlink()

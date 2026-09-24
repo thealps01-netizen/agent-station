@@ -17,6 +17,10 @@
  *   7. Failures are visible: a failing history read and three failing list polls both render an
  *      alert; nothing is swallowed.
  *   8. A finished live batch leaves "Now" and history is reloaded.
+ *  10. Refresh after live polls gave up resets the failure count and polling resumes.
+ *  11. A clipboard rejection on either copy button is a "Copy failed" toast, never an unhandled rejection.
+ *  12. Status marks and header counts carry an aria-label (the Tip's text); counts whose source
+ *      failed read "—", not 0; count labels are singular for one.
  *   9. Background commands: read for the STORED chat id, newest first, one mark per status, exit
  *      code on a failed row, "—" for a stopped one; a row opens the full command + output tail read
  *      for that chat; a running command asks for no output; unreadable records and a failed read
@@ -106,6 +110,7 @@ let historyFails = false
 let procFails = false
 let procUnreadable = 1
 let procOutputFails = false
+let clipRejects = false
 const PROCS = {
   'st-1': [
     { id: 'proc_ok', command: 'npm test\n--watch=false', cwd: '/w', status: 'completed', started_at: 900, duration_s: 42, exit_code: 0 },
@@ -147,7 +152,10 @@ const ctx = {
       if (historyFails) throw new Error('backend 503')
       return HISTORY
     }
-    if (path.startsWith('/output')) return { text: `FULL OUTPUT of ${new URLSearchParams(path.split('?')[1]).get('session_id')}` }
+    if (path.startsWith('/output')) {
+      const q = new URLSearchParams(path.split('?')[1])
+      return { text: `FULL OUTPUT of ${q.get('worker_id')} for ${q.get('session_id')}` }
+    }
     if (path.startsWith('/processes')) {
       if (procFails) throw new Error('procs 503')
       const sid = new URLSearchParams(path.split('?')[1]).get('session_id')
@@ -160,7 +168,7 @@ const ctx = {
     }
     throw new Error(`unexpected ${path}`)
   },
-  os: { writeClipboard: async text => { clip.push(text); return true } }
+  os: { writeClipboard: async text => { if (clipRejects) throw new Error('denied'); clip.push(text); return true } }
 }
 // async act: an event can start a history reload whose promise settles after the handler returns;
 // a sync act would let that state update land outside act and React would warn.
@@ -179,6 +187,10 @@ check(mod.fmtDuration(312) === '5m 12s' && mod.fmtDuration(null) === '' && mod.f
 check(mod.workerName("Round 3 on 'fleet-status' panel") === 'fleet-status', 'worker name takes the quoted slug')
 check(mod.modelLabel('anthropic/claude-opus-5-5') === 'claude-opus-5-5', 'model label drops the provider')
 check(mod.batchState(['completed', 'queued']) === 'queued' && mod.batchState(['completed', 'failed']) === 'failed', 'batch state never reads done while one is not')
+const tr = stub.usePluginI18n('subagent-watch')
+check(tr('sw.nBatches', 1) === '1 batch' && tr('sw.nBatches', 2) === '2 batches', `batch count is singular for one (${tr('sw.nBatches', 1)})`)
+check(tr('sw.nProcs', 1) === '1 background command' && tr('sw.nProcs', 3) === '3 background commands', `command count is singular for one (${tr('sw.nProcs', 1)})`)
+check(tr('sw.nWorkers', 1) === '1 worker' && tr('sw.nWorkers', 2) === '2 workers', `worker count is singular for one (${tr('sw.nWorkers', 1)})`)
 
 // mount
 const host = document.createElement('div')
@@ -195,6 +207,8 @@ check(bls.length === 2, `two history batches drawn (${bls.length})`)
 check(qa('.sw-hd .sw-stat').map(e => e.textContent).join(',') === '2,3,4', `header counts batches, workers and commands (${qa('.sw-hd .sw-stat').map(e => e.textContent)})`)
 check(bls[0].textContent.includes('design judge') || bls[0].textContent.includes('Act as a strict'), 'newest batch first')
 check(stub.calls.request.some(([m, p]) => m === 'subagent.list' && p.session_id === 'rt-1'), 'subagent.list asked with the focused runtime id')
+check(qa('.sw-hd .sw-stat').every(e => e.getAttribute('aria-label') && e.getAttribute('aria-label') === e.dataset.tip),
+  `header counts carry an aria-label equal to their tooltip (${qa('.sw-hd .sw-stat').map(e => e.getAttribute('aria-label'))})`)
 await act(async () => { bls[1].click() })
 const rows = qa('.sw-wr')
 check(rows.length === 2, 'batch opens to its two workers')
@@ -212,6 +226,8 @@ const prs = qa('.sw-pr')
 check(prs.length === 4, `four background commands drawn (${prs.length})`)
 check(prs[0].dataset.st === 'running' && prs.map(p => p.dataset.st).join(',') === 'running,stopped,failed,completed', `newest command first (${prs.map(p => p.dataset.st)})`)
 check(prs.map(p => p.querySelector('.sw-mk').dataset.st).join(',') === 'running,stopped,failed,completed', 'each command draws its own status mark')
+check(qa('.sw-mk').length > 0 && qa('.sw-mk').every(m => m.getAttribute('role') === 'img' && m.getAttribute('aria-label') && m.getAttribute('aria-label') === m.dataset.tip),
+  'every status mark has an accessible name equal to its tooltip')
 check(prs[3].querySelector('.sw-pn').textContent === 'npm test' && prs[3].querySelector('.sw-pn').dataset.tip === 'npm test\n--watch=false', 'row shows the first line, tooltip the whole command')
 check(prs[2].querySelector('.sw-px')?.textContent === 'exit 1', 'failed command shows its exit code')
 check(!prs[3].querySelector('.sw-px'), 'a successful command shows no exit badge')
@@ -231,6 +247,14 @@ check(q('.sw-pol')?.textContent.includes('last'), 'a cut output says it is the e
 await act(async () => { q('.sw-plist .sw-box .sw-ib').click() })
 await tick(5)
 check(clip.at(-1) === 'FULL proc_bad', 'copy command copies the full command')
+clipRejects = true
+let unhandled = 0
+const onUnhandled = () => { unhandled++ }
+process.on('unhandledRejection', onUnhandled)
+await act(async () => { q('.sw-plist .sw-box .sw-ib').click() })
+await tick(5)
+check(q('.sw-toast.is-bad')?.textContent === 'Copy failed' && !unhandled, `a rejected clipboard on copy command toasts "Copy failed" (${q('.sw-toast')?.textContent}, unhandled ${unhandled})`)
+clipRejects = false
 // A failed output read is shown inside the opened row, never swallowed into an empty box.
 await act(async () => { pr(2).click() })
 procOutputFails = true
@@ -255,7 +279,13 @@ check(rest.filter(p => p.startsWith('/processes')).length > procPolls, 'backgrou
 const [copyBtn, openBtn] = qa('.sw-bb .sw-dt .sw-ib')
 await act(async () => { copyBtn.click() })
 await tick(5)
-check(rest.includes('/output?session_id=c-a') && clip.at(-1) === 'FULL OUTPUT of c-a', 'copy reads that worker\'s full output into the clipboard')
+check(rest.includes('/output?session_id=st-1&worker_id=c-a') && clip.at(-1) === 'FULL OUTPUT of c-a for st-1', 'copy reads that worker\'s full output, for THIS chat, into the clipboard')
+clipRejects = true
+await act(async () => { copyBtn.click() })
+await tick(5)
+check(q('.sw-toast.is-bad')?.textContent === 'Copy failed' && !unhandled, `a rejected clipboard on copy output toasts "Copy failed" (${q('.sw-toast')?.textContent})`)
+clipRejects = false
+process.off('unhandledRejection', onUnhandled)
 await act(async () => { openBtn.click() })
 check(stub.calls.opened[0] === 'c-a', 'open goes to the child session')
 
@@ -338,6 +368,19 @@ console.warn = () => {}
 for (let i = 0; i < 3; i++) await tick(3100)
 console.warn = origWarn
 check(q('[role=alert]')?.textContent.includes('Live updates stopped'), 'three failed polls are shown')
+const stats = qa('.sw-hd .sw-stat')
+check(stats.map(e => e.textContent).join(',') === '—,—,—' && stats.every(e => /could not be read/.test(e.getAttribute('aria-label') || '')),
+  `counts whose source failed read — , not 0 (${stats.map(e => e.textContent)})`)
+
+// 10. Refresh restarts live polling that gave up
+stub.state.listFails = false
+const listCalls = () => stub.calls.request.filter(([m, p]) => m === 'subagent.list' && p.session_id === 'rt-3').length
+const gaveUp = listCalls()
+await tick(3100)
+check(listCalls() === gaveUp, 'polling has stopped after three failures')
+await act(async () => q('.sw-hd .sw-ib').click())
+await tick(3100)
+check(listCalls() > gaveUp && !q('[role=alert]')?.textContent.includes('Live updates stopped'), `Refresh resumes live polling (${gaveUp} -> ${listCalls()})`)
 
 // empty chat
 historyFails = false
