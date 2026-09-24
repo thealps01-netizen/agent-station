@@ -88,7 +88,7 @@ const stub = await import(`${HERE_URL.href}.out/sdk-stub.mjs`)
 const mod = await import(`${HERE_URL.href}.out/plugin-under-test.mjs`)
 const React = (await import('react')).default
 const { createRoot } = await import('react-dom/client')
-const { act } = await import('react-dom/test-utils')
+const { act } = React
 
 let failures = 0
 const check = (ok, what) => {
@@ -105,6 +105,7 @@ const clip = []
 let historyFails = false
 let procFails = false
 let procUnreadable = 1
+let procOutputFails = false
 const PROCS = {
   'st-1': [
     { id: 'proc_ok', command: 'npm test\n--watch=false', cwd: '/w', status: 'completed', started_at: 900, duration_s: 42, exit_code: 0 },
@@ -153,6 +154,7 @@ const ctx = {
       return { session_id: sid, processes: PROCS[sid] || [], unreadable: sid === 'st-1' ? procUnreadable : 0 }
     }
     if (path.startsWith('/process_output')) {
+      if (procOutputFails) throw new Error('output 503')
       const q = new URLSearchParams(path.split('?')[1])
       return { id: q.get('process_id'), command: `FULL ${q.get('process_id')}`, output: `tail of ${q.get('process_id')} in ${q.get('session_id')}`, output_truncated: true }
     }
@@ -160,7 +162,9 @@ const ctx = {
   },
   os: { writeClipboard: async text => { clip.push(text); return true } }
 }
-const emit = (type, session_id, payload) => act(() => { for (const fn of listeners.get(type) || []) fn({ type, session_id, payload }) })
+// async act: an event can start a history reload whose promise settles after the handler returns;
+// a sync act would let that state update land outside act and React would warn.
+const emit = (type, session_id, payload) => act(async () => { for (const fn of listeners.get(type) || []) fn({ type, session_id, payload }) })
 
 // 1. registration
 mod.default.register(ctx)
@@ -224,6 +228,16 @@ check(q('.sw-pol')?.textContent.includes('last'), 'a cut output says it is the e
 await act(async () => { q('.sw-plist .sw-dt .sw-ib').click() })
 await tick(5)
 check(clip.at(-1) === 'FULL proc_bad', 'copy command copies the full command')
+// A failed output read is shown inside the opened row, never swallowed into an empty box.
+await act(async () => { prs[2].click() })
+procOutputFails = true
+await act(async () => { prs[2].click() })
+await tick(5)
+check(q('.sw-plist')?.textContent.includes('Could not read the command output: output 503'), 'a failed command-output read is shown')
+procOutputFails = false
+await act(async () => { prs[2].click() })
+await act(async () => { prs[2].click() })
+await tick(5)
 const outReads = rest.filter(p => p.startsWith('/process_output')).length
 await act(async () => { qa('.sw-pr')[0].click() })
 await tick(5)
@@ -292,9 +306,17 @@ check(rest.filter(p => p.startsWith('/children')).length > before, 'history relo
 // 2. switching chats clears live state
 await emit('subagent.start', 'rt-1', { subagent_id: 'z1', delegation_id: 'dz', goal: 'z' })
 check(!!q('.sw-fl'), 'live again before the switch')
+if (!q('.sw-pr.is-open')) await act(async () => { qa('.sw-pr')[1].click() })
+check(qa('.sw-acc.is-open').length > 0, 'a card is open before the switch')
 await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
 await tick(10)
 check(!q('.sw-fl'), 'switching chats clears the live tree')
+// Back to the first chat: the cards opened there must come back folded, not as the old chat left them.
+await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
+await tick(10)
+check(qa('.sw-pr').length > 0 && !qa('.sw-acc.is-open').length, 'switching chats folds every open card')
+await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
+await tick(10)
 check(rest.includes('/children?session_id=st-2'), 'history re-read for the new chat')
 check(rest.includes('/processes?session_id=st-2') && !qa('.sw-pr').length && !q('.sw-procs'), 'commands re-read for the new chat; none -> no section')
 

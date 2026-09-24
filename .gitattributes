@@ -1,1 +1,10 @@
+# One line-ending policy on every platform: stored as LF, checked out as LF.
+#
+# Without this, a Windows clone rewrites every file the moment git touches it (rewriting the panel, the
+# backend and the docs into CRLF while the warning scrolls past), and every later diff is noise. The
+# gates are line-ending agnostic — the canary run re-writes and re-reads the real files byte for byte
+# within a single run — so a single policy is strictly better than two.
 * text=auto eol=lf
+
+# Measured evidence, never normalised.
+*.png binary

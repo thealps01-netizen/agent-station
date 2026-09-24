@@ -160,17 +160,20 @@ export function liveBatches(records) {
 // ── marks ────────────────────────────────────────────────────────────────────
 
 const svg = (children, cls) => jsx('svg', { viewBox: '0 0 16 16', className: cls, 'aria-hidden': 'true', children })
+// Ink of the check / cross drawn ON a filled tone disc: the theme's own on-fill foreground, so a
+// skin that inverts it is followed instead of a hard-coded white.
+const GLYPH_INK = 'var(--dt-destructive-foreground)'
 const MARKS = {
   completed: () => svg([
     jsx('circle', { cx: 8, cy: 8, r: 7, fill: 'var(--ui-green)' }, 'c'),
     jsx('path', {
-      d: 'M4.8 8.2l2.1 2.1 4.3-4.4', fill: 'none', stroke: '#fff', strokeWidth: 2,
+      d: 'M4.8 8.2l2.1 2.1 4.3-4.4', fill: 'none', stroke: GLYPH_INK, strokeWidth: 2,
       strokeLinecap: 'round', strokeLinejoin: 'round'
     }, 'p')
   ]),
   failed: () => svg([
     jsx('circle', { cx: 8, cy: 8, r: 7, fill: 'var(--ui-red)' }, 'c'),
-    jsx('path', { d: 'M5.5 5.5l5 5M10.5 5.5l-5 5', stroke: '#fff', strokeWidth: 2, strokeLinecap: 'round' }, 'p')
+    jsx('path', { d: 'M5.5 5.5l5 5M10.5 5.5l-5 5', stroke: GLYPH_INK, strokeWidth: 2, strokeLinecap: 'round' }, 'p')
   ]),
   stopped: () => svg([
     jsx('circle', { cx: 8, cy: 8, r: 6.2, fill: 'none', stroke: 'var(--ui-text-tertiary)', strokeWidth: 1.6 }, 'c'),
@@ -897,11 +900,11 @@ const CSS = `
 .sw-plab{display:flex;align-items:center;gap:8px}
 .sw-plt{display:inline-flex;align-items:center;gap:6px;cursor:default}
 .sw-pi{width:13px;height:13px;flex:none}
-.sw-pu{margin-left:auto;color:var(--ui-red)}
+.sw-pu{margin-left:auto;color:var(--ui-text-secondary)}
 .sw-plist{display:flex;flex-direction:column;gap:6px}
 .sw-pr::before{display:none}
 .sw-pn{font:11.5px var(--dt-font-mono,ui-monospace,monospace);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
-.sw-px{font-size:11px;color:var(--ui-red);white-space:nowrap;flex:none}
+.sw-px{font-size:11px;color:var(--ui-text-secondary);white-space:nowrap;flex:none}
 .sw-plist .sw-dt{margin:-1px 0 0;border-top-left-radius:0;border-top-right-radius:0;border-top-style:dashed;background:var(--ui-bg-quaternary)}
 .sw-plist .sw-nd.is-open{border-bottom-left-radius:0;border-bottom-right-radius:0}
 .sw-pc,.sw-po{margin:0;padding:8px 10px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary);

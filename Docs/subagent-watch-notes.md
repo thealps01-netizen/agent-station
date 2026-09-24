@@ -78,11 +78,14 @@ Interrupt / steer / live transcript — the composer status stack already owns t
 - `cd tests && npm install && node render_check.mjs` — jsdom render with real React (pinned
   jsdom 30.1.0, react 18.3.1): session scoping, status marks, tree nesting, history, copy/open,
   visible failures, chat switch.
-- Mutation canaries were run by hand: removing the session filter, mapping queued/error to done,
-  showing a duration for stopped, swallowing poll errors, copying the wrong session, repeating a
-  running batch under Earlier, single-open cards — each fails at least one check.
-- Background-command canaries (run by hand, 10/10 caught): no conversation filter, killed read as
-  completed, non-zero exit read as completed, a dead checkpoint PID read as running, unreadable
-  receipts hidden, output served to another chat, a read error swallowed, output read for the wrong
-  chat, a duration drawn for a killed command, polling removed.
-- Visual pass: rendered in both the dark and light app themes (real plugin, real app CSS).
+- `python tests/canary_audit.py` — the mutation canaries, no longer by hand: 32 mutations (render,
+  backend, static audit), each applied to a copy and required to turn its owning gate red. The first
+  run found two behaviours no check covered (a failed command-output read, cards left open after a
+  chat switch); both are now render checks.
+- `python tests/audit_static.py` — i18n, native `title`, icon names, `aria-expanded`, hard-coded
+  colour, tone used as text ink, silent catches, read-only backend, release gate.
+- `python tests/contract_core.py [--selftest]` — every column, marker, field, event and SDK export
+  read from the core still exists (source read, no import).
+- Visual pass: `node tests/preview.mjs` then `<electron> tests/shot.cjs preview.html preview.png` —
+  real React output in the compiled app stylesheet, WCAG contrast gated in the app's own engine.
+  It found the red `exit N` text at 3.3:1; failure text now uses the reading token (6.4:1).

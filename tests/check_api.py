@@ -27,7 +27,10 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "dashboard"))
+
+import env  # noqa: E402
 
 import plugin_api as api  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
@@ -215,7 +218,11 @@ def run_processes(conn) -> None:
 
 
 def run_live() -> None:
-    sys.path.insert(0, os.environ.get("HERMES_AGENT_DIR") or str(HERE.parents[2] / "hermes-agent"))
+    core = env.core_dir()
+    if core is None:
+        print("SKIP  live: no Hermes core found (set HERMES_AGENT_DIR)")
+        return
+    sys.path.insert(0, str(core))
     importlib.reload(api)  # drop the fixture override; hermes_constants locates the real state.db
     with api._connect() as conn:
         parent = conn.execute(
