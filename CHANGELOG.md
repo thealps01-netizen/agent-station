@@ -3,6 +3,20 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.1.4 — 2026-09-25
+
+Background command detail, reported from the app:
+
+- **The output leaf has its own card** like the command and actions above it. It used to be a bare
+  label with the "shown when the command finishes" note floating under it. The text inside needs no
+  second box, so the output `<pre>` inside the card is unframed.
+- **Meta line sits next to the copy button**, left-aligned, instead of right-aligned text that broke
+  a path into a ragged column.
+- **Monospace on Windows.** The host's mono stack (Menlo, Monaco, SF Mono…) has none of its fonts on
+  Windows and fell through to Courier. The panel now puts `ui-monospace`, Cascadia Mono and Consolas
+  first and keeps the host stack as the fallback.
+- The preview's narrow frame also opens a still-running command, the state the report showed.
+
 ## 1.1.3 — 2026-09-25
 
 - **Opened details hang as tree branches.** A worker's detail (goal, actions) and a background

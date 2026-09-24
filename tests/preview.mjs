@@ -140,6 +140,9 @@ async function frame(label, { fail = false, live = false, open = null, narrow = 
     }
     const ok = [...host.querySelectorAll('.sw-pr')].find(p => p.dataset.st === 'completed')
     await act(async () => { ok.click() })
+    // A still-running command opened too: no exit code yet, so its meta line is the path alone.
+    const run = [...host.querySelectorAll('.sw-pr')].find(p => p.dataset.st === 'running')
+    await act(async () => { run.click() })
     await tick(20)
   }
   if (fail) {

@@ -814,7 +814,8 @@ export function Page() {
 
 const CSS = `
 .sw-page{height:100%;min-height:0;overflow:auto;padding:20px 24px;color:var(--ui-text-primary);font-size:12px}
-.sw-panel{max-width:560px;position:relative;container-type:inline-size}
+.sw-panel{max-width:560px;position:relative;container-type:inline-size;
+ --sw-mono:ui-monospace,"Cascadia Mono",Consolas,var(--dt-font-mono,monospace)}
 /* Docked beside the chat the worker name needs every pixel: a model chip cut to 'c…' says nothing. */
 @container (max-width:420px){.sw-model{display:none}}
 .sw-page svg{width:100%;height:100%;display:block}
@@ -876,10 +877,10 @@ const CSS = `
 .sw-wn{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .sw-nl{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
 .sw-nl .sw-wn{flex:1 1 auto}
-.sw-model{font:10.5px var(--dt-font-mono,ui-monospace,monospace);color:var(--ui-text-tertiary);border:1px solid var(--ui-stroke-tertiary);
+.sw-model{font:10.5px var(--sw-mono);color:var(--ui-text-tertiary);border:1px solid var(--ui-stroke-tertiary);
  border-radius:4px;padding:0 5px;line-height:15px;white-space:nowrap;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sw-muted{color:var(--ui-text-tertiary)!important}
-.sw-now{font:11px var(--dt-font-mono,ui-monospace,monospace);color:var(--ui-text-tertiary);background:var(--ui-bg-tertiary);
+.sw-now{font:11px var(--sw-mono);color:var(--ui-text-tertiary);background:var(--ui-bg-tertiary);
  border-radius:4px;padding:1px 6px;flex:none;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw-dt{display:flex;flex-direction:column;gap:6px;margin:6px 0 2px 22px;padding-left:18px}
 .sw-br{position:relative;min-width:0}
@@ -890,7 +891,7 @@ const CSS = `
 .sw-dtg>span{font-size:12px;line-height:18px;color:var(--ui-text-secondary);display:-webkit-box;-webkit-line-clamp:3;
  -webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
 .sw-dta{display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
-.sw-dtm{margin-left:auto;min-width:0;font-size:11px;color:var(--ui-text-tertiary);text-align:right;overflow-wrap:anywhere}
+.sw-dtm{flex:1;min-width:0;margin-left:4px;font-size:11px;line-height:16px;color:var(--ui-text-tertiary);overflow-wrap:anywhere}
 .sw-fl{display:flex;flex-direction:column;align-items:stretch;padding:10px 10px 12px;margin:0 0 4px}
 .sw-fn{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:8px;border:1px solid var(--ui-stroke-tertiary);
  background:var(--ui-bg-secondary);font-size:12.5px;white-space:nowrap}
@@ -923,15 +924,16 @@ const CSS = `
 .sw-pu{margin-left:auto;color:var(--ui-text-secondary)}
 .sw-plist{display:flex;flex-direction:column;gap:6px}
 .sw-pr::before{display:none}
-.sw-pn{font:11.5px var(--dt-font-mono,ui-monospace,monospace);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.sw-pn{font:11.5px var(--sw-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .sw-px{font-size:11px;color:var(--ui-text-secondary);white-space:nowrap;flex:none}
 .sw-pc,.sw-po{margin:0;padding:8px 10px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary);
- font:11px/16px var(--dt-font-mono,ui-monospace,monospace);color:var(--ui-text-secondary);white-space:pre-wrap;word-break:break-word;overflow:auto}
-.sw-pc{max-height:96px}
-.sw-po{min-height:48px;max-height:180px}
-.sw-pob{display:flex;flex-direction:column;gap:4px}
-.sw-pol{font-size:11px;color:var(--ui-text-tertiary);padding:0 2px}
-.sw-po-note{font-size:12px;color:var(--ui-text-tertiary);padding:8px 10px}
+ font:11px/16px var(--sw-mono);color:var(--ui-text-secondary);white-space:pre-wrap;word-break:break-word;overflow:auto}
+.sw-pc{max-height:98px}
+/* The output leaf is a card like its siblings; the text inside it needs no second box. */
+.sw-pob{display:flex;flex-direction:column;gap:4px;padding:6px 10px 8px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
+.sw-pob .sw-po{padding:0;border:0;border-radius:0;background:transparent;max-height:180px}
+.sw-pol{font-size:11px;color:var(--ui-text-tertiary)}
+.sw-po-note{font-size:12px;line-height:18px;color:var(--ui-text-tertiary)}
 `
 
 function navLabel() {
