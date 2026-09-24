@@ -435,8 +435,7 @@ function Detail({ t, worker, onToast }) {
     })
   }
   const goal = String(worker.goal || '').trim()
-  return jsxs('div', {
-    className: 'sw-dt',
+  return jsx(Branches, {
     children: [
       goal ? jsx(Tip, { label: goal, children: jsx('div', { className: 'sw-dtg', children: jsx('span', { children: goal }) }) }, 'g') : null,
       jsxs('div', {
@@ -571,6 +570,16 @@ export function commandLine(command) {
   return String(command || '').split('\n').map(s => s.trim()).find(Boolean) || ''
 }
 
+// An opened row's detail hangs under it as tree branches, the same lines the live batch tree
+// draws: no second frame around it. Each leaf gets its own wrapper so the connector is drawn
+// outside the leaf (a scrolling <pre> would clip a connector drawn on itself).
+function Branches({ children }) {
+  return jsx('div', {
+    className: 'sw-dt',
+    children: children.filter(Boolean).map((leaf, i) => jsx('div', { className: 'sw-br', children: leaf }, i))
+  })
+}
+
 function ProcDetail({ t, p, storedId, onToast }) {
   const [out, setOut] = useState({ loading: p.status !== 'running', data: null, error: null })
   useEffect(() => {
@@ -596,8 +605,7 @@ function ProcDetail({ t, p, storedId, onToast }) {
     p.status === 'stopped' ? t('sw.proc.killed') : p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : '',
     p.cwd ? t('sw.proc.cwd', p.cwd) : ''
   ].filter(Boolean).join(' · ')
-  return jsxs('div', {
-    className: 'sw-dt',
+  return jsx(Branches, {
     children: [
       jsx('pre', { className: 'sw-pc', children: out.data?.command || p.command }, 'c'),
       jsxs('div', {
@@ -873,9 +881,11 @@ const CSS = `
 .sw-muted{color:var(--ui-text-tertiary)!important}
 .sw-now{font:11px var(--dt-font-mono,ui-monospace,monospace);color:var(--ui-text-tertiary);background:var(--ui-bg-tertiary);
  border-radius:4px;padding:1px 6px;flex:none;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sw-dt{margin:2px 10px 6px 34px;padding:6px;border-radius:6px;border:1px solid var(--ui-stroke-tertiary);display:flex;flex-direction:column;gap:6px}
-.sw-fw .sw-dt{margin:-1px 0 0;border-top-left-radius:0;border-top-right-radius:0;border-top-style:dashed;background:var(--ui-bg-quaternary)}
-.sw-fw .sw-nd.is-open{border-bottom-left-radius:0;border-bottom-right-radius:0}
+.sw-dt{display:flex;flex-direction:column;gap:6px;margin:6px 0 2px 22px;padding-left:18px}
+.sw-br{position:relative;min-width:0}
+.sw-br::before{content:"";position:absolute;left:-18px;top:14px;width:17px;border-top:1px solid var(--ui-stroke-secondary)}
+.sw-br::after{content:"";position:absolute;left:-18px;top:-6px;bottom:0;border-left:1px solid var(--ui-stroke-secondary)}
+.sw-br:last-child::after{bottom:auto;height:20px}
 .sw-dtg{padding:8px 10px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
 .sw-dtg>span{font-size:12px;line-height:18px;color:var(--ui-text-secondary);display:-webkit-box;-webkit-line-clamp:3;
  -webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
@@ -915,8 +925,6 @@ const CSS = `
 .sw-pr::before{display:none}
 .sw-pn{font:11.5px var(--dt-font-mono,ui-monospace,monospace);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .sw-px{font-size:11px;color:var(--ui-text-secondary);white-space:nowrap;flex:none}
-.sw-plist .sw-dt{margin:-1px 0 0;border-top-left-radius:0;border-top-right-radius:0;border-top-style:dashed;background:var(--ui-bg-quaternary)}
-.sw-plist .sw-nd.is-open{border-bottom-left-radius:0;border-bottom-right-radius:0}
 .sw-pc,.sw-po{margin:0;padding:8px 10px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary);
  font:11px/16px var(--dt-font-mono,ui-monospace,monospace);color:var(--ui-text-secondary);white-space:pre-wrap;word-break:break-word;overflow:auto}
 .sw-pc{max-height:96px}

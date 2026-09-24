@@ -202,7 +202,8 @@ check(rows[1].textContent.includes('—') && !/\d+[smh]/.test(rows[1].querySelec
 check(rows[1].querySelector('.sw-mk').dataset.st === 'stopped', 'stopped worker draws the stopped mark')
 await act(async () => { rows[0].click() })
 check(q('.sw-dt') && !q('.sw-dt p') && /tokens/.test(q('.sw-dtm')?.textContent || ''), 'worker detail is actions + stats only, no answer text')
-check(q('.sw-dtg')?.textContent === "Polish 'alpha-panel' visuals" && q('.sw-dt').firstElementChild?.classList.contains('sw-dtg'), 'worker detail shows its goal above the actions')
+check(q('.sw-dtg')?.textContent === "Polish 'alpha-panel' visuals" && q('.sw-dt').firstElementChild?.querySelector('.sw-dtg') !== null, 'worker detail shows its goal above the actions')
+check([...q('.sw-dt').children].every(c => c.classList.contains('sw-br')), 'every piece of an opened detail hangs on its own tree branch, no outer frame')
 check(!rows[0].querySelector('.sw-goal'), 'history row has no goal line')
 
 // 9. background commands: listed for the stored chat, marked by status, detail reads the output

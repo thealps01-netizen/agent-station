@@ -3,6 +3,14 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.1.3 — 2026-09-25
+
+- **Opened details hang as tree branches.** A worker's detail (goal, actions) and a background
+  command's detail (command, actions, output) used to sit in a second outer frame glued under the
+  row. That frame is gone: each piece hangs off the row on the same connector lines the live batch
+  tree draws, so the batch tree, the history and the background commands read as one structure.
+  The render check asserts every piece of an opened detail sits on its own branch.
+
 ## 1.1.2 — 2026-09-25
 
 Narrow-pane layout, reported from the docked app (about 380 px wide):
