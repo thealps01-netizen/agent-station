@@ -149,7 +149,7 @@ async function frame(label, { fail = false, live = false, open = null, narrow = 
     for (let i = 0; i < 3; i++) await tick(3100)
   }
   if (open === 'earlier') {
-    await act(async () => { host.querySelectorAll('.sw-bl')[0].click() })
+    await act(async () => { host.querySelectorAll('.sw-hb')[0].click() })
     await act(async () => { host.querySelectorAll('.sw-wr')[0].click() })
     const bad = [...host.querySelectorAll('.sw-pr')].find(p => p.dataset.st === 'failed')
     await act(async () => { bad.click() })

@@ -78,7 +78,7 @@ MUTATIONS = [
     ("audit", JS, "stopped: 'Stopped — closed before it finished'", "halted: 'Stopped'",
      "i18n: a template leaf the page can ask for"),
     ("audit", JS, "'aria-label': label, disabled", "disabled", "iconLabel: an icon button without a name"),
-    ("audit", JS, "'data-st': p.status, 'aria-expanded': open,", "'data-st': p.status,",
+    ("audit", JS, "'data-st': p.status, 'aria-expanded': false,", "'data-st': p.status,",
      "expanded: an accordion row without aria-expanded"),
     ("audit", JS, "const GLYPH_INK = 'var(--dt-destructive-foreground)'", "const GLYPH_INK = '#fff'",
      "hexColor: a hard-coded colour"),

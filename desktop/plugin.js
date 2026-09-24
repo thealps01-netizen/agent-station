@@ -479,12 +479,12 @@ function HistoryBatch({ t, batch, open, onToggle, openWorker, setOpenWorker, onT
     jsx('span', { className: 'sw-chev', children: ICON.chev(open) }, 'v')
   ]
   if (!open) {
-    return jsx('button', { type: 'button', className: 'sw-bl sw-card sw-acc', 'data-st': st, 'aria-expanded': false, onClick: onToggle, children: head })
+    return jsx('button', { type: 'button', className: 'sw-bl sw-hb sw-card sw-acc', 'data-st': st, 'aria-expanded': false, onClick: onToggle, children: head })
   }
   return jsxs('section', {
     className: 'sw-box sw-frame', 'data-st': st,
     children: [
-      jsx('button', { type: 'button', className: 'sw-bl sw-bh', 'aria-expanded': true, onClick: onToggle, children: head }, 'h'),
+      jsx('button', { type: 'button', className: 'sw-bl sw-hb sw-bh', 'aria-expanded': true, onClick: onToggle, children: head }, 'h'),
       // Same tree as the live batch: the header is the root, each worker hangs off one rail.
       jsx('div', {
         className: 'sw-bb sw-fw',
@@ -605,7 +605,7 @@ function ProcDetail({ t, p, storedId, onToast }) {
     p.status === 'stopped' ? t('sw.proc.killed') : p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : '',
     p.cwd ? t('sw.proc.cwd', p.cwd) : ''
   ].filter(Boolean).join(' · ')
-  return jsx(Branches, {
+  return jsx(ProcTree, {
     children: [
       jsx('pre', { className: 'sw-pc', children: out.data?.command || p.command }, 'c'),
       jsxs('div', {
@@ -632,19 +632,39 @@ function ProcDetail({ t, p, storedId, onToast }) {
   })
 }
 
-function ProcRow({ t, p, now, open, onToggle }) {
+// A command is laid out exactly like an earlier batch: folded it is one card, opened it becomes a
+// framed box whose header is the root and whose pieces (command, actions, output) hang off the
+// same rail the batch's workers hang off.
+function ProcTree({ children }) {
+  return jsx('div', {
+    className: 'sw-bb sw-fw',
+    children: children.filter(Boolean).map((leaf, i) => jsx('div', {
+      className: 'sw-nwrap', children: jsx('div', { className: 'sw-leaf', children: leaf })
+    }, i))
+  })
+}
+
+function ProcItem({ t, p, now, open, onToggle, storedId, onToast }) {
   const time = p.status === 'running'
     ? fmtDuration(p.started_at ? now - p.started_at : null)
     : p.status === 'stopped' ? '—' : fmtDuration(p.duration_s)
-  return jsxs('button', {
-    type: 'button', className: `sw-pr sw-nd sw-acc${open ? ' is-open' : ''}`, 'data-st': p.status, 'aria-expanded': open, onClick: onToggle,
+  const head = [
+    jsx(Tip, { label: t(`sw.proc.status.${p.status}`), children: jsx('span', { className: 'sw-mk', 'data-st': p.status, children: (MARKS[p.status] || MARKS.stopped)() }) }, 'm'),
+    jsx(Tip, { label: p.command, children: jsx('code', { className: 'sw-pn', children: commandLine(p.command) }) }, 'n'),
+    p.status === 'failed' && p.exit_code !== null && p.exit_code !== undefined
+      ? jsx('span', { className: 'sw-px', children: t('sw.proc.exit', p.exit_code) }, 'x')
+      : null,
+    jsx('span', { className: 'sw-wt', children: time }, 't'),
+    jsx('span', { className: 'sw-chev', children: ICON.chev(open) }, 'v')
+  ]
+  if (!open) {
+    return jsx('button', { type: 'button', className: 'sw-pr sw-bl sw-card sw-acc', 'data-st': p.status, 'aria-expanded': false, onClick: onToggle, children: head })
+  }
+  return jsxs('section', {
+    className: 'sw-box sw-frame', 'data-st': p.status,
     children: [
-      jsx(Tip, { label: t(`sw.proc.status.${p.status}`), children: jsx('span', { className: 'sw-mk', 'data-st': p.status, children: (MARKS[p.status] || MARKS.stopped)() }) }, 'm'),
-      jsx(Tip, { label: p.command, children: jsx('code', { className: 'sw-pn', children: commandLine(p.command) }) }, 'n'),
-      p.status === 'failed' && p.exit_code !== null && p.exit_code !== undefined
-        ? jsx('span', { className: 'sw-px', children: t('sw.proc.exit', p.exit_code) }, 'x')
-        : null,
-      jsx('span', { className: 'sw-wt', children: time }, 't')
+      jsx('button', { type: 'button', className: 'sw-pr sw-bl sw-bh is-open', 'data-st': p.status, 'aria-expanded': true, onClick: onToggle, children: head }, 'h'),
+      jsx(ProcDetail, { t, p, storedId, onToast }, `d-${p.status}`)
     ]
   })
 }
@@ -665,12 +685,8 @@ function ProcSection({ t, procs, now, storedId, openProc, toggleProc, onToast })
       }, 'h'),
       jsx('div', {
         className: 'sw-plist',
-        children: rows.map(p => jsxs('div', {
-          className: 'sw-nwrap',
-          children: [
-            jsx(ProcRow, { t, p, now, open: openProc.has(p.id), onToggle: () => toggleProc(p.id) }, 'r'),
-            openProc.has(p.id) ? jsx(ProcDetail, { t, p, storedId, onToast }, `d-${p.status}`) : null
-          ]
+        children: rows.map(p => jsx(ProcItem, {
+          t, p, now, storedId, onToast, open: openProc.has(p.id), onToggle: () => toggleProc(p.id)
         }, p.id))
       }, 'l')
     ]
@@ -924,6 +940,10 @@ const CSS = `
 .sw-pu{margin-left:auto;color:var(--ui-text-secondary)}
 .sw-plist{display:flex;flex-direction:column;gap:6px}
 .sw-pr::before{display:none}
+.sw-plist>.sw-box{margin:0}
+/* A command's piece hangs off the rail like a worker row: connector at the first line. */
+.sw-leaf{position:relative;min-width:0}
+.sw-leaf::before{content:"";position:absolute;left:-19px;top:18px;width:18px;border-top:1px solid var(--ui-stroke-secondary)}
 .sw-pn{font:11.5px var(--sw-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .sw-px{font-size:11px;color:var(--ui-text-secondary);white-space:nowrap;flex:none}
 .sw-pc,.sw-po{margin:0;padding:8px 10px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary);

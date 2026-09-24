@@ -190,7 +190,7 @@ const q = s => host.querySelector(s)
 const qa = s => [...host.querySelectorAll(s)]
 
 // 5. history
-const bls = qa('.sw-bl')
+const bls = qa('.sw-hb')
 check(bls.length === 2, `two history batches drawn (${bls.length})`)
 check(qa('.sw-hd .sw-stat').map(e => e.textContent).join(',') === '2,3,4', `header counts batches, workers and commands (${qa('.sw-hd .sw-stat').map(e => e.textContent)})`)
 check(bls[0].textContent.includes('design judge') || bls[0].textContent.includes('Act as a strict'), 'newest batch first')
@@ -221,25 +221,29 @@ check(prs[3].querySelector('.sw-wt').textContent === '42s', 'finished command sh
 check(qa('.sw-hd .sw-stat')[2]?.textContent === '4', 'header counts background commands')
 check(q('.sw-pu')?.textContent === '1 record could not be read', 'unreadable records are reported, not hidden')
 check(q('.sw-plt')?.dataset.tip?.includes('not subagents'), 'section says these are not subagents')
-await act(async () => { prs[2].click() })
+// An opened command is re-drawn as a framed box, so each click finds the row afresh.
+const pr = i => qa('.sw-pr')[i]
+await act(async () => { pr(2).click() })
 await tick(5)
 check(rest.includes('/process_output?session_id=st-1&process_id=proc_bad'), 'opening a command reads its output for THIS chat')
 check(q('.sw-po')?.textContent === 'tail of proc_bad in st-1' && q('.sw-pc')?.textContent === 'FULL proc_bad', 'detail shows the full command and the output tail')
 check(q('.sw-pol')?.textContent.includes('last'), 'a cut output says it is the end only')
-await act(async () => { q('.sw-plist .sw-dt .sw-ib').click() })
+await act(async () => { q('.sw-plist .sw-box .sw-ib').click() })
 await tick(5)
 check(clip.at(-1) === 'FULL proc_bad', 'copy command copies the full command')
 // A failed output read is shown inside the opened row, never swallowed into an empty box.
-await act(async () => { prs[2].click() })
+await act(async () => { pr(2).click() })
 procOutputFails = true
-await act(async () => { prs[2].click() })
+await act(async () => { pr(2).click() })
 await tick(5)
 check(q('.sw-plist')?.textContent.includes('Could not read the command output: output 503'), 'a failed command-output read is shown')
 procOutputFails = false
-await act(async () => { prs[2].click() })
-await act(async () => { prs[2].click() })
+await act(async () => { pr(2).click() })
+await act(async () => { pr(2).click() })
 await tick(5)
 const outReads = rest.filter(p => p.startsWith('/process_output')).length
+check(q('.sw-plist > .sw-box.sw-frame > .sw-bh.sw-pr') && [...q('.sw-plist > .sw-box > .sw-fw').children].every(c => c.firstElementChild?.classList.contains('sw-leaf')),
+  'an opened command is laid out like an opened batch: framed box, header as root, pieces on the rail')
 await act(async () => { qa('.sw-pr')[0].click() })
 await tick(5)
 check(q('.sw-po-note')?.textContent.includes('when the command finishes') && rest.filter(p => p.startsWith('/process_output')).length === outReads, 'a running command asks for no output yet')
@@ -258,8 +262,8 @@ check(stub.calls.opened[0] === 'c-a', 'open goes to the child session')
 // 6b. cards open independently: opening another batch and worker folds nothing
 await act(async () => { qa('.sw-wr')[1].click() })
 check(qa('.sw-bb .sw-dt').length === 2, 'opening a second worker keeps the first one open')
-await act(async () => { qa('.sw-bl')[0].click() })
-check(qa('.sw-bb').length === 2 && qa('.sw-bb .sw-dt').length === 2, 'opening another batch keeps the first batch and its workers open')
+await act(async () => { qa('.sw-hb')[0].click() })
+check(qa('.sw-box:not(:has(.sw-pr)) > .sw-bb').length === 2 && qa('.sw-bb .sw-dt').length === 2, 'opening another batch keeps the first batch and its workers open')
 
 // 2 + 3 + 4. live tree, scoped
 await emit('subagent.spawn_requested', 'rt-OTHER', { subagent_id: 'x1', delegation_id: 'd9', goal: 'foreign', task_index: 0 })
@@ -281,7 +285,7 @@ check(qa('.sw-fl').length === 1, 'one live root per delegation')
 HISTORY.batches.push({ started_at: 3000, workers: [{ session_id: 'k9', goal: "Build 'one'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' }] })
 await act(async () => q('.sw-hd .sw-ib').click())
 await tick(10)
-check(qa('.sw-bl').length === 2, 'a stored batch still running is not repeated under Earlier while live')
+check(qa('.sw-hb').length === 2, 'a stored batch still running is not repeated under Earlier while live')
 HISTORY.batches.pop()
 const nodes = qa('.sw-fl .sw-nd')
 const byName = n => nodes.find(x => x.querySelector('.sw-wn').textContent === n)
@@ -308,14 +312,14 @@ check(rest.filter(p => p.startsWith('/children')).length > before, 'history relo
 await emit('subagent.start', 'rt-1', { subagent_id: 'z1', delegation_id: 'dz', goal: 'z' })
 check(!!q('.sw-fl'), 'live again before the switch')
 if (!q('.sw-pr.is-open')) await act(async () => { qa('.sw-pr')[1].click() })
-check(qa('.sw-acc.is-open').length > 0, 'a card is open before the switch')
+check(qa('.sw-pr.is-open').length > 0, 'a card is open before the switch')
 await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
 await tick(10)
 check(!q('.sw-fl'), 'switching chats clears the live tree')
 // Back to the first chat: the cards opened there must come back folded, not as the old chat left them.
 await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
 await tick(10)
-check(qa('.sw-pr').length > 0 && !qa('.sw-acc.is-open').length, 'switching chats folds every open card')
+check(qa('.sw-pr').length > 0 && !qa('.sw-acc.is-open, .sw-pr.is-open, .sw-box').length, 'switching chats folds every open card')
 await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
 await tick(10)
 check(rest.includes('/children?session_id=st-2'), 'history re-read for the new chat')

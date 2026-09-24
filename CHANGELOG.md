@@ -3,6 +3,14 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.1.5 — 2026-09-25
+
+- **Background commands share the Earlier batches' structure.** A command used to open as a row
+  with loose pieces under it, while a batch opened into a framed box. Now both behave the same:
+  folded, a command is one card with a chevron; opened, it becomes the same framed box (status
+  tint, left rail), its header is the root and the command, actions and output hang off the same
+  tree rail the batch's workers hang off. The render check asserts that layout.
+
 ## 1.1.4 — 2026-09-25
 
 Background command detail, reported from the app:
