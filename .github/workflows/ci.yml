@@ -52,7 +52,7 @@ jobs:
           git -C "$core" sparse-checkout init --no-cone
           git -C "$core" sparse-checkout set /hermes_state_common.py /tools/ /agent/conversation_compression.py \
             /tui_gateway/contracts/ /apps/desktop/src/sdk/
-          git -C "$core" fetch -q --filter=blob:none --depth 1 origin "$CORE_SHA"
+          for i in 1 2 3; do git -C "$core" fetch -q --depth 1 origin "$CORE_SHA" && break; sleep $((i*20)); done
           git -C "$core" checkout -q FETCH_HEAD
           test -f "$core/hermes_state_common.py" || { echo "core sources missing"; exit 1; }
           echo "HERMES_AGENT_DIR=$core" >> "$GITHUB_ENV"
