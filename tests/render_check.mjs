@@ -17,6 +17,10 @@
  *   7. Failures are visible: a failing history read and three failing list polls both render an
  *      alert; nothing is swallowed.
  *   8. A finished live batch leaves "Now" and history is reloaded.
+ *   9. Background commands: read for the STORED chat id, newest first, one mark per status, exit
+ *      code on a failed row, "—" for a stopped one; a row opens the full command + output tail read
+ *      for that chat; a running command asks for no output; unreadable records and a failed read
+ *      are shown; a chat with no commands draws no section.
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -99,6 +103,17 @@ const registered = []
 const rest = []
 const clip = []
 let historyFails = false
+let procFails = false
+let procUnreadable = 1
+const PROCS = {
+  'st-1': [
+    { id: 'proc_ok', command: 'npm test\n--watch=false', cwd: '/w', status: 'completed', started_at: 900, duration_s: 42, exit_code: 0 },
+    { id: 'proc_bad', command: 'python build.py', cwd: '/w', status: 'failed', started_at: 950, duration_s: 5, exit_code: 1 },
+    { id: 'proc_kill', command: 'sleep 999', cwd: '/w', status: 'stopped', started_at: 960, duration_s: 100, exit_code: -15 },
+    { id: 'proc_run', command: 'npm run dev', cwd: '/w', status: 'running', started_at: Date.now() / 1000 - 65, duration_s: null, exit_code: null }
+  ],
+  'st-2': []
+}
 const HISTORY = {
   session_id: 'st-1',
   batches: [
@@ -132,6 +147,15 @@ const ctx = {
       return HISTORY
     }
     if (path.startsWith('/output')) return { text: `FULL OUTPUT of ${new URLSearchParams(path.split('?')[1]).get('session_id')}` }
+    if (path.startsWith('/processes')) {
+      if (procFails) throw new Error('procs 503')
+      const sid = new URLSearchParams(path.split('?')[1]).get('session_id')
+      return { session_id: sid, processes: PROCS[sid] || [], unreadable: sid === 'st-1' ? procUnreadable : 0 }
+    }
+    if (path.startsWith('/process_output')) {
+      const q = new URLSearchParams(path.split('?')[1])
+      return { id: q.get('process_id'), command: `FULL ${q.get('process_id')}`, output: `tail of ${q.get('process_id')} in ${q.get('session_id')}`, output_truncated: true }
+    }
     throw new Error(`unexpected ${path}`)
   },
   os: { writeClipboard: async text => { clip.push(text); return true } }
@@ -164,7 +188,7 @@ const qa = s => [...host.querySelectorAll(s)]
 // 5. history
 const bls = qa('.sw-bl')
 check(bls.length === 2, `two history batches drawn (${bls.length})`)
-check(qa('.sw-hd .sw-stat').map(e => e.textContent).join(',') === '2,3', `header counts batches and workers (${qa('.sw-hd .sw-stat').map(e => e.textContent)})`)
+check(qa('.sw-hd .sw-stat').map(e => e.textContent).join(',') === '2,3,4', `header counts batches, workers and commands (${qa('.sw-hd .sw-stat').map(e => e.textContent)})`)
 check(bls[0].textContent.includes('design judge') || bls[0].textContent.includes('Act as a strict'), 'newest batch first')
 check(stub.calls.request.some(([m, p]) => m === 'subagent.list' && p.session_id === 'rt-1'), 'subagent.list asked with the focused runtime id')
 await act(async () => { bls[1].click() })
@@ -177,19 +201,50 @@ check(q('.sw-dt') && !q('.sw-dt p') && /tokens/.test(q('.sw-dtm')?.textContent |
 check(q('.sw-dtg')?.textContent === "Polish 'alpha-panel' visuals" && q('.sw-dt').firstElementChild?.classList.contains('sw-dtg'), 'worker detail shows its goal above the actions')
 check(!rows[0].querySelector('.sw-goal'), 'history row has no goal line')
 
+// 9. background commands: listed for the stored chat, marked by status, detail reads the output
+check(rest.includes('/processes?session_id=st-1'), 'background commands read for the stored chat id')
+const prs = qa('.sw-pr')
+check(prs.length === 4, `four background commands drawn (${prs.length})`)
+check(prs[0].dataset.st === 'running' && prs.map(p => p.dataset.st).join(',') === 'running,stopped,failed,completed', `newest command first (${prs.map(p => p.dataset.st)})`)
+check(prs.map(p => p.querySelector('.sw-mk').dataset.st).join(',') === 'running,stopped,failed,completed', 'each command draws its own status mark')
+check(prs[3].querySelector('.sw-pn').textContent === 'npm test' && prs[3].querySelector('.sw-pn').dataset.tip === 'npm test\n--watch=false', 'row shows the first line, tooltip the whole command')
+check(prs[2].querySelector('.sw-px')?.textContent === 'exit 1', 'failed command shows its exit code')
+check(!prs[3].querySelector('.sw-px'), 'a successful command shows no exit badge')
+check(prs[1].querySelector('.sw-wt').textContent === '—', 'a stopped command shows — and no duration')
+check(/^1m 0[5-9]s$/.test(prs[0].querySelector('.sw-wt').textContent), `running command counts its elapsed time (${prs[0].querySelector('.sw-wt').textContent})`)
+check(prs[3].querySelector('.sw-wt').textContent === '42s', 'finished command shows its duration')
+check(qa('.sw-hd .sw-stat')[2]?.textContent === '4', 'header counts background commands')
+check(q('.sw-pu')?.textContent === '1 record could not be read', 'unreadable records are reported, not hidden')
+check(q('.sw-plt')?.dataset.tip?.includes('not subagents'), 'section says these are not subagents')
+await act(async () => { prs[2].click() })
+await tick(5)
+check(rest.includes('/process_output?session_id=st-1&process_id=proc_bad'), 'opening a command reads its output for THIS chat')
+check(q('.sw-po')?.textContent === 'tail of proc_bad in st-1' && q('.sw-pc')?.textContent === 'FULL proc_bad', 'detail shows the full command and the output tail')
+check(q('.sw-pol')?.textContent.includes('last'), 'a cut output says it is the end only')
+await act(async () => { q('.sw-plist .sw-dt .sw-ib').click() })
+await tick(5)
+check(clip.at(-1) === 'FULL proc_bad', 'copy command copies the full command')
+const outReads = rest.filter(p => p.startsWith('/process_output')).length
+await act(async () => { qa('.sw-pr')[0].click() })
+await tick(5)
+check(q('.sw-po-note')?.textContent.includes('when the command finishes') && rest.filter(p => p.startsWith('/process_output')).length === outReads, 'a running command asks for no output yet')
+const procPolls = rest.filter(p => p.startsWith('/processes')).length
+await tick(3100)
+check(rest.filter(p => p.startsWith('/processes')).length > procPolls, 'background commands are polled')
+
 // 6. copy + open
-const [copyBtn, openBtn] = qa('.sw-dt .sw-ib')
+const [copyBtn, openBtn] = qa('.sw-bb .sw-dt .sw-ib')
 await act(async () => { copyBtn.click() })
 await tick(5)
-check(rest.includes('/output?session_id=c-a') && clip[0] === 'FULL OUTPUT of c-a', 'copy reads that worker\'s full output into the clipboard')
+check(rest.includes('/output?session_id=c-a') && clip.at(-1) === 'FULL OUTPUT of c-a', 'copy reads that worker\'s full output into the clipboard')
 await act(async () => { openBtn.click() })
 check(stub.calls.opened[0] === 'c-a', 'open goes to the child session')
 
 // 6b. cards open independently: opening another batch and worker folds nothing
 await act(async () => { qa('.sw-wr')[1].click() })
-check(qa('.sw-dt').length === 2, 'opening a second worker keeps the first one open')
+check(qa('.sw-bb .sw-dt').length === 2, 'opening a second worker keeps the first one open')
 await act(async () => { qa('.sw-bl')[0].click() })
-check(qa('.sw-bb').length === 2 && qa('.sw-dt').length === 2, 'opening another batch keeps the first batch and its workers open')
+check(qa('.sw-bb').length === 2 && qa('.sw-bb .sw-dt').length === 2, 'opening another batch keeps the first batch and its workers open')
 
 // 2 + 3 + 4. live tree, scoped
 await emit('subagent.spawn_requested', 'rt-OTHER', { subagent_id: 'x1', delegation_id: 'd9', goal: 'foreign', task_index: 0 })
@@ -241,13 +296,16 @@ await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focu
 await tick(10)
 check(!q('.sw-fl'), 'switching chats clears the live tree')
 check(rest.includes('/children?session_id=st-2'), 'history re-read for the new chat')
+check(rest.includes('/processes?session_id=st-2') && !qa('.sw-pr').length && !q('.sw-procs'), 'commands re-read for the new chat; none -> no section')
 
 // 7. failures are visible
 historyFails = true
 stub.state.listFails = true
+procFails = true
 await act(async () => { stub.atoms.focusedSessionId.set('rt-3'); stub.atoms.focusedStoredSessionId.set('st-3') })
 await tick(20)
 check(q('[role=alert]')?.textContent.includes('Could not read earlier batches: backend 503'), 'history failure is shown')
+check(q('[role=alert]')?.textContent.includes('Could not read background commands: procs 503'), 'background command failure is shown')
 const origWarn = console.warn
 console.warn = () => {}
 for (let i = 0; i < 3; i++) await tick(3100)
@@ -257,6 +315,7 @@ check(q('[role=alert]')?.textContent.includes('Live updates stopped'), 'three fa
 // empty chat
 historyFails = false
 stub.state.listFails = false
+procFails = false
 await act(async () => { stub.atoms.focusedSessionId.set(null); stub.atoms.focusedStoredSessionId.set(null) })
 await tick(10)
 check(q('[data-slot=panel-empty]')?.textContent.includes('No chat selected'), 'no chat -> empty state')

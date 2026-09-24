@@ -11,7 +11,10 @@ running worker from P2, and a worker of an unrelated conversation that must neve
 
 Locks: the database handle cannot write; batches follow the compression chain; each worker's
 status, duration and summary are derived as documented in plugin_api; /output serves only
-delegated worker sessions and returns the full answer.
+delegated worker sessions and returns the full answer. Background commands: only the chain's own
+processes are listed; running / stopped / completed / failed are derived from Hermes' own files;
+unreadable files are reported, never silently dropped; /process_output refuses another chat's
+process and anything that is not a process id.
 """
 
 from __future__ import annotations
@@ -30,6 +33,8 @@ import plugin_api as api  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 FIXTURE = HERE / ".out" / "fixture_state.db"
+PROC_HOME = HERE / ".out" / "proc_home"
+PROC_RESULTS = PROC_HOME / "logs" / "process-results"
 LONG_ANSWER = "x" * 700  # longer than the 600-char summary cap
 
 fails = 0
@@ -115,6 +120,99 @@ def run_fixture() -> None:
             except HTTPException as exc:
                 check(exc.status_code == code, what)
 
+        run_processes(conn)
+
+
+def write_json(path: Path, data, mtime: float | None = None) -> None:
+    path.write_text(json.dumps(data), encoding="utf-8")
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+
+
+def receipt(pid: str, parent: str, started: float, ended: float, exit_code, reason="exited", output="") -> None:
+    write_json(PROC_RESULTS / f"{pid}.json", {
+        "id": pid, "command": f"echo {pid}\nsecond line", "cwd": "/w", "task_id": "t",
+        "owner_task_id": parent, "session_key": parent, "parent_session_id": parent,
+        "started_at": started, "exit_code": exit_code, "completion_reason": reason,
+        "termination_source": "", "notify_on_complete": True, "output": output,
+    }, mtime=ended)
+
+
+def run_processes(conn) -> None:
+    """Background commands: running from processes.json, finished from process-results receipts."""
+    import shutil
+    shutil.rmtree(PROC_HOME, ignore_errors=True)
+    PROC_RESULTS.mkdir(parents=True)
+    api._checkpoint_path = lambda: PROC_HOME / "processes.json"
+    api._results_dir = lambda: PROC_RESULTS
+    api._RECEIPTS.clear()
+
+    live_pid = os.getpid()  # a PID that is certainly alive: this test process
+    write_json(PROC_HOME / "processes.json", [
+        {"session_id": "proc_run", "command": "npm run dev", "pid": live_pid, "pid_scope": "host",
+         "host_start_time": None, "started_at": 3000.0, "parent_session_id": "P2", "cwd": "/w"},
+        {"session_id": "proc_gone", "command": "sleep 99", "pid": 0, "pid_scope": "host",
+         "host_start_time": None, "started_at": 2900.0, "parent_session_id": "P1", "cwd": "/w"},
+        {"session_id": "proc_foreign_run", "command": "x", "pid": live_pid, "pid_scope": "host",
+         "started_at": 3000.0, "parent_session_id": "Q"},
+    ])
+    receipt("proc_ok", "P1", 1000.0, 1042.0, 0, output="done")
+    receipt("proc_bad", "P2", 2000.0, 2005.5, 1, output="E" * (api.OUTPUT_TAIL + 50))
+    receipt("proc_kill", "P2", 2100.0, 2200.0, -15, reason="killed")
+    receipt("proc_foreign", "Q", 1000.0, 1001.0, 0, output="secret of another chat")
+    (PROC_RESULTS / "proc_broken.json").write_text("{not json", encoding="utf-8")
+
+    data = api.list_processes(conn, "P2")
+    rows = {p["id"]: p for p in data["processes"]}
+    check(set(rows) == {"proc_run", "proc_gone", "proc_ok", "proc_bad", "proc_kill"},
+          f"processes of the whole compression chain, nothing foreign ({sorted(rows)})")
+    check([p["id"] for p in data["processes"]] == ["proc_ok", "proc_bad", "proc_kill", "proc_gone", "proc_run"],
+          "processes ordered by start time")
+    check(data["unreadable"] == 1, f"an unreadable receipt is counted, not hidden ({data['unreadable']})")
+    check(rows["proc_run"]["status"] == "running" and rows["proc_run"]["duration_s"] is None,
+          "a checkpointed live PID is running, no duration")
+    check(rows["proc_gone"]["status"] == "stopped", "a checkpointed PID that is gone reads stopped, not running")
+    check(rows["proc_ok"]["status"] == "completed" and abs(rows["proc_ok"]["duration_s"] - 42) < 0.01,
+          "exit 0: completed, duration from the receipt's write time")
+    check(rows["proc_bad"]["status"] == "failed" and rows["proc_bad"]["exit_code"] == 1,
+          "non-zero exit: failed, exit code kept")
+    check(rows["proc_kill"]["status"] == "stopped", "killed: stopped, never completed")
+    check(all("output" not in p for p in data["processes"]), "the list never carries output")
+
+    receipt("proc_run", "P2", 3000.0, 3010.0, 0)
+    api._RECEIPTS.clear()
+    rows = {p["id"]: p for p in api.list_processes(conn, "P2")["processes"]}
+    check(rows["proc_run"]["status"] == "completed", "a receipt wins over a stale checkpoint entry")
+
+    long_cmd = "y" * (api.COMMAND_CHARS + 10)
+    write_json(PROC_RESULTS / "proc_long.json", {"id": "proc_long", "command": long_cmd, "parent_session_id": "P2",
+                                                 "started_at": 1.0, "exit_code": 0, "output": ""}, mtime=2.0)
+    row = {p["id"]: p for p in api.list_processes(conn, "P2")["processes"]}["proc_long"]
+    check(len(row["command"]) == api.COMMAND_CHARS and row["command_truncated"], "long command capped and flagged")
+
+    out = api.read_process_output(conn, "P2", "proc_bad")
+    check(len(out["output"]) == api.OUTPUT_TAIL and out["output_truncated"], "output served as a flagged tail")
+    check(api.read_process_output(conn, "P2", "proc_long")["command"] == long_cmd, "/process_output returns the full command")
+    for pid, code, what in (("proc_foreign", 403, "another conversation's output is refused (403)"),
+                            ("proc_none", 404, "a missing receipt is 404"),
+                            ("../state", 400, "a non-process id is refused (400)")):
+        try:
+            api.read_process_output(conn, "P2", pid)
+            check(False, what)
+        except HTTPException as exc:
+            check(exc.status_code == code, what)
+
+    shutil.rmtree(PROC_RESULTS)
+    (PROC_HOME / "processes.json").unlink()
+    empty = api.list_processes(conn, "P2")
+    check(empty["processes"] == [] and empty["unreadable"] == 0, "no files yet: empty list, not an error")
+    (PROC_HOME / "processes.json").write_text("[{broken", encoding="utf-8")
+    try:
+        api.list_processes(conn, "P2")
+        check(False, "an unreadable processes.json is an error, not an empty list")
+    except HTTPException as exc:
+        check(exc.status_code == 503, "an unreadable processes.json is an error, not an empty list")
+
 
 def run_live() -> None:
     sys.path.insert(0, os.environ.get("HERMES_AGENT_DIR") or str(HERE.parents[2] / "hermes-agent"))
@@ -127,10 +225,20 @@ def run_live() -> None:
         ).fetchone()
         if not parent:
             print("SKIP  live: no delegated sessions in this state.db")
+        else:
+            workers = [w for b in api.list_children(conn, parent["p"])["batches"] for w in b["workers"]]
+            check(bool(workers) and all(w["status"] in {"completed", "stopped", "running"} for w in workers),
+                  f"live: {len(workers)} workers read, every status known")
+        owner = next((json.loads(p.read_text(encoding="utf-8")).get("parent_session_id")
+                      for p in sorted(api._results_dir().glob("proc_*.json"))), None)
+        if not owner:
+            print("SKIP  live: no process receipts in this home")
             return
-        workers = [w for b in api.list_children(conn, parent["p"])["batches"] for w in b["workers"]]
-        check(bool(workers) and all(w["status"] in {"completed", "stopped", "running"} for w in workers),
-              f"live: {len(workers)} workers read, every status known")
+        procs = api.list_processes(conn, owner)
+        check(bool(procs["processes"]) and all(p["status"] in {"completed", "failed", "stopped", "running"}
+                                               for p in procs["processes"]),
+              f"live: {len(procs['processes'])} background commands read, every status known, "
+              f"{procs['unreadable']} unreadable")
 
 
 run_fixture()

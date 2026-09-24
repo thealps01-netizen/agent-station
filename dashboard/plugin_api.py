@@ -6,15 +6,25 @@ child's final output, so this router reads state.db directly — opened with SQL
 ``_delegate_from`` (the marker delegate_task writes on every child) are ever returned;
 any other session id is refused, so the router cannot be used to read arbitrary chats.
 
+Background shell processes (terminal background=true) are read from the two files Hermes itself
+keeps: ``processes.json`` (running, the crash-recovery checkpoint) and
+``logs/process-results/proc_*.json`` (finished, one durable receipt each, 7 days / 64 files).
+A process belongs to a conversation when its ``parent_session_id`` is a link of that
+conversation's compression chain — the same ownership rule Hermes applies when it reloads a
+receipt (tools/process_registry_results.py::_owns_result).
+
 Routes (mounted at /api/plugins/subagent-watch/):
   GET /children?session_id=<id>  -> workers delegated from that conversation, grouped into
                                     batches (children started within BATCH_GAP_S of each other)
   GET /output?session_id=<child> -> the child's final answer, full length
+  GET /processes?session_id=<id> -> that conversation's background processes, running and finished
+  GET /process_output?session_id=<id>&process_id=<proc_...> -> a finished process's output tail
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -25,12 +35,28 @@ router = APIRouter()
 BATCH_GAP_S = 2.0  # delegate_task starts a batch's children within ~1 s of each other
 MAX_CHAIN = 100  # compression chains deeper than this are pathological
 GOAL_CHARS = 240
+COMMAND_CHARS = 4000  # a command longer than this is cut for display and flagged
+OUTPUT_TAIL = 8000  # last chars of a finished process's output served to the detail
+PROC_ID = re.compile(r"proc_\w+")
+_RECEIPTS: dict[tuple[str, float, int], dict | bool] = {}
+
+
+def _home() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return Path(get_hermes_home())
 
 
 def _db_path() -> Path:
-    from hermes_constants import get_hermes_home
+    return _home() / "state.db"
 
-    return Path(get_hermes_home()) / "state.db"
+
+def _checkpoint_path() -> Path:
+    return _home() / "processes.json"
+
+
+def _results_dir() -> Path:
+    return _home() / "logs" / "process-results"
 
 
 def _connect() -> sqlite3.Connection:
@@ -159,6 +185,128 @@ def read_output(conn: sqlite3.Connection, child_id: str) -> dict:
     return {"session_id": child_id, "parent": parent, "text": _final_text(conn, child_id)}
 
 
+def _pid_is_ours(pid, start) -> bool:
+    """Hermes' own liveness test (PID alive and not recycled); fail-open when it cannot be asked."""
+    if not pid:
+        return False
+    try:
+        from tools.process_registry import ProcessRegistry
+    except ImportError:
+        return True
+    return bool(ProcessRegistry._host_pid_is_ours(pid, start))
+
+
+def _read_running() -> list[dict]:
+    path = _checkpoint_path()
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"processes.json unreadable: {exc}") from exc
+    return data if isinstance(data, list) else []
+
+
+def _read_results() -> tuple[list[tuple[dict, float]], int]:
+    """(record without its output, mtime) per readable receipt, plus how many could not be read.
+
+    A receipt never changes after Hermes writes it and can carry 200k chars of output, so each
+    one is parsed once and kept by (path, mtime, size); the panel polls this every few seconds.
+    """
+    directory = _results_dir()
+    if not directory.is_dir():
+        return [], 0
+    found, unreadable, seen = [], 0, set()
+    for path in directory.glob("proc_*.json"):
+        try:
+            stat = path.stat()
+            key = (str(path), stat.st_mtime, stat.st_size)
+            seen.add(key)
+            record = _RECEIPTS.get(key)
+            if record is None:
+                record = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(record, dict) or record.get("id") != path.stem:
+                    record = False
+                else:
+                    record = {k: v for k, v in record.items() if k != "output"}
+                _RECEIPTS[key] = record
+        except FileNotFoundError:
+            continue  # Hermes pruned it between the listing and the read.
+        except (OSError, ValueError):
+            unreadable += 1
+            continue
+        if record:
+            found.append((record, stat.st_mtime))
+        else:
+            unreadable += 1
+    for key in set(_RECEIPTS) - seen:
+        del _RECEIPTS[key]
+    return found, unreadable
+
+
+def _command(text) -> dict:
+    text = str(text or "")
+    return {"command": text[:COMMAND_CHARS], "command_truncated": len(text) > COMMAND_CHARS}
+
+
+def _finished_status(record: dict) -> str:
+    if record.get("completion_reason") == "killed":
+        return "stopped"
+    return "completed" if record.get("exit_code") == 0 else "failed"
+
+
+def list_processes(conn: sqlite3.Connection, session_id: str) -> dict:
+    owners = set(_lineage(conn, session_id))
+    procs: dict[str, dict] = {}
+    for entry in _read_running():
+        pid_id = str(entry.get("session_id") or "")
+        if not PROC_ID.fullmatch(pid_id) or entry.get("parent_session_id") not in owners:
+            continue
+        alive = entry.get("pid_scope", "host") != "host" or _pid_is_ours(entry.get("pid"), entry.get("host_start_time"))
+        procs[pid_id] = {
+            "id": pid_id, **_command(entry.get("command")), "cwd": entry.get("cwd"),
+            # Checkpointed but gone, with no receipt: the app closed under it.
+            "status": "running" if alive else "stopped",
+            "started_at": entry.get("started_at"), "ended_at": None, "duration_s": None,
+            "exit_code": None, "reason": None,
+        }
+    results, unreadable = _read_results()
+    for record, mtime in results:
+        if record.get("parent_session_id") not in owners:
+            continue
+        started = record.get("started_at")
+        # The receipt is written at the moment the process leaves the running set, so its mtime is
+        # the end time; Hermes records no separate field for it.
+        duration = mtime - started if isinstance(started, (int, float)) and mtime >= started else None
+        procs[record["id"]] = {
+            "id": record["id"], **_command(record.get("command")), "cwd": record.get("cwd"),
+            "status": _finished_status(record), "started_at": started, "ended_at": mtime,
+            "duration_s": duration, "exit_code": record.get("exit_code"),
+            "reason": record.get("completion_reason"),
+        }
+    rows = sorted(procs.values(), key=lambda p: p["started_at"] or 0)
+    return {"session_id": session_id, "processes": rows, "unreadable": unreadable}
+
+
+def read_process_output(conn: sqlite3.Connection, session_id: str, process_id: str) -> dict:
+    if not PROC_ID.fullmatch(process_id):
+        raise HTTPException(status_code=400, detail="not a process id")
+    path = _results_dir() / f"{process_id}.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"no finished record for {process_id}") from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"record unreadable: {exc}") from exc
+    if record.get("parent_session_id") not in set(_lineage(conn, session_id)):
+        raise HTTPException(status_code=403, detail="process belongs to another conversation")
+    text = str(record.get("output") or "")
+    return {
+        "id": process_id, "command": str(record.get("command") or ""),
+        "output": text[-OUTPUT_TAIL:], "output_truncated": len(text) > OUTPUT_TAIL,
+    }
+
+
 @router.get("/children")
 def children(session_id: str) -> dict:
     with _connect() as conn:
@@ -169,3 +317,15 @@ def children(session_id: str) -> dict:
 def output(session_id: str) -> dict:
     with _connect() as conn:
         return read_output(conn, session_id)
+
+
+@router.get("/processes")
+def processes(session_id: str) -> dict:
+    with _connect() as conn:
+        return list_processes(conn, session_id)
+
+
+@router.get("/process_output")
+def process_output(session_id: str, process_id: str) -> dict:
+    with _connect() as conn:
+        return read_process_output(conn, session_id, process_id)

@@ -1,11 +1,13 @@
 # subagent-watch — notes
 
-Read-only desktop page for `delegate_task` workers of the focused chat.
+Read-only desktop page for `delegate_task` workers of the focused chat, plus that chat's background
+shell commands (`terminal(background=true)`).
 Sidebar entry "Subagents" → route `/subagent-watch`.
 
 ## Layout
-- **Header** — the same card as the batches: icon, title, batch and worker counts, a running pill while
-  workers run, refresh. Its accent is yellow while anything runs, green otherwise.
+- **Header** — the same card as the batches: icon, title, batch / worker / background-command counts, a
+  running pill while workers run, refresh. Its accent is yellow while anything (worker or command)
+  runs, green otherwise.
 - **Now** — the running batch as a tree: batch root → workers (nested by `parent_id`) → merge node.
 - **Earlier** — finished batches, newest first, collapsed. A batch opens to the same tree as Now
   (header = root, workers on one rail); an opened worker's detail is attached under its card.
@@ -14,6 +16,12 @@ Sidebar entry "Subagents" → route `/subagent-watch`.
   with Copy full output, Open session and duration · tools · tokens (no answer preview). While a batch runs it appears only in **Now**, never repeated in Earlier.
 - Cards open and close independently: opening a batch or worker never folds another one. All
   cards fold when the focused chat changes.
+- **Background commands** — below the batches (or below the empty state). Shell commands the agent
+  started with `terminal(background=true)`: these are NOT subagents, and the section title's tooltip
+  says so. Newest first, one row each: status mark (running yellow, exit 0 green, non-zero red,
+  killed grey), the command's first line (full text on hover), `exit N` on a failed row, elapsed time
+  (live while running, `—` for a killed one). A row opens the full command (copy button), exit code,
+  working directory and the last 8,000 characters of its output. No section when the chat has none.
 
 ## Data
 | What | Source |
@@ -21,11 +29,37 @@ Sidebar entry "Subagents" → route `/subagent-watch`.
 | Live workers | gateway events `subagent.spawn_requested/start/progress/tool/complete`, filtered to the focused runtime session id; reconciled every 3 s by `subagent.list({session_id})` |
 | Earlier batches | `GET /api/plugins/subagent-watch/children?session_id=<stored id>` — `dashboard/plugin_api.py` |
 | Full output | `GET /api/plugins/subagent-watch/output?session_id=<child id>` |
+| Background commands | `GET /api/plugins/subagent-watch/processes?session_id=<stored id>`, polled every 3 s |
+| Command output tail | `GET /api/plugins/subagent-watch/process_output?session_id=<stored id>&process_id=<proc_…>` |
 
 The backend opens `state.db` with SQLite `mode=ro` (cannot write) and serves only sessions whose
 `model_config` carries `_delegate_from` — any other id gets 403. Batches = children started within
 2 s of each other. A worker closed without an answer is **stopped** and gets no duration: its
 `ended_at` is when the app closed, not when the work ended.
+
+### Background commands — where they come from
+Nothing is parsed out of chat text. Both sources are files Hermes itself writes, read-only:
+
+| File | Written by | Holds |
+|---|---|---|
+| `<HERMES_HOME>/processes.json` | `tools/process_registry_checkpoint.py::_write_checkpoint` | every RUNNING process (crash-recovery checkpoint) |
+| `<HERMES_HOME>/logs/process-results/proc_*.json` | `tools/process_registry_results.py::save_completed_result` | one receipt per FINISHED process: command, cwd, `parent_session_id`, `started_at`, `exit_code`, `completion_reason`, output (redacted by Hermes) |
+
+- **Ownership:** a process belongs to the chat when its `parent_session_id` is a link of the chat's
+  compression chain — the rule Hermes uses itself (`_owns_result`). Another chat's process is never
+  listed, and its output is refused with 403.
+- **Status:** receipt with `completion_reason == "killed"` → stopped; exit 0 → completed; any other
+  exit → failed. A checkpoint entry whose PID is gone (asked through Hermes'
+  `ProcessRegistry._host_pid_is_ours`, which also rejects a recycled PID) → stopped. A receipt wins
+  over a stale checkpoint entry for the same id.
+- **End time:** Hermes records none; the receipt's file mtime is used, because the receipt is
+  written at the moment the process leaves the running set.
+- **Limits (Hermes', not ours):** receipts are kept 7 days, at most 64 files; older commands are gone.
+- **Cost:** a receipt never changes after it is written, so each is parsed once and cached by
+  (path, mtime, size) without its output; a poll is a directory listing plus `processes.json`
+  (~3 ms on this machine). The list never carries output; `/process_output` reads one receipt.
+- **Failures are shown:** an unreadable receipt is counted and printed in red beside the section
+  title; an unreadable `processes.json` is a 503 shown in the page's alert box.
 
 ## Not here on purpose
 Interrupt / steer / live transcript — the composer status stack already owns them.
@@ -47,4 +81,8 @@ Interrupt / steer / live transcript — the composer status stack already owns t
 - Mutation canaries were run by hand: removing the session filter, mapping queued/error to done,
   showing a duration for stopped, swallowing poll errors, copying the wrong session, repeating a
   running batch under Earlier, single-open cards — each fails at least one check.
+- Background-command canaries (run by hand, 10/10 caught): no conversation filter, killed read as
+  completed, non-zero exit read as completed, a dead checkpoint PID read as running, unreadable
+  receipts hidden, output served to another chat, a read error swallowed, output read for the wrong
+  chat, a duration drawn for a killed command, polling removed.
 - Visual pass: rendered in both the dark and light app themes (real plugin, real app CSS).

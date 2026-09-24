@@ -7,6 +7,10 @@
  *   Earlier  finished batches as a collapsed list, from this plugin's backend
  *            (dashboard/plugin_api.py, state.db opened read-only). A worker row opens a detail with
  *            its answer, "copy full output" and "open session".
+ *   Background commands
+ *            shell commands the agent started with terminal(background=true), running and finished,
+ *            from the backend's /processes (Hermes' own processes.json + process-results receipts).
+ *            A row opens the full command, its exit code and the end of its output.
  *
  * Nothing here writes: no interrupt, no steer (the composer status stack already owns those).
  * Every failed read is shown in the page; nothing is swallowed.
@@ -55,12 +59,31 @@ const BUNDLES = {
       copyFailed: 'Copy failed',
       open: 'Open session',
       refresh: 'Refresh',
+      procs: 'Background commands',
+      nProcs: n => `${n} background commands`,
+      proc: {
+        status: {
+          running: 'Running', completed: 'Finished (exit 0)', failed: 'Failed', stopped: 'Stopped before it finished'
+        },
+        exit: c => `exit ${c}`,
+        killed: 'killed',
+        cwd: d => `in ${d}`,
+        copyCommand: 'Copy command',
+        output: 'Output (end)',
+        outputCut: n => `last ${n} characters`,
+        noOutput: 'No output was recorded.',
+        whileRunning: 'The output is shown here when the command finishes.',
+        notSubagent: 'Shell commands the agent started in the background (not subagents).',
+        unreadable: n => `${n} record${n === 1 ? '' : 's'} could not be read`
+      },
       noChat: { title: 'No chat selected', body: 'Open a chat to see its subagents.' },
       empty: { title: 'No subagents yet', body: 'Workers started with delegate_task in this chat appear here.' },
       err: {
         history: 'Could not read earlier batches',
         live: 'Live updates stopped',
-        output: 'Could not read the full output'
+        output: 'Could not read the full output',
+        procs: 'Could not read background commands',
+        procOutput: 'Could not read the command output'
       }
     }
   }
@@ -197,6 +220,10 @@ const ICON = {
     jsx('circle', { cx: 6.2, cy: 9, r: 0.9, fill: 'currentColor' }, 'l'),
     jsx('circle', { cx: 9.8, cy: 9, r: 0.9, fill: 'currentColor' }, 'r')
   ]),
+  term: () => svg([
+    jsx('rect', { x: 2, y: 3, width: 12, height: 10, rx: 1.8, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3 }, 'r'),
+    jsx('path', { d: 'M4.8 6.5l2 1.6-2 1.6M8.5 10.2h2.8', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }, 'p')
+  ]),
   chev: open => svg(jsx('path', {
     d: open ? 'M4 6l4 4 4-4' : 'M6 4l4 4-4 4', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5,
     strokeLinecap: 'round', strokeLinejoin: 'round'
@@ -253,6 +280,33 @@ function useHistory(storedId) {
   }, [storedId])
   useEffect(load, [load])
   return { ...state, reload: load }
+}
+
+/**
+ * Background shell processes of one stored session, from the plugin backend, polled every POLL_MS
+ * so a command started after the page opened appears without a refresh. The backend parses each
+ * finished receipt once, so a poll is a directory listing plus a small JSON file.
+ */
+function useProcesses(storedId) {
+  const [state, setState] = useState({ key: null, data: null, error: null })
+  const gen = useRef(0)
+  const load = useCallback(() => {
+    if (!storedId) {
+      setState({ key: null, data: null, error: null })
+      return
+    }
+    const mine = ++gen.current
+    ctxRef.rest(`/processes?session_id=${encodeURIComponent(storedId)}`).then(
+      data => { if (mine === gen.current) setState({ key: storedId, data, error: null }) },
+      err => { if (mine === gen.current) setState(prev => ({ ...prev, key: storedId, error: String(err?.message || err) })) }
+    )
+  }, [storedId])
+  useEffect(() => {
+    load()
+    if (!storedId) return undefined
+    return ctxRef.setInterval(load, POLL_MS)
+  }, [load])
+  return { ...(state.key === storedId ? state : { data: null, error: null }), reload: load }
 }
 
 function mergeRecord(prev, patch) {
@@ -507,6 +561,111 @@ function Flow({ t, batch, now, openWorker, setOpenWorker, onToast }) {
   })
 }
 
+// ── background commands ──────────────────────────────────────────────────────
+
+/** First non-empty line of a command, for the one-line row; the full text is the tooltip. */
+export function commandLine(command) {
+  return String(command || '').split('\n').map(s => s.trim()).find(Boolean) || ''
+}
+
+function ProcDetail({ t, p, storedId, onToast }) {
+  const [out, setOut] = useState({ loading: p.status !== 'running', data: null, error: null })
+  useEffect(() => {
+    if (p.status === 'running') return undefined
+    let alive = true
+    ctxRef.rest(`/process_output?session_id=${encodeURIComponent(storedId)}&process_id=${encodeURIComponent(p.id)}`).then(
+      data => alive && setOut({ loading: false, data, error: null }),
+      err => alive && setOut({ loading: false, data: null, error: String(err?.message || err) })
+    )
+    return () => { alive = false }
+  }, [p.id, p.status, storedId])
+  const copy = async () => {
+    const ok = await ctxRef.os.writeClipboard(out.data?.command || p.command || '')
+    onToast(ok ? t('sw.copied') : t('sw.copyFailed'), !ok)
+  }
+  let body
+  if (p.status === 'running') body = jsx('div', { className: 'sw-po-note', children: t('sw.proc.whileRunning') })
+  else if (out.loading) body = jsx(Loader, { label: t('sw.proc.output') })
+  else if (out.error) body = jsx(ErrorState, { title: `${t('sw.err.procOutput')}: ${out.error}` })
+  else if (!out.data?.output) body = jsx('div', { className: 'sw-po-note', children: t('sw.proc.noOutput') })
+  else body = jsx('pre', { className: 'sw-po', children: out.data.output })
+  const meta = [
+    p.status === 'stopped' ? t('sw.proc.killed') : p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : '',
+    p.cwd ? t('sw.proc.cwd', p.cwd) : ''
+  ].filter(Boolean).join(' · ')
+  return jsxs('div', {
+    className: 'sw-dt',
+    children: [
+      jsx('pre', { className: 'sw-pc', children: out.data?.command || p.command }, 'c'),
+      jsxs('div', {
+        className: 'sw-dta',
+        children: [
+          jsx(IconButton, { label: t('sw.proc.copyCommand'), icon: ICON.copy, onClick: copy }, 'c'),
+          jsx('span', { className: 'sw-dtm', children: meta }, 'm')
+        ]
+      }, 'a'),
+      jsxs('div', {
+        className: 'sw-pob',
+        children: [
+          jsxs('div', {
+            className: 'sw-pol',
+            children: [
+              t('sw.proc.output'),
+              out.data?.output_truncated ? jsx('span', { children: ` · ${t('sw.proc.outputCut', out.data.output.length)}` }, 'x') : null
+            ]
+          }, 'l'),
+          body
+        ]
+      }, 'o')
+    ]
+  })
+}
+
+function ProcRow({ t, p, now, open, onToggle }) {
+  const time = p.status === 'running'
+    ? fmtDuration(p.started_at ? now - p.started_at : null)
+    : p.status === 'stopped' ? '—' : fmtDuration(p.duration_s)
+  return jsxs('button', {
+    type: 'button', className: `sw-pr sw-nd sw-acc${open ? ' is-open' : ''}`, 'data-st': p.status, 'aria-expanded': open, onClick: onToggle,
+    children: [
+      jsx(Tip, { label: t(`sw.proc.status.${p.status}`), children: jsx('span', { className: 'sw-mk', 'data-st': p.status, children: (MARKS[p.status] || MARKS.stopped)() }) }, 'm'),
+      jsx(Tip, { label: p.command, children: jsx('code', { className: 'sw-pn', children: commandLine(p.command) }) }, 'n'),
+      p.status === 'failed' && p.exit_code !== null && p.exit_code !== undefined
+        ? jsx('span', { className: 'sw-px', children: t('sw.proc.exit', p.exit_code) }, 'x')
+        : null,
+      jsx('span', { className: 'sw-wt', children: time }, 't')
+    ]
+  })
+}
+
+function ProcSection({ t, procs, now, storedId, openProc, toggleProc, onToast }) {
+  const unreadable = procs.data?.unreadable || 0
+  const rows = [...(procs.data?.processes || [])].reverse()
+  if (!rows.length && !unreadable) return null
+  return jsxs('section', {
+    className: 'sw-procs',
+    children: [
+      jsxs('div', {
+        className: 'sw-lab sw-plab',
+        children: [
+          jsx(Tip, { label: t('sw.proc.notSubagent'), children: jsxs('span', { className: 'sw-plt', children: [jsx('span', { className: 'sw-pi', children: ICON.term() }, 'i'), t('sw.procs')] }) }, 'l'),
+          unreadable ? jsx('span', { className: 'sw-pu', children: t('sw.proc.unreadable', unreadable) }, 'u') : null
+        ]
+      }, 'h'),
+      jsx('div', {
+        className: 'sw-plist',
+        children: rows.map(p => jsxs('div', {
+          className: 'sw-nwrap',
+          children: [
+            jsx(ProcRow, { t, p, now, open: openProc.has(p.id), onToggle: () => toggleProc(p.id) }, 'r'),
+            openProc.has(p.id) ? jsx(ProcDetail, { t, p, storedId, onToast }, `d-${p.status}`) : null
+          ]
+        }, p.id))
+      }, 'l')
+    ]
+  })
+}
+
 // ── page ─────────────────────────────────────────────────────────────────────
 
 /** A set of open card keys: toggle(key) flips one card, clear() folds them all (on chat change). */
@@ -527,16 +686,21 @@ export function Page() {
   const storedId = useValue(host.state.focusedStoredSessionId)
   const history = useHistory(storedId)
   const live = useLive(runtimeId, history.reload)
+  const procs = useProcesses(storedId)
   // Each card opens and closes on its own: opening one never folds another.
   const [openBatch, toggleBatch, clearBatches] = useOpenSet()
   const [openWorker, setOpenWorker, clearWorkers] = useOpenSet()
+  const [openProc, toggleProc, clearProcs] = useOpenSet()
   const [showAll, setShowAll] = useState(false)
   const [toast, setToast] = useState(null)
-  const now = useNow(live.batches.length > 0)
+  const procRows = procs.data?.processes || []
+  const procsRunning = procRows.filter(p => p.status === 'running').length
+  const now = useNow(live.batches.length > 0 || procsRunning > 0)
 
   useEffect(() => {
     clearBatches()
     clearWorkers()
+    clearProcs()
     setShowAll(false)
   }, [storedId])
   useEffect(() => {
@@ -559,6 +723,9 @@ export function Page() {
     workers: live.batches.reduce((n, b) => n + b.rows.length, 0) + past.reduce((n, b) => n + b.workers.length, 0)
   }
   const runningN = live.batches.reduce((n, b) => n + b.rows.filter(r => r.status === 'running').length, 0)
+  const procSection = storedId
+    ? jsx(ProcSection, { t, procs, now, storedId, openProc, toggleProc, onToast }, 'procs')
+    : null
 
   let body
   if (!storedId && !runtimeId) {
@@ -566,7 +733,10 @@ export function Page() {
   } else if (history.loading && !history.data && !live.batches.length) {
     body = jsx(Loader, { label: t('sw.title') })
   } else if (!live.batches.length && !past.length && !history.error) {
-    body = jsx(PanelEmpty, { icon: 'type-hierarchy-sub', title: t('sw.empty.title'), description: t('sw.empty.body') })
+    body = [
+      jsx(PanelEmpty, { icon: 'type-hierarchy-sub', title: t('sw.empty.title'), description: t('sw.empty.body') }, 'empty'),
+      procSection
+    ]
   } else {
     body = [
       live.batches.length ? jsx('div', { className: 'sw-lab', children: t('sw.now') }, 'nl') : null,
@@ -581,13 +751,15 @@ export function Page() {
       }),
       !showAll && past.length > HISTORY_PAGE
         ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setShowAll(true), children: t('sw.older', past.length - HISTORY_PAGE) }, 'more')
-        : null
+        : null,
+      procSection
     ]
   }
 
   const errors = [
     history.error ? `${t('sw.err.history')}: ${history.error}` : null,
-    live.error ? `${t('sw.err.live')}: ${live.error}` : null
+    live.error ? `${t('sw.err.live')}: ${live.error}` : null,
+    procs.error ? `${t('sw.err.procs')}: ${procs.error}` : null
   ].filter(Boolean)
 
   return jsxs('div', {
@@ -598,16 +770,17 @@ export function Page() {
         className: 'sw-panel',
         children: [
           jsxs('header', {
-            className: 'sw-hd sw-frame', 'data-st': runningN ? 'running' : 'completed',
+            className: 'sw-hd sw-frame', 'data-st': runningN || procsRunning ? 'running' : 'completed',
             children: [
               jsx('span', { className: 'sw-hi', children: ICON.tree() }, 'i'),
               jsx('span', { className: 'sw-ht', children: t('sw.title') }, 't'),
               jsx(Tip, { label: t('sw.nBatches', totals.batches), children: jsxs('span', { className: 'sw-stat', children: [ICON.stack(), totals.batches] }) }, 'sb'),
               jsx(Tip, { label: t('sw.nWorkers', totals.workers), children: jsxs('span', { className: 'sw-stat', children: [ICON.bot(), totals.workers] }) }, 'sw'),
+              jsx(Tip, { label: t('sw.nProcs', procRows.length), children: jsxs('span', { className: 'sw-stat', children: [ICON.term(), procRows.length] }) }, 'sp'),
               runningN
                 ? jsxs('span', { className: 'sw-pill', children: [MARKS.running(), t('sw.running', runningN)] }, 'p')
                 : null,
-              jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: history.reload, disabled: !storedId }, 'r')
+              jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: () => { history.reload(); procs.reload() }, disabled: !storedId }, 'r')
             ]
           }, 'h'),
           errors.length
@@ -720,6 +893,24 @@ const CSS = `
 .sw-toast{position:sticky;bottom:8px;margin:8px auto 0;width:max-content;max-width:100%;padding:6px 12px;border-radius:8px;font-size:12px;
  background:var(--ui-bg-tertiary);border:1px solid var(--ui-stroke-tertiary)}
 .sw-toast.is-bad{border-color:color-mix(in srgb,var(--ui-red) 55%,transparent)}
+.sw-procs{margin-top:6px}
+.sw-plab{display:flex;align-items:center;gap:8px}
+.sw-plt{display:inline-flex;align-items:center;gap:6px;cursor:default}
+.sw-pi{width:13px;height:13px;flex:none}
+.sw-pu{margin-left:auto;color:var(--ui-red)}
+.sw-plist{display:flex;flex-direction:column;gap:6px}
+.sw-pr::before{display:none}
+.sw-pn{font:11.5px var(--dt-font-mono,ui-monospace,monospace);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.sw-px{font-size:11px;color:var(--ui-red);white-space:nowrap;flex:none}
+.sw-plist .sw-dt{margin:-1px 0 0;border-top-left-radius:0;border-top-right-radius:0;border-top-style:dashed;background:var(--ui-bg-quaternary)}
+.sw-plist .sw-nd.is-open{border-bottom-left-radius:0;border-bottom-right-radius:0}
+.sw-pc,.sw-po{margin:0;padding:8px 10px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary);
+ font:11px/16px var(--dt-font-mono,ui-monospace,monospace);color:var(--ui-text-secondary);white-space:pre-wrap;word-break:break-word;overflow:auto}
+.sw-pc{max-height:96px}
+.sw-po{height:180px}
+.sw-pob{display:flex;flex-direction:column;gap:4px}
+.sw-pol{font-size:11px;color:var(--ui-text-tertiary);padding:0 2px}
+.sw-po-note{font-size:12px;color:var(--ui-text-tertiary);padding:8px 10px}
 `
 
 function navLabel() {
