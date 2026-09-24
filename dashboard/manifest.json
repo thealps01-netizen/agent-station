@@ -1,0 +1,7 @@
+{
+  "name": "subagent-watch",
+  "label": "Subagent Watch",
+  "description": "Read-only view of delegate_task workers: the live batch as a tree, earlier batches as a list, full worker output on demand.",
+  "version": "1.0.0",
+  "api": "plugin_api.py"
+}
