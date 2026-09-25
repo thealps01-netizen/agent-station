@@ -11,8 +11,9 @@ running worker from P2, and a worker of an unrelated conversation that must neve
 
 Locks: the database handle cannot write; batches follow the compression chain; each worker's
 status, duration and summary are derived as documented in plugin_api (a worker that has not ended
-is running even after it wrote text); /output serves only delegated workers of the asking chat
-(403 for another chat's) and returns the full answer; a changed core liveness API is not a 500. Background commands: only the chain's own
+is running even after it wrote text, until it has been silent past STALE_S); /output serves only delegated workers of the asking chat
+(403 for another chat's) and returns the full answer; a changed core liveness API is not a 500 and never fails open; a missing state.db
+is a 503 that does not print its path. Background commands: only the chain's own
 processes are listed; running / stopped / completed / failed are derived from Hermes' own files;
 unreadable files are reported, never silently dropped; /process_output refuses another chat's
 process and anything that is not a process id.
@@ -40,6 +41,7 @@ FIXTURE = HERE / ".out" / "fixture_state.db"
 PROC_HOME = HERE / ".out" / "proc_home"
 PROC_RESULTS = PROC_HOME / "logs" / "process-results"
 LONG_ANSWER = "x" * 700  # longer than the 600-char summary cap
+NOW = 2100.0  # the clock the fixture is read at: W3 / W5 started 100 s before it
 
 fails = 0
 
@@ -58,20 +60,21 @@ def build_fixture() -> None:
         "create table sessions (id text primary key, model text, model_config text,"
         " parent_session_id text, started_at real not null, ended_at real, end_reason text,"
         " tool_call_count integer default 0, input_tokens integer default 0,"
-        " output_tokens integer default 0);"
+        " output_tokens integer default 0, last_activity_at real);"
         "create table messages (id integer primary key autoincrement, session_id text,"
-        " role text, content text);"
+        " role text, content text, timestamp real);"
     )
 
-    def session(sid, started, ended=None, reason=None, parent=None, delegate_from=None, model="m"):
+    def session(sid, started, ended=None, reason=None, parent=None, delegate_from=None, model="m", active=None):
         cfg = json.dumps({"_delegate_from": delegate_from}) if delegate_from else "{}"
         db.execute(
-            "insert into sessions values (?,?,?,?,?,?,?,?,?,?)",
-            (sid, model, cfg, parent, started, ended, reason, 3, 100, 20),
+            "insert into sessions values (?,?,?,?,?,?,?,?,?,?,?)",
+            (sid, model, cfg, parent, started, ended, reason, 3, 100, 20, active),
         )
 
-    def message(sid, role, content):
-        db.execute("insert into messages (session_id, role, content) values (?,?,?)", (sid, role, content))
+    def message(sid, role, content, ts=0.0):
+        db.execute("insert into messages (session_id, role, content, timestamp) values (?,?,?,?)",
+                   (sid, role, content, ts))
 
     session("P1", 900, 1500, "compression")
     session("P2", 1500, parent="P1")
@@ -92,11 +95,27 @@ def build_fixture() -> None:
     # Delegated by a worker of this chat (nested): its output belongs to the chat too.
     session("N1", 1001, 1020, "agent_close", delegate_from="W1")
     message("N1", "assistant", "nested answer")
+    # Never ended and silent for longer than STALE_S at NOW: the app died under it (C1).
+    session("W6", 100, delegate_from="P1")
+    message("W6", "user", "Crashed long ago", ts=100)
+    # Started just as long ago, but its heartbeat / last message is fresh: still running.
+    session("W7", 50, delegate_from="P1", active=NOW - 30)
+    message("W7", "user", "Long job", ts=50)
+    session("W8", 10, delegate_from="P1")
+    message("W8", "user", "Talks often", ts=10)
+    message("W8", "assistant", "still at it", ts=NOW - 20)
     db.commit()
     db.close()
 
 
 def run_fixture() -> None:
+    api._db_path = lambda: HERE / ".out" / "no_such_dir" / "state.db"
+    try:
+        api._connect()
+        check(False, "a missing state.db is a 503")
+    except HTTPException as exc:
+        check(exc.status_code == 503 and "no_such_dir" not in str(exc.detail) and ":" not in str(exc.detail).split("state.db")[0],
+              f"a missing state.db is a 503 that does not print the absolute path [{exc.detail}]")
     build_fixture()
     api._db_path = lambda: FIXTURE  # the router reads the fixture, not this machine's history
     with api._connect() as conn:
@@ -106,10 +125,10 @@ def run_fixture() -> None:
         except sqlite3.OperationalError:
             check(True, "database handle is read-only")
 
-        data = api.list_children(conn, "P2")
+        data = api.list_children(conn, "P2", now=NOW)
         check(data["lineage"] == ["P1", "P2"], f"lineage follows compression ({data['lineage']})")
         sizes = [len(b["workers"]) for b in data["batches"]]
-        check(sizes == [2, 2], f"workers grouped into batches by start time ({sizes})")
+        check(sizes == [1, 1, 1, 2, 2], f"workers grouped into batches by start time ({sizes})")
         workers = {w["session_id"]: w for b in data["batches"] for w in b["workers"]}
         check("W4" not in workers, "an unrelated conversation's worker is not listed")
 
@@ -123,6 +142,15 @@ def run_fixture() -> None:
         check(w5["status"] == "running" and w5["duration_s"] is None,
               f"open worker that already wrote text: still running ({w5['status']})")
         check(w1["tokens"] == 120 and w1["tool_calls"] == 3, "tokens and tool calls summed from the session")
+        w6, w7, w8 = workers["W6"], workers["W7"], workers["W8"]
+        check(w6["status"] == "stopped" and w6["duration_s"] is None,
+              f"a worker never ended and silent past STALE_S reads stopped, not running forever ({w6['status']})")
+        check(w7["status"] == "running", f"an old worker with a fresh heartbeat is still running ({w7['status']})")
+        check(w8["status"] == "running", f"an old worker with a fresh message is still running ({w8['status']})")
+        check(api.list_children(conn, "P2", now=NOW + api.STALE_S * 2)["batches"][-1]["workers"][0]["status"] == "stopped",
+              "the same running worker reads stopped once it has been silent past STALE_S")
+        # A chat that has no row yet (just opened) is an empty history, not an error.
+        check(api.list_children(conn, "no-such-chat")["batches"] == [], "/children for a chat with no row yet is empty, not an error")
 
         check(api.read_output(conn, "P2", "W1")["text"] == LONG_ANSWER, "/output returns the full answer")
         check(api.read_output(conn, "P2", "N1")["text"] == "nested answer", "/output serves a nested worker of this chat")
@@ -225,10 +253,21 @@ def run_processes(conn) -> None:
     saved = {k: sys.modules.get(k) for k in ("tools", "tools.process_registry")}
     sys.modules["tools"] = types.ModuleType("tools")
     sys.modules["tools.process_registry"] = fake
+    dead_pid = 4_194_303 * 7  # above any PID limit: never alive
     try:
-        check(api._pid_is_ours(live_pid, None) is True, "a changed liveness API reads unknown (fail-open), never a 500")
+        check(api._pid_is_ours(live_pid, None) is True, "a changed liveness API falls back to psutil: a live PID reads alive, never a 500")
+        check(api._pid_is_ours(dead_pid, None) is False, "a changed liveness API never reads a dead PID as alive (no fail-open)")
+        saved_psutil = sys.modules.get("psutil")
+        sys.modules["psutil"] = None  # import psutil now raises ImportError
+        try:
+            check(api._pid_is_ours(live_pid, None) is False, "with no liveness source at all the process reads stopped, not running forever")
+        finally:
+            if saved_psutil is None:
+                sys.modules.pop("psutil", None)
+            else:
+                sys.modules["psutil"] = saved_psutil
     except Exception as exc:  # noqa: BLE001
-        check(False, f"a changed liveness API reads unknown (fail-open), never a 500 ({type(exc).__name__})")
+        check(False, f"a changed liveness API never becomes a 500 ({type(exc).__name__}: {exc})")
     finally:
         for k, v in saved.items():
             if v is None:

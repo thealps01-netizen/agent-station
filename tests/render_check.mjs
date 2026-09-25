@@ -21,6 +21,10 @@
  *  11. A clipboard rejection on either copy button is a "Copy failed" toast, never an unhandled rejection.
  *  12. Status marks and header counts carry an aria-label (the Tip's text); counts whose source
  *      failed read "—", not 0; count labels are singular for one.
+ *  13. Round 2: a crashed running batch stays under Earlier; a chat switch drops the old chat's
+ *      errors; a finished batch still listed is not re-added; commands show a loader; a batch of
+ *      several workers says "+N more"; copy has a busy state; headings, focus rings, focusable
+ *      tooltip triggers, reading tokens, a mounted live region; shared-prefix names stay distinct.
  *   9. Background commands: read for the STORED chat id, newest first, one mark per status, exit
  *      code on a failed row, "—" for a stopped one; a row opens the full command + output tail read
  *      for that chat; a running command asks for no output; unreadable records and a failed read
@@ -111,6 +115,10 @@ let procFails = false
 let procUnreadable = 1
 let procOutputFails = false
 let clipRejects = false
+// Scenario state: extra stored batches and held (pending) reads. The fixtures below are never mutated.
+let extraBatches = []
+const holds = {}
+const hold = name => { let release; holds[name] = new Promise(r => { release = r }); return () => { delete holds[name]; release() } }
 const PROCS = {
   'st-1': [
     { id: 'proc_ok', command: 'npm test\n--watch=false', cwd: '/w', status: 'completed', started_at: 900, duration_s: 42, exit_code: 0 },
@@ -120,6 +128,7 @@ const PROCS = {
   ],
   'st-2': []
 }
+const deepFreeze = o => { Object.values(o).forEach(v => v && typeof v === 'object' && deepFreeze(v)); return Object.freeze(o) }
 const HISTORY = {
   session_id: 'st-1',
   batches: [
@@ -136,6 +145,9 @@ const HISTORY = {
     }
   ]
 }
+// Shared fixtures are frozen: a scenario that needs other data sets `extraBatches` instead.
+deepFreeze(HISTORY)
+deepFreeze(PROCS)
 const ctx = {
   register: c => { registered.push(c); return () => {} },
   i18n: { register: b => stub.registerBundles('subagent-watch', b), t: k => k },
@@ -149,14 +161,17 @@ const ctx = {
   rest: async path => {
     rest.push(path)
     if (path.startsWith('/children')) {
+      if (holds.children) await holds.children
       if (historyFails) throw new Error('backend 503')
-      return HISTORY
+      return { ...HISTORY, batches: [...HISTORY.batches, ...extraBatches] }
     }
     if (path.startsWith('/output')) {
+      if (holds.output) await holds.output
       const q = new URLSearchParams(path.split('?')[1])
       return { text: `FULL OUTPUT of ${q.get('worker_id')} for ${q.get('session_id')}` }
     }
     if (path.startsWith('/processes')) {
+      if (holds.processes) await holds.processes
       if (procFails) throw new Error('procs 503')
       const sid = new URLSearchParams(path.split('?')[1]).get('session_id')
       return { session_id: sid, processes: PROCS[sid] || [], unreadable: sid === 'st-1' ? procUnreadable : 0 }
@@ -185,6 +200,14 @@ check(!registered.some(c => String(c.area).startsWith('pane')), 'never registers
 // pure helpers
 check(mod.fmtDuration(312) === '5m 12s' && mod.fmtDuration(null) === '' && mod.fmtDuration(4000) === '1h 6m', 'duration format')
 check(mod.workerName("Round 3 on 'fleet-status' panel") === 'fleet-status', 'worker name takes the quoted slug')
+const six = [1, 2, 3].map(i => `Blind-review desktop panel ${i}: score CODE and UI`)
+const shortNames = mod.distinctNames(six)
+check(new Set(shortNames.map(n => n.slice(0, 12))).size === 3 && shortNames.every(n => n.length < 30),
+  `sibling names sharing a long prefix are shortened to what tells them apart (${shortNames[0]})`)
+check(mod.distinctNames(['alpha', 'beta']).join() === 'alpha,beta' && mod.distinctNames(['only one']).join() === 'only one',
+  'distinct or single names are left alone')
+check(mod.fmtDuration(4000, (k, ...a) => `${k}:${a.join('/')}`) === 'sw.units.hm:1/6' && mod.fmtTokens(120000, (k, ...a) => `${k}:${a}`) === 'sw.units.k:120',
+  'duration and token units come from the bundle, not hard-coded strings')
 check(mod.modelLabel('anthropic/claude-opus-5-5') === 'claude-opus-5-5', 'model label drops the provider')
 check(mod.batchState(['completed', 'queued']) === 'queued' && mod.batchState(['completed', 'failed']) === 'failed', 'batch state never reads done while one is not')
 const tr = stub.usePluginI18n('subagent-watch')
@@ -206,6 +229,27 @@ const bls = qa('.sw-hb')
 check(bls.length === 2, `two history batches drawn (${bls.length})`)
 check(qa('.sw-hd .sw-stat').map(e => e.textContent).join(',') === '2,3,4', `header counts batches, workers and commands (${qa('.sw-hd .sw-stat').map(e => e.textContent)})`)
 check(bls[0].textContent.includes('design judge') || bls[0].textContent.includes('Act as a strict'), 'newest batch first')
+check(bls[1].querySelector('.sw-bn')?.textContent === 'alpha-panel' && bls[1].querySelector('.sw-bmore')?.textContent === '+1 more',
+  `a batch of several workers is not labelled as its first worker alone (${bls[1].querySelector('.sw-bn')?.textContent} ${bls[1].querySelector('.sw-bmore')?.textContent})`)
+check(!bls[0].querySelector('.sw-bmore'), 'a one-worker batch carries no "+N more"')
+check(q('h2.sw-ht')?.textContent === 'Subagents' && qa('h3.sw-lab').map(e => e.textContent).join('|').includes('Earlier'),
+  `the title and section labels are headings (${qa('h2, h3').map(e => e.tagName + ':' + e.textContent).join('|')})`)
+const css = q('style')?.textContent || ''
+for (const cls of ['sw-ib', 'sw-bl', 'sw-nd', 'sw-more']) {
+  check(new RegExp(`\\.${cls}:focus-visible[^{]*\\{[^}]*outline:\\s*2px`).test(css) || new RegExp(`\\.${cls}:focus-visible[\\s\\S]*?\\{[^}]*outline:\\s*2px`).test(css),
+    `.${cls} draws a visible focus ring (the app removes every ring)`)
+}
+check(qa('[data-tip]').filter(e => !e.closest('button')).every(e => e.tabIndex === 0),
+  `every tooltip trigger outside a button is focusable (${qa('[data-tip]').filter(e => !e.closest('button') && e.tabIndex !== 0).map(e => e.className)})`)
+check(!/var\(--ui-text-tertiary\)/.test(css.match(/\.sw-bc,\.sw-bt,\.sw-wt\{[^}]*\}/)?.[0] || 'var(--ui-text-tertiary)')
+  && !/--ui-text-tertiary/.test(css.match(/\.sw-now\{[^}]*\}/)?.[0] || '--ui-text-tertiary') && !/--ui-text-tertiary/.test(css.match(/\.sw-model\{[^}]*\}/)?.[0] || '--ui-text-tertiary'),
+  'times, counts, tool and model chips use a reading token (tertiary measured 4.0-4.2:1 < 4.5)')
+check(!/font(-size)?:\s*(10(\.\d+)?|11)px/.test(css), `no text below 11.5px (${(css.match(/font(-size)?:\s*(10(\.\d+)?|11)px/g) || []).join(' ')})`)
+check(/\.sw-fw \.sw-acc::after\{display:none\}/.test(css) && /\.sw-fw \.sw-acc\{box-shadow:none\}/.test(css),
+  'rows inside a frame drop their own rail and lift: one accent per frame')
+check(!qa('.sw-mk[data-st=completed] path, .sw-mk[data-st=failed] path').some(e => /destructive/.test(e.getAttribute('stroke') || '')),
+  'the check and cross marks are not inked with the destructive token')
+check(q('.sw-live[role=status]') !== null && !q('.sw-live').textContent, 'the toast live region is mounted before any toast (so it is announced)')
 check(stub.calls.request.some(([m, p]) => m === 'subagent.list' && p.session_id === 'rt-1'), 'subagent.list asked with the focused runtime id')
 check(qa('.sw-hd .sw-stat').every(e => e.getAttribute('aria-label') && e.getAttribute('aria-label') === e.dataset.tip),
   `header counts carry an aria-label equal to their tooltip (${qa('.sw-hd .sw-stat').map(e => e.getAttribute('aria-label'))})`)
@@ -277,8 +321,14 @@ check(rest.filter(p => p.startsWith('/processes')).length > procPolls, 'backgrou
 
 // 6. copy + open
 const [copyBtn, openBtn] = qa('.sw-bb .sw-dt .sw-ib')
+const releaseOut = hold('output')
 await act(async () => { copyBtn.click() })
 await tick(5)
+check(copyBtn.getAttribute('aria-busy') === 'true' && copyBtn.getAttribute('aria-label') === 'Copying…' && copyBtn.disabled,
+  `copy shows a busy state while it reads (${copyBtn.getAttribute('aria-label')}, busy ${copyBtn.getAttribute('aria-busy')})`)
+await act(async () => { releaseOut() })
+await tick(5)
+check(copyBtn.getAttribute('aria-label') === 'Copy full output' && copyBtn.getAttribute('aria-busy') !== 'true', 'copy leaves its busy state when done')
 check(rest.includes('/output?session_id=st-1&worker_id=c-a') && clip.at(-1) === 'FULL OUTPUT of c-a for st-1', 'copy reads that worker\'s full output, for THIS chat, into the clipboard')
 clipRejects = true
 await act(async () => { copyBtn.click() })
@@ -312,11 +362,21 @@ stub.state.list['rt-1'] = [
 ]
 await tick(3100) // let one subagent.list poll reconcile the tree (wire status -> mark mapping)
 check(qa('.sw-fl').length === 1, 'one live root per delegation')
-HISTORY.batches.push({ started_at: 3000, workers: [{ session_id: 'k9', goal: "Build 'one'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' }] })
+const liveStart = Date.now() / 1000
+extraBatches = [{ started_at: liveStart - 1, workers: [{ session_id: 'k9', goal: "Build 'one'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' }] }]
 await act(async () => q('.sw-hd .sw-ib').click())
 await tick(10)
 check(qa('.sw-hb').length === 2, 'a stored batch still running is not repeated under Earlier while live')
-HISTORY.batches.pop()
+// A stored batch that still reads running but started long before the live tree is not the live
+// tree (a crashed run, or another generation): it stays under Earlier.
+extraBatches = [{ started_at: 3000, workers: [{ session_id: 'k8', goal: "Old 'crashed-run'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' }] }]
+await act(async () => q('.sw-hd .sw-ib').click())
+await tick(10)
+check(qa('.sw-hb').length === 3 && qa('.sw-hb').some(b => b.textContent.includes('crashed-run')),
+  `a running stored batch that is not the live one stays under Earlier (${qa('.sw-hb').length})`)
+extraBatches = []
+await act(async () => q('.sw-hd .sw-ib').click())
+await tick(10)
 const nodes = qa('.sw-fl .sw-nd')
 const byName = n => nodes.find(x => x.querySelector('.sw-wn').textContent === n)
 check(nodes.length === 4, `four live nodes incl. the nested one (${nodes.length})`)
@@ -337,6 +397,14 @@ for (const id of ['s1', 's1a', 's3']) await emit('subagent.complete', 'rt-1', { 
 await tick(10)
 check(!q('.sw-fl'), 'finished batch leaves Now')
 check(rest.filter(p => p.startsWith('/children')).length > before, 'history reloaded when a batch finishes')
+// The backend can still list a finished batch's workers for a while: they must not come back.
+stub.state.list['rt-1'] = ['s1', 's1a', 's3'].map(id => ({ subagent_id: id, delegation_id: 'd1', status: 'completed', goal: id }))
+const settled = rest.filter(p => p.startsWith('/children')).length
+await tick(3100)
+await tick(3100)
+check(!q('.sw-fl') && rest.filter(p => p.startsWith('/children')).length === settled,
+  `a finished batch still listed by subagent.list is not re-added nor reloaded again (${settled} -> ${rest.filter(p => p.startsWith('/children')).length})`)
+stub.state.list['rt-1'] = []
 
 // 2. switching chats clears live state
 await emit('subagent.start', 'rt-1', { subagent_id: 'z1', delegation_id: 'dz', goal: 'z' })
@@ -371,6 +439,7 @@ check(q('[role=alert]')?.textContent.includes('Live updates stopped'), 'three fa
 const stats = qa('.sw-hd .sw-stat')
 check(stats.map(e => e.textContent).join(',') === '—,—,—' && stats.every(e => /could not be read/.test(e.getAttribute('aria-label') || '')),
   `counts whose source failed read — , not 0 (${stats.map(e => e.textContent)})`)
+check(/Refresh/.test(q('.sw-bd')?.textContent || ''), `the all-failed view says what to do, not a blank body (${q('.sw-bd')?.textContent})`)
 
 // 10. Refresh restarts live polling that gave up
 stub.state.listFails = false
@@ -381,6 +450,23 @@ check(listCalls() === gaveUp, 'polling has stopped after three failures')
 await act(async () => q('.sw-hd .sw-ib').click())
 await tick(3100)
 check(listCalls() > gaveUp && !q('[role=alert]')?.textContent.includes('Live updates stopped'), `Refresh resumes live polling (${gaveUp} -> ${listCalls()})`)
+
+// Switching from a failing chat to a healthy one: the old chat's error must not ride along while
+// the new chat's reads are still in flight; the commands section shows it is loading.
+historyFails = false
+procFails = false
+const releaseChildren = hold('children')
+const releaseProcs = hold('processes')
+await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
+await tick(10)
+check(!(q('[role=alert]')?.textContent || '').includes('earlier batches'), `a chat switch drops the previous chat's history error (${q('[role=alert]')?.textContent})`)
+check(!(q('[role=alert]')?.textContent || '').includes('background commands'), 'a chat switch drops the previous chat\'s command error')
+await act(async () => { releaseChildren() })
+await tick(10)
+check(q('.sw-procs [data-slot=loader]') !== null, 'background commands show a loading state while their first read is pending')
+await act(async () => { releaseProcs() })
+await tick(10)
+check(!q('.sw-procs [data-slot=loader]') && qa('.sw-pr').length === 4, 'the loading state gives way to the commands')
 
 // empty chat
 historyFails = false

@@ -28,6 +28,7 @@ import json
 import logging
 import re
 import sqlite3
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -40,6 +41,7 @@ MAX_CHAIN = 100  # compression chains deeper than this are pathological
 GOAL_CHARS = 240
 COMMAND_CHARS = 4000  # a command longer than this is cut for display and flagged
 OUTPUT_TAIL = 8000  # last chars of a finished process's output served to the detail
+STALE_S = 1800  # a worker silent this long (no heartbeat, no message) with no end is not running
 PROC_ID = re.compile(r"proc_\w+")
 _RECEIPTS: dict[tuple[str, float, int], dict | bool] = {}
 
@@ -65,7 +67,8 @@ def _results_dir() -> Path:
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     if not path.is_file():
-        raise HTTPException(status_code=503, detail=f"state.db not found: {path}")
+        log.warning("subagent-watch: state.db not found at %s", path)
+        raise HTTPException(status_code=503, detail="state.db not found in this Hermes home")
     conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
     return conn
@@ -132,12 +135,21 @@ def _goal(conn: sqlite3.Connection, sid: str) -> str:
     return text.strip().split("\n", 1)[0][:GOAL_CHARS]
 
 
-def _worker(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+def _last_seen(conn: sqlite3.Connection, row: sqlite3.Row) -> float:
+    """Freshest sign of life: the activity heartbeat, the newest message, else the start."""
+    msg = conn.execute("select max(timestamp) t from messages where session_id = ?", (row["id"],)).fetchone()
+    return max(v for v in (row["last_activity_at"], msg["t"] if msg else None, row["started_at"]) if v is not None)
+
+
+def _worker(conn: sqlite3.Connection, row: sqlite3.Row, now: float) -> dict:
     final = _final_text(conn, row["id"])
     ended = row["ended_at"]
     # The session's end is the only end state: a worker that has not ended is running even when
-    # it has already written assistant text (an interim reply is not a final answer).
-    if ended is None:
+    # it has already written assistant text (an interim reply is not a final answer) — unless it has
+    # been silent for STALE_S: then the app died under it and it will never get an end.
+    if ended is None and now - _last_seen(conn, row) > STALE_S:
+        status = "stopped"
+    elif ended is None:
         status = "running"
     elif final:
         status = "completed"
@@ -161,18 +173,19 @@ def _worker(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     }
 
 
-def list_children(conn: sqlite3.Connection, session_id: str) -> dict:
+def list_children(conn: sqlite3.Connection, session_id: str, now: float | None = None) -> dict:
+    now = time.time() if now is None else now
     ids = _lineage(conn, session_id)
     marks = ",".join("?" * len(ids))
     rows = conn.execute(
         "select id, model, started_at, ended_at, end_reason, tool_call_count, input_tokens, "
-        "output_tokens from sessions "
+        "output_tokens, last_activity_at from sessions "
         f"where json_extract(model_config, '$._delegate_from') in ({marks}) order by started_at",
         ids,
     ).fetchall()
     batches: list[dict] = []
     for row in rows:
-        worker = _worker(conn, row)
+        worker = _worker(conn, row, now)
         if batches and row["started_at"] - batches[-1]["started_at"] < BATCH_GAP_S:
             batches[-1]["workers"].append(worker)
         else:
@@ -209,7 +222,10 @@ def read_output(conn: sqlite3.Connection, session_id: str, child_id: str) -> dic
 
 
 def _pid_is_ours(pid, start) -> bool:
-    """Hermes' own liveness test (PID alive and not recycled); fail-open when it cannot be asked."""
+    """Hermes' own liveness test (PID alive and not recycled), else psutil's bare existence test.
+
+    Fails closed: when neither can be asked the process reads stopped, never running forever.
+    """
     if not pid:
         return False
     try:
@@ -217,9 +233,16 @@ def _pid_is_ours(pid, start) -> bool:
 
         return bool(ProcessRegistry._host_pid_is_ours(pid, start))
     except Exception as exc:  # noqa: BLE001 - a private core API; any change must not become a 500
-        log.warning("subagent-watch: PID liveness check unavailable (%s: %s); treating as alive",
+        log.warning("subagent-watch: PID liveness check unavailable (%s: %s); asking psutil",
                     type(exc).__name__, exc)
-        return True
+    try:
+        import psutil
+
+        return bool(psutil.pid_exists(pid))
+    except Exception as exc:  # noqa: BLE001 - no liveness source left; say so and read stopped
+        log.warning("subagent-watch: psutil liveness check failed (%s: %s); treating as stopped",
+                    type(exc).__name__, exc)
+        return False
 
 
 def _read_running() -> list[dict]:

@@ -24,6 +24,9 @@ const ROUTE = '/subagent-watch'
 const POLL_MS = 3000
 const MAX_POLL_FAILS = 3
 const HISTORY_PAGE = 8
+// A stored batch still reading "running" is the live tree only when it started around the same time:
+// one that started well before the live tree began is a crashed run and stays under Earlier.
+const LIVE_MATCH_S = 120
 const SUBAGENT_EVENTS = [
   'subagent.spawn_requested', 'subagent.start', 'subagent.progress', 'subagent.tool', 'subagent.complete'
 ]
@@ -54,8 +57,16 @@ const BUNDLES = {
         stopped: 'Stopped — closed before it finished'
       },
       batch: n => `${n} worker${n === 1 ? '' : 's'}`,
-      meta: (d, tools, tokens) => [d, `${tools} tools`, tokens ? `${tokens} tokens` : ''].filter(Boolean).join(' · '),
+      more: n => `+${n} more`,
+      meta: (d, tools, tokens) => [d, `${tools} tool${tools === 1 ? '' : 's'}`, tokens ? `${tokens} tokens` : ''].filter(Boolean).join(' · '),
+      units: {
+        hm: (h, m) => `${h}h ${m}m`,
+        ms: (m, s) => `${m}m ${s}s`,
+        s: s => `${s}s`,
+        k: n => `${n}k`
+      },
       copy: 'Copy full output',
+      copying: 'Copying…',
       copied: 'Copied',
       copyFailed: 'Copy failed',
       open: 'Open session',
@@ -70,7 +81,7 @@ const BUNDLES = {
         killed: 'killed',
         cwd: d => `in ${d}`,
         copyCommand: 'Copy command',
-        output: 'Output (end)',
+        output: 'End of output',
         outputCut: n => `last ${n} characters`,
         noOutput: 'No output was recorded.',
         whileRunning: 'The output is shown here when the command finishes.',
@@ -84,7 +95,9 @@ const BUNDLES = {
         live: 'Live updates stopped',
         output: 'Could not read the full output',
         procs: 'Could not read background commands',
-        procOutput: 'Could not read the command output'
+        procOutput: 'Could not read the command output',
+        withDetail: (what, detail) => `${what}: ${detail}`,
+        hint: 'Nothing could be read. Press Refresh to try again.'
       }
     }
   }
@@ -92,17 +105,24 @@ const BUNDLES = {
 
 // ── pure helpers (exported for the render check) ─────────────────────────────
 
-export function fmtDuration(s) {
-  if (s === null || s === undefined || !Number.isFinite(s) || s < 0) return ''
-  const v = Math.round(s)
-  if (v >= 3600) return `${Math.floor(v / 3600)}h ${Math.floor((v % 3600) / 60)}m`
-  if (v >= 60) return `${Math.floor(v / 60)}m ${String(v % 60).padStart(2, '0')}s`
-  return `${v}s`
+/** The English bundle as a `t`, for helpers called without the page's translator. */
+function enT(key, ...args) {
+  let node = BUNDLES.en
+  for (const part of key.split('.')) node = node?.[part]
+  return typeof node === 'function' ? node(...args) : (node ?? key)
 }
 
-export function fmtTokens(n) {
+export function fmtDuration(s, t = enT) {
+  if (s === null || s === undefined || !Number.isFinite(s) || s < 0) return ''
+  const v = Math.round(s)
+  if (v >= 3600) return t('sw.units.hm', Math.floor(v / 3600), Math.floor((v % 3600) / 60))
+  if (v >= 60) return t('sw.units.ms', Math.floor(v / 60), String(v % 60).padStart(2, '0'))
+  return t('sw.units.s', v)
+}
+
+export function fmtTokens(n, t = enT) {
   if (!n) return ''
-  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)
+  return n >= 1000 ? t('sw.units.k', Math.round(n / 1000)) : String(n)
 }
 
 /** One line a person can read: the goal's first line, a quoted slug when there is one. */
@@ -112,18 +132,34 @@ export function workerName(goal) {
   return slug ? slug[1] : line
 }
 
+/**
+ * Names for sibling rows: when several share a long opening ('Blind-review desktop panel 1: …',
+ * '… panel 2: …') a narrow pane cuts them all to the same text. The shared words are dropped (the
+ * last one kept for context) so what tells the rows apart is what stays visible.
+ */
+export function distinctNames(goals) {
+  const names = goals.map(workerName)
+  if (names.length < 2) return names
+  let common = names[0]
+  for (const n of names) while (common && !n.startsWith(common)) common = common.slice(0, -1)
+  const words = common.slice(0, common.lastIndexOf(' ') + 1).split(' ').filter(Boolean)
+  if (words.length < 2 || words.join(' ').length < 12) return names
+  const cut = words.slice(0, -1).join(' ').length + 1
+  return names.map(n => (n.length > cut ? `…${n.slice(cut)}` : n))
+}
+
 /** Model slug without a provider prefix: 'anthropic/claude-opus-5-5' -> 'claude-opus-5-5'. */
 export function modelLabel(model) {
   return String(model || '').split('/').pop()
 }
 
 // Full goal lives in the name's tooltip: the row stays one line, the purpose is one hover away.
-function NameBlock({ goal, model }) {
+function NameBlock({ goal, model, name }) {
   const m = modelLabel(model)
   return jsxs('span', {
     className: 'sw-nl',
     children: [
-      jsx(Tip, { label: String(goal || '').trim(), children: jsx('span', { className: 'sw-wn', children: workerName(goal) }) }, 'n'),
+      jsx(Tip, { label: String(goal || '').trim(), children: jsx('span', { className: 'sw-wn', children: name || workerName(goal) }) }, 'n'),
       m ? jsx('span', { className: 'sw-model', children: m }, 'm') : null
     ]
   })
@@ -161,9 +197,9 @@ export function liveBatches(records) {
 // ── marks ────────────────────────────────────────────────────────────────────
 
 const svg = (children, cls) => jsx('svg', { viewBox: '0 0 16 16', className: cls, 'aria-hidden': 'true', children })
-// Ink of the check / cross drawn ON a filled tone disc: the theme's own on-fill foreground, so a
-// skin that inverts it is followed instead of a hard-coded white.
-const GLYPH_INK = 'var(--dt-destructive-foreground)'
+// Ink of the check / cross drawn ON a filled tone disc: the page ground itself, a cut-out that is
+// neither a success nor a failure token and follows every skin.
+const GLYPH_INK = 'var(--dt-background)'
 const MARKS = {
   completed: () => svg([
     jsx('circle', { cx: 8, cy: 8, r: 7, fill: 'var(--ui-green)' }, 'c'),
@@ -234,16 +270,20 @@ const ICON = {
   }))
 }
 
-// The svg is aria-hidden, so the mark itself carries the Tip's text as its accessible name.
-function Mark({ status, t, label }) {
+// The svg is aria-hidden, so the mark itself carries the Tip's text as its accessible name. A mark
+// outside a button (`focusable`) is a tab stop of its own, so its tooltip is reachable by keyboard.
+function Mark({ status, t, label, focusable }) {
   const st = MARKS[status] ? status : 'stopped'
   const name = label || t(`sw.status.${st}`)
-  return jsx(Tip, { label: name, children: jsx('span', { className: 'sw-mk', 'data-st': st, role: 'img', 'aria-label': name, children: MARKS[st]() }) })
+  return jsx(Tip, {
+    label: name,
+    children: jsx('span', { className: 'sw-mk', 'data-st': st, role: 'img', 'aria-label': name, tabIndex: focusable ? 0 : undefined, children: MARKS[st]() })
+  })
 }
 
 // A header count: the number (or — when its source failed) with the Tip's text as its name.
 function Stat({ label, icon, value }) {
-  return jsx(Tip, { label, children: jsxs('span', { className: 'sw-stat', role: 'img', 'aria-label': label, children: [icon(), value] }) })
+  return jsx(Tip, { label, children: jsxs('span', { className: 'sw-stat', role: 'img', 'aria-label': label, tabIndex: 0, children: [icon(), value] }) })
 }
 
 function Strip({ statuses }) {
@@ -253,11 +293,12 @@ function Strip({ statuses }) {
   })
 }
 
-function IconButton({ label, icon, onClick, disabled }) {
+function IconButton({ label, icon, onClick, disabled, busy }) {
   return jsx(Tip, {
     label,
     children: jsx('button', {
-      type: 'button', className: 'sw-ib', 'aria-label': label, disabled, onClick, children: icon()
+      type: 'button', className: `sw-ib${busy ? ' is-busy' : ''}`, 'aria-label': label, 'aria-busy': busy ? 'true' : undefined,
+      disabled: disabled || busy, onClick, children: icon()
     })
   })
 }
@@ -283,7 +324,8 @@ function useHistory(storedId) {
       return
     }
     const mine = ++gen.current
-    setState(prev => ({ ...prev, key: storedId, loading: true, data: prev.key === storedId ? prev.data : null }))
+    // Another chat's data and error never ride along into this one.
+    setState(prev => (prev.key === storedId ? { ...prev, loading: true } : { key: storedId, data: null, error: null, loading: true }))
     ctxRef.rest(`/children?session_id=${encodeURIComponent(storedId)}`).then(
       data => mine === gen.current && setState({ key: storedId, data, error: null, loading: false }),
       err => mine === gen.current && setState(prev => ({ ...prev, error: String(err?.message || err), loading: false }))
@@ -307,6 +349,7 @@ function useProcesses(storedId) {
       return
     }
     const mine = ++gen.current
+    setState(prev => (prev.key === storedId ? prev : { key: storedId, data: null, error: null }))
     ctxRef.rest(`/processes?session_id=${encodeURIComponent(storedId)}`).then(
       data => { if (mine === gen.current) setState({ key: storedId, data, error: null }) },
       err => { if (mine === gen.current) setState(prev => ({ ...prev, key: storedId, error: String(err?.message || err) })) }
@@ -317,7 +360,9 @@ function useProcesses(storedId) {
     if (!storedId) return undefined
     return ctxRef.setInterval(load, POLL_MS)
   }, [load])
-  return { ...(state.key === storedId ? state : { data: null, error: null }), reload: load }
+  const own = state.key === storedId ? state : { data: null, error: null }
+  // Loading = this chat's first read has not answered yet (later polls keep the last answer shown).
+  return { ...own, loading: Boolean(storedId) && !own.data && !own.error, reload: load }
 }
 
 function mergeRecord(prev, patch) {
@@ -332,6 +377,9 @@ function useLive(runtimeId, onBatchEnded) {
   const [error, setError] = useState(null)
   const fails = useRef(0)
   const pollRef = useRef(null)
+  // Workers already handed to history: a later subagent.list that still returns them must not
+  // bring the batch back (and trigger another history reload).
+  const gone = useRef(new Set())
   const endedRef = useRef(onBatchEnded)
   endedRef.current = onBatchEnded
 
@@ -339,13 +387,14 @@ function useLive(runtimeId, onBatchEnded) {
     setRecords({})
     setError(null)
     fails.current = 0
+    gone.current = new Set()
     if (!runtimeId) return undefined
 
     const upsert = patch => setRecords(prev => ({ ...prev, [patch.subagent_id]: mergeRecord(prev[patch.subagent_id] || {}, patch) }))
     const offs = SUBAGENT_EVENTS.map(type => ctxRef.onEvent(type, event => {
       if (event?.session_id !== runtimeId) return
       const p = event.payload || {}
-      if (!p.subagent_id) return
+      if (!p.subagent_id || gone.current.has(p.subagent_id)) return
       const base = {
         subagent_id: p.subagent_id, parent_id: p.parent_id, delegation_id: p.delegation_id, depth: p.depth,
         goal: p.goal, model: p.model, task_index: p.task_index, child_session_id: p.child_session_id,
@@ -375,6 +424,7 @@ function useLive(runtimeId, onBatchEnded) {
         setRecords(prev => {
           const next = { ...prev }
           for (const r of snap?.subagents || []) {
+            if (gone.current.has(r.subagent_id)) continue
             seen.add(r.subagent_id)
             next[r.subagent_id] = mergeRecord(prev[r.subagent_id] || {}, { ...r, status: STATUS_OF[r.status] || r.status })
           }
@@ -407,6 +457,7 @@ function useLive(runtimeId, onBatchEnded) {
   useEffect(() => {
     if (!finished) return
     const ids = new Set(finished.split('|'))
+    for (const b of batches) if (ids.has(b.id)) for (const r of b.rows) gone.current.add(r.subagent_id)
     Promise.resolve(endedRef.current?.()).finally(() => {
       setRecords(prev => {
         const next = { ...prev }
@@ -452,7 +503,7 @@ function Detail({ t, worker, onToast }) {
       await writeClip(out?.text || '', t, onToast)
     } catch (err) {
       console.warn(`[${ID}] output read failed`, err)
-      onToast(`${t('sw.err.output')}: ${String(err?.message || err)}`, true)
+      onToast(t('sw.err.withDetail', t('sw.err.output'), String(err?.message || err)), true)
     } finally {
       setBusy(false)
     }
@@ -467,15 +518,15 @@ function Detail({ t, worker, onToast }) {
   const goal = String(worker.goal || '').trim()
   return jsx(Branches, {
     children: [
-      goal ? jsx(Tip, { label: goal, children: jsx('div', { className: 'sw-dtg', children: jsx('span', { children: goal }) }) }, 'g') : null,
+      goal ? jsx(Tip, { label: goal, children: jsx('div', { className: 'sw-dtg', tabIndex: 0, children: jsx('span', { children: goal }) }) }, 'g') : null,
       jsxs('div', {
         className: 'sw-dta',
         children: [
-          jsx(IconButton, { label: t('sw.copy'), icon: ICON.copy, onClick: copy, disabled: busy || !sid }, 'c'),
+          jsx(IconButton, { label: t(busy ? 'sw.copying' : 'sw.copy'), icon: ICON.copy, onClick: copy, disabled: !sid, busy }, 'c'),
           jsx(IconButton, { label: t('sw.open'), icon: ICON.open, onClick: open, disabled: !sid }, 'o'),
           jsx('span', {
             className: 'sw-dtm',
-            children: t('sw.meta', fmtDuration(worker.duration_s), worker.tool_calls ?? worker.tool_count ?? 0, fmtTokens(worker.tokens))
+            children: t('sw.meta', fmtDuration(worker.duration_s, t), worker.tool_calls ?? worker.tool_count ?? 0, fmtTokens(worker.tokens, t))
           }, 'm')
         ]
       }, 'a')
@@ -483,13 +534,13 @@ function Detail({ t, worker, onToast }) {
   })
 }
 
-function WorkerRow({ t, w, open, onToggle }) {
-  const time = w.status === 'stopped' ? '—' : fmtDuration(w.duration_s)
+function WorkerRow({ t, w, name, open, onToggle }) {
+  const time = w.status === 'stopped' ? '—' : fmtDuration(w.duration_s, t)
   return jsxs('button', {
     type: 'button', className: `sw-wr sw-nd sw-acc${open ? ' is-open' : ''}`, 'data-st': w.status, 'aria-expanded': open, onClick: onToggle,
     children: [
       jsx(Mark, { t, status: w.status }, 'm'),
-      jsx(NameBlock, { goal: w.goal, model: w.model }, 'n'),
+      jsx(NameBlock, { goal: w.goal, model: w.model, name }, 'n'),
       jsx('span', { className: 'sw-wt', children: time }, 't')
     ]
   })
@@ -500,12 +551,15 @@ function HistoryBatch({ t, batch, open, onToggle, openWorker, setOpenWorker, onT
   const st = batchState(statuses)
   const done = statuses.filter(s => s === 'completed').length
   const times = batch.workers.map(w => w.duration_s).filter(v => v !== null && v !== undefined)
+  const names = distinctNames(batch.workers.map(w => w.goal))
+  // The first worker names the batch; the others are counted, so a batch is never read as one task.
   const head = [
     jsx(Mark, { t, status: st }, 'm'),
     jsx('span', { className: 'sw-bn', children: workerName(batch.workers[0]?.goal) }, 'n'),
+    statuses.length > 1 ? jsx('span', { className: 'sw-bmore', children: t('sw.more', statuses.length - 1) }, 'x') : null,
     jsx(Strip, { statuses }, 's'),
     jsx('span', { className: 'sw-bc', children: `${done}/${statuses.length}` }, 'c'),
-    jsx('span', { className: 'sw-bt', children: times.length ? fmtDuration(Math.max(...times)) : '' }, 't'),
+    jsx('span', { className: 'sw-bt', children: times.length ? fmtDuration(Math.max(...times), t) : '' }, 't'),
     jsx('span', { className: 'sw-chev', children: ICON.chev(open) }, 'v')
   ]
   if (!open) {
@@ -518,11 +572,11 @@ function HistoryBatch({ t, batch, open, onToggle, openWorker, setOpenWorker, onT
       // Same tree as the live batch: the header is the root, each worker hangs off one rail.
       jsx('div', {
         className: 'sw-bb sw-fw',
-        children: batch.workers.map(w => jsxs('div', {
+        children: batch.workers.map((w, i) => jsxs('div', {
           className: 'sw-nwrap',
           children: [
             jsx(WorkerRow, {
-              t, w, open: openWorker.has(w.session_id),
+              t, w, name: names[i], open: openWorker.has(w.session_id),
               onToggle: () => setOpenWorker(w.session_id)
             }, 'r'),
             openWorker.has(w.session_id) ? jsx(Detail, { t, worker: w, onToast }, 'd') : null
@@ -533,13 +587,14 @@ function HistoryBatch({ t, batch, open, onToggle, openWorker, setOpenWorker, onT
   })
 }
 
-function Node({ t, r, now, kids, depth, openWorker, setOpenWorker, onToast }) {
+function Node({ t, r, name, now, kids, depth, openWorker, setOpenWorker, onToast }) {
   const key = r.subagent_id
   const running = r.status === 'running'
   const time = r.status === 'queued' ? t('sw.waiting')
     : r.status === 'stopped' ? '—'
-      : fmtDuration(r.duration_s ?? (r.started_at ? now - r.started_at : null))
+      : fmtDuration(r.duration_s ?? (r.started_at ? now - r.started_at : null), t)
   const children = kids.get(key) || []
+  const childNames = distinctNames(children.map(c => c.goal))
   return jsxs('div', {
     className: 'sw-nwrap',
     children: [
@@ -548,7 +603,7 @@ function Node({ t, r, now, kids, depth, openWorker, setOpenWorker, onToast }) {
         'aria-expanded': openWorker.has(key), onClick: () => setOpenWorker(key),
         children: [
           jsx(Mark, { t, status: r.status }, 'm'),
-          jsx(NameBlock, { goal: r.goal, model: r.model }, 'n'),
+          jsx(NameBlock, { goal: r.goal, model: r.model, name }, 'n'),
           running && r.last_tool ? jsx('span', { className: 'sw-now', children: r.last_tool }, 'l') : null,
           jsx('span', { className: 'sw-wt', children: time }, 't')
         ]
@@ -557,7 +612,7 @@ function Node({ t, r, now, kids, depth, openWorker, setOpenWorker, onToast }) {
       children.length
         ? jsx('div', {
           className: 'sw-fw sw-sub',
-          children: children.map(c => jsx(Node, { t, r: c, now, kids, depth: depth + 1, openWorker, setOpenWorker, onToast }, c.subagent_id))
+          children: children.map((c, i) => jsx(Node, { t, r: c, name: childNames[i], now, kids, depth: depth + 1, openWorker, setOpenWorker, onToast }, c.subagent_id))
         }, 'k')
         : null
     ]
@@ -569,13 +624,14 @@ function Flow({ t, batch, now, openWorker, setOpenWorker, onToast }) {
   const st = batchState(statuses)
   const done = statuses.filter(s => s === 'completed').length
   const merge = st === 'running' || st === 'queued' ? 'waiting' : st === 'completed' ? 'done' : 'partial'
+  const rootNames = distinctNames(batch.roots.map(r => r.goal))
   return jsxs('div', {
     className: 'sw-fl sw-frame', 'data-st': st,
     children: [
       jsxs('div', {
         className: 'sw-fn sw-root',
         children: [
-          jsx(Mark, { t, status: st }, 'd'),
+          jsx(Mark, { t, status: st, focusable: true }, 'd'),
           jsx('span', { className: 'sw-wn', children: t('sw.batch', batch.rows.length) }, 'n'),
           jsx(Strip, { statuses }, 's'),
           jsx('span', { className: 'sw-wt', children: `${done}/${statuses.length}` }, 'c')
@@ -583,11 +639,11 @@ function Flow({ t, batch, now, openWorker, setOpenWorker, onToast }) {
       }, 'r'),
       jsx('div', {
         className: 'sw-fw',
-        children: batch.roots.map(r => jsx(Node, { t, r, now, kids: batch.kids, depth: 0, openWorker, setOpenWorker, onToast }, r.subagent_id))
+        children: batch.roots.map((r, i) => jsx(Node, { t, r, name: rootNames[i], now, kids: batch.kids, depth: 0, openWorker, setOpenWorker, onToast }, r.subagent_id))
       }, 'w'),
       jsxs('div', {
         className: 'sw-fn sw-merge', 'data-st': st,
-        children: [jsx(Mark, { t, status: st }, 'm'), t(`sw.merge.${merge}`)]
+        children: [jsx(Mark, { t, status: st, focusable: true }, 'm'), t(`sw.merge.${merge}`)]
       }, 'm')
     ]
   })
@@ -600,13 +656,16 @@ export function commandLine(command) {
   return String(command || '').split('\n').map(s => s.trim()).find(Boolean) || ''
 }
 
-// An opened row's detail hangs under it as tree branches, the same lines the live batch tree
-// draws: no second frame around it. Each leaf gets its own wrapper so the connector is drawn
-// outside the leaf (a scrolling <pre> would clip a connector drawn on itself).
-function Branches({ children }) {
+// An opened row's pieces hang under it as tree branches, the same lines the live batch tree draws.
+// Each leaf gets its own wrapper so the connector is drawn outside the leaf (a scrolling <pre> would
+// clip a connector drawn on itself). A worker's detail branches off its row (`sw-dt`); a command's
+// hangs off the batch rail of its framed box (`onRail`), exactly like an earlier batch's workers.
+function Branches({ children, onRail }) {
   return jsx('div', {
-    className: 'sw-dt',
-    children: children.filter(Boolean).map((leaf, i) => jsx('div', { className: 'sw-br', children: leaf }, i))
+    className: onRail ? 'sw-bb sw-fw' : 'sw-dt',
+    children: children.filter(Boolean).map((leaf, i) => onRail
+      ? jsx('div', { className: 'sw-nwrap', children: jsx('div', { className: 'sw-leaf', children: leaf }) }, i)
+      : jsx('div', { className: 'sw-br', children: leaf }, i))
   })
 }
 
@@ -625,14 +684,15 @@ function ProcDetail({ t, p, storedId, onToast }) {
   let body
   if (p.status === 'running') body = jsx('div', { className: 'sw-po-note', children: t('sw.proc.whileRunning') })
   else if (out.loading) body = jsx(Loader, { label: t('sw.proc.output') })
-  else if (out.error) body = jsx(ErrorState, { title: `${t('sw.err.procOutput')}: ${out.error}` })
+  else if (out.error) body = jsx(ErrorState, { title: t('sw.err.withDetail', t('sw.err.procOutput'), out.error) })
   else if (!out.data?.output) body = jsx('div', { className: 'sw-po-note', children: t('sw.proc.noOutput') })
   else body = jsx('pre', { className: 'sw-po', children: out.data.output })
   const meta = [
     p.status === 'stopped' ? t('sw.proc.killed') : p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : '',
     p.cwd ? t('sw.proc.cwd', p.cwd) : ''
   ].filter(Boolean).join(' · ')
-  return jsx(ProcTree, {
+  return jsx(Branches, {
+    onRail: true,
     children: [
       jsx('pre', { className: 'sw-pc', children: out.data?.command || p.command }, 'c'),
       jsxs('div', {
@@ -659,22 +719,10 @@ function ProcDetail({ t, p, storedId, onToast }) {
   })
 }
 
-// A command is laid out exactly like an earlier batch: folded it is one card, opened it becomes a
-// framed box whose header is the root and whose pieces (command, actions, output) hang off the
-// same rail the batch's workers hang off.
-function ProcTree({ children }) {
-  return jsx('div', {
-    className: 'sw-bb sw-fw',
-    children: children.filter(Boolean).map((leaf, i) => jsx('div', {
-      className: 'sw-nwrap', children: jsx('div', { className: 'sw-leaf', children: leaf })
-    }, i))
-  })
-}
-
 function ProcItem({ t, p, now, open, onToggle, storedId, onToast }) {
   const time = p.status === 'running'
-    ? fmtDuration(p.started_at ? now - p.started_at : null)
-    : p.status === 'stopped' ? '—' : fmtDuration(p.duration_s)
+    ? fmtDuration(p.started_at ? now - p.started_at : null, t)
+    : p.status === 'stopped' ? '—' : fmtDuration(p.duration_s, t)
   const head = [
     jsx(Mark, { t, status: p.status, label: t(`sw.proc.status.${p.status}`) }, 'm'),
     jsx(Tip, { label: p.command, children: jsx('code', { className: 'sw-pn', children: commandLine(p.command) }) }, 'n'),
@@ -699,23 +747,25 @@ function ProcItem({ t, p, now, open, onToggle, storedId, onToast }) {
 function ProcSection({ t, procs, now, storedId, openProc, toggleProc, onToast }) {
   const unreadable = procs.data?.unreadable || 0
   const rows = [...(procs.data?.processes || [])].reverse()
-  if (!rows.length && !unreadable) return null
+  if (!rows.length && !unreadable && !procs.loading) return null
   return jsxs('section', {
-    className: 'sw-procs',
+    className: 'sw-procs', 'aria-labelledby': 'sw-procs-h',
     children: [
-      jsxs('div', {
-        className: 'sw-lab sw-plab',
+      jsxs('h3', {
+        className: 'sw-lab sw-plab', id: 'sw-procs-h',
         children: [
-          jsx(Tip, { label: t('sw.proc.notSubagent'), children: jsxs('span', { className: 'sw-plt', children: [jsx('span', { className: 'sw-pi', children: ICON.term() }, 'i'), t('sw.procs')] }) }, 'l'),
+          jsx(Tip, { label: t('sw.proc.notSubagent'), children: jsxs('span', { className: 'sw-plt', tabIndex: 0, children: [jsx('span', { className: 'sw-pi', children: ICON.term() }, 'i'), t('sw.procs')] }) }, 'l'),
           unreadable ? jsx('span', { className: 'sw-pu', children: t('sw.proc.unreadable', unreadable) }, 'u') : null
         ]
       }, 'h'),
-      jsx('div', {
-        className: 'sw-plist',
-        children: rows.map(p => jsx(ProcItem, {
-          t, p, now, storedId, onToast, open: openProc.has(p.id), onToggle: () => toggleProc(p.id)
-        }, p.id))
-      }, 'l')
+      procs.loading
+        ? jsx(Loader, { label: t('sw.procs') }, 'w')
+        : jsx('div', {
+          className: 'sw-plist',
+          children: rows.map(p => jsx(ProcItem, {
+            t, p, now, storedId, onToast, open: openProc.has(p.id), onToggle: () => toggleProc(p.id)
+          }, p.id))
+        }, 'l')
     ]
   })
 }
@@ -765,9 +815,12 @@ export function Page() {
 
   const liveSessions = new Set(live.batches.flatMap(b => b.rows.map(r => r.child_session_id).filter(Boolean)))
   // subagent.list carries no child_session_id, so a batch still running on the backend is matched by
-  // state: while a live tree is drawn, a stored batch with an unfinished worker IS that tree.
+  // state and time: while a live tree is drawn, a stored batch with an unfinished worker that started
+  // no earlier than the live tree (less LIVE_MATCH_S) IS that tree.
+  const liveStarts = live.batches.flatMap(b => b.rows.map(r => r.started_at)).filter(Number.isFinite)
+  const liveFrom = (liveStarts.length ? Math.min(...liveStarts) : now) - LIVE_MATCH_S
   const past = (history.data?.batches || [])
-    .filter(b => !(live.batches.length && b.workers.some(w => w.status === 'running')))
+    .filter(b => !(live.batches.length && b.started_at >= liveFrom && b.workers.some(w => w.status === 'running')))
     .map(b => ({ ...b, workers: b.workers.filter(w => !liveSessions.has(w.session_id)) }))
     .filter(b => b.workers.length)
     .reverse()
@@ -786,6 +839,8 @@ export function Page() {
     body = jsx(PanelEmpty, { icon: 'comment-discussion', title: t('sw.noChat.title'), description: t('sw.noChat.body') })
   } else if (history.loading && !history.data && !live.batches.length) {
     body = jsx(Loader, { label: t('sw.title') })
+  } else if (!live.batches.length && !past.length && history.error && procs.error) {
+    body = jsx('p', { className: 'sw-hint', children: t('sw.err.hint') })
   } else if (!live.batches.length && !past.length && !history.error) {
     body = [
       jsx(PanelEmpty, { icon: 'type-hierarchy-sub', title: t('sw.empty.title'), description: t('sw.empty.body') }, 'empty'),
@@ -793,9 +848,9 @@ export function Page() {
     ]
   } else {
     body = [
-      live.batches.length ? jsx('div', { className: 'sw-lab', children: t('sw.now') }, 'nl') : null,
+      live.batches.length ? jsx('h3', { className: 'sw-lab', children: t('sw.now') }, 'nl') : null,
       ...live.batches.map(b => jsx(Flow, { t, batch: b, now, openWorker, setOpenWorker, onToast }, b.id)),
-      past.length ? jsx('div', { className: 'sw-lab', children: t('sw.earlier') }, 'el') : null,
+      past.length ? jsx('h3', { className: 'sw-lab', children: t('sw.earlier') }, 'el') : null,
       ...shown.map(b => {
         const key = String(b.started_at)
         return jsx(HistoryBatch, {
@@ -811,9 +866,9 @@ export function Page() {
   }
 
   const errors = [
-    history.error ? `${t('sw.err.history')}: ${history.error}` : null,
-    live.error ? `${t('sw.err.live')}: ${live.error}` : null,
-    procs.error ? `${t('sw.err.procs')}: ${procs.error}` : null
+    history.error ? t('sw.err.withDetail', t('sw.err.history'), history.error) : null,
+    live.error ? t('sw.err.withDetail', t('sw.err.live'), live.error) : null,
+    procs.error ? t('sw.err.withDetail', t('sw.err.procs'), procs.error) : null
   ].filter(Boolean)
 
   return jsxs('div', {
@@ -827,7 +882,7 @@ export function Page() {
             className: 'sw-hd sw-frame', 'data-st': runningN || procsRunning ? 'running' : 'completed',
             children: [
               jsx('span', { className: 'sw-hi', children: ICON.tree() }, 'i'),
-              jsx('span', { className: 'sw-ht', children: t('sw.title') }, 't'),
+              jsx('h2', { className: 'sw-ht', children: t('sw.title') }, 't'),
               // Counts and refresh are one group: on a narrow pane it drops under the title as a
               // whole instead of squeezing the title or wrapping a pill onto two lines.
               jsxs('div', {
@@ -849,7 +904,11 @@ export function Page() {
             ? jsx('div', { className: 'sw-err', role: 'alert', children: errors.map(e => jsx(ErrorState, { title: e }, e)) }, 'e')
             : null,
           jsx('div', { className: 'sw-bd', children: body }, 'b'),
-          toast ? jsx('div', { className: `sw-toast${toast.bad ? ' is-bad' : ''}`, role: 'status', children: toast.text }, 'toast') : null
+          // The live region stays mounted so a screen reader is already listening when a toast lands.
+          jsx('div', {
+            className: 'sw-live', role: 'status', 'aria-live': 'polite',
+            children: toast ? jsx('div', { className: `sw-toast${toast.bad ? ' is-bad' : ''}`, children: toast.text }) : null
+          }, 'toast')
         ]
       }, 'panel')
     ]
@@ -861,7 +920,7 @@ const CSS = `
 .sw-panel{max-width:560px;position:relative;container-type:inline-size;
  --sw-mono:ui-monospace,"Cascadia Mono",Consolas,var(--dt-font-mono,monospace)}
 /* Docked beside the chat the worker name needs every pixel: a model chip cut to 'c…' says nothing. */
-@container (max-width:420px){.sw-model{display:none}}
+@container (max-width:420px){.sw-panel .sw-model,.sw-panel .sw-strip{display:none}.sw-panel .sw-bl{gap:7px;padding:0 8px}.sw-panel .sw-now{max-width:72px}}
 .sw-page svg{width:100%;height:100%;display:block}
 .sw-spin{animation:sw-rot 1.1s linear infinite;transform-origin:50% 50%}
 @keyframes sw-rot{to{transform:rotate(360deg)}}
@@ -870,7 +929,7 @@ const CSS = `
 .sw-hd{display:flex;align-items:center;flex-wrap:wrap;row-gap:8px;gap:10px;padding:10px 10px 10px 14px;margin:0 0 14px}
 .sw-hi{width:30px;height:30px;padding:6px;border-radius:8px;flex:none;color:var(--sw-tint);
  background:color-mix(in srgb,var(--sw-tint) 14%,transparent);border:1px solid color-mix(in srgb,var(--sw-tint) 30%,transparent)}
-.sw-ht{font-size:14px;font-weight:600;flex:1 0 auto;white-space:nowrap}
+.sw-ht{margin:0;font-size:14px;font-weight:600;flex:1 0 auto;white-space:nowrap}
 .sw-hs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:auto}
 .sw-stat{display:inline-flex;align-items:center;gap:5px;flex:none;white-space:nowrap;height:22px;padding:0 8px 0 6px;border-radius:99px;font-size:11.5px;
  color:var(--ui-text-secondary);background:var(--ui-bg-tertiary);font-variant-numeric:tabular-nums}
@@ -882,15 +941,24 @@ const CSS = `
  border:1px solid var(--ui-stroke-tertiary);cursor:pointer;flex:none}
 .sw-ib:hover:not(:disabled){background:var(--ui-bg-tertiary);color:var(--ui-text-primary)}
 .sw-ib:disabled{opacity:.45;cursor:default}
+.sw-ib.is-busy{opacity:1;cursor:progress;background:var(--ui-bg-tertiary)}
+.sw-ib.is-busy svg{animation:sw-pulse 1s ease-in-out infinite}
+@keyframes sw-pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.sw-ib.is-busy svg{animation:none}}
+/* The app removes every focus ring; a keyboard user still has to see where focus is. */
+.sw-ib:focus-visible,.sw-bl:focus-visible,.sw-nd:focus-visible,.sw-more:focus-visible,.sw-dtg:focus-visible,.sw-plt:focus-visible,
+.sw-stat:focus-visible,.sw-mk:focus-visible{
+ outline:2px solid var(--ui-stroke-primary);outline-offset:1px}
+.sw-hint{margin:12px 6px;font-size:12px;line-height:18px;color:var(--ui-text-secondary)}
 .sw-err{margin:8px 0;padding:8px 10px;border-radius:8px;border:1px solid color-mix(in srgb,var(--ui-red) 45%,transparent);font-size:12px}
 .sw-bd{padding-bottom:12px}
-.sw-lab{font-size:11px;color:var(--ui-text-tertiary);padding:14px 6px 6px}
-.sw-more{font-size:11.5px;color:var(--ui-text-tertiary);padding:8px 6px 0;background:none;border:0;cursor:pointer}
+.sw-lab{margin:0;font-size:11.5px;font-weight:400;color:var(--ui-text-secondary);padding:14px 6px 6px}
+.sw-more{font-size:11.5px;color:var(--ui-text-secondary);padding:8px 6px 0;background:none;border:0;cursor:pointer}
 .sw-more:hover{color:var(--ui-text-primary)}
 .sw-strip{display:flex;gap:2px;margin-left:auto;flex:none}
 .sw-strip i{width:14px;height:5px;border-radius:2px;background:var(--t)}
 .sw-strip i[data-st=queued]{background:transparent;box-shadow:inset 0 0 0 1px var(--t)}
-.sw-bc,.sw-bt,.sw-wt{font-size:11.5px;color:var(--ui-text-tertiary);font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
+.sw-bc,.sw-bt,.sw-wt{font-size:11.5px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
 .sw-bc{min-width:28px;text-align:right}
 .sw-bt{min-width:52px;text-align:right}
 .sw-chev{width:14px;height:14px;color:var(--ui-text-quaternary);flex:none}
@@ -901,31 +969,35 @@ const CSS = `
 .sw-bh{border-radius:0;box-shadow:none}
 .sw-frame{position:relative;border:1px solid var(--ui-stroke-tertiary);border-radius:10px;
  background:linear-gradient(180deg,color-mix(in srgb,var(--sw-tint) 7%,var(--ui-bg-secondary)),var(--ui-bg-secondary) 70%);
- box-shadow:0 1px 0 rgb(255 255 255 / .03) inset,0 2px 8px rgb(0 0 0 / .22);--sw-tint:var(--ui-green)}
+ box-shadow:var(--shadow-sm);--sw-tint:var(--ui-green)}
 .sw-frame::after{content:"";position:absolute;left:-1px;top:12px;bottom:12px;width:3px;border-radius:0 3px 3px 0;background:var(--sw-tint)}
 .sw-frame[data-st=failed]{--sw-tint:var(--ui-red)}
 .sw-frame[data-st=stopped],.sw-frame[data-st=interrupted],.sw-frame[data-st=queued]{--sw-tint:var(--ui-text-quaternary)}
 .sw-frame[data-st=running]{--sw-tint:var(--ui-yellow)}
 .sw-frame .sw-bh{background:transparent}
 .sw-frame .sw-bh:hover{background:color-mix(in srgb,var(--ui-bg-tertiary) 60%,transparent)}
-.sw-acc{position:relative;box-shadow:0 1px 2px rgb(0 0 0 / .18);transition:background .12s,border-color .12s}
+.sw-acc{position:relative;box-shadow:var(--shadow-xs);transition:background .12s,border-color .12s}
 .sw-acc::after{content:"";position:absolute;left:-1px;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--ui-green)}
 .sw-acc[data-st=failed]::after{background:var(--ui-red)}
 .sw-acc[data-st=stopped]::after,.sw-acc[data-st=interrupted]::after,.sw-acc[data-st=queued]::after{background:var(--ui-text-quaternary)}
 .sw-acc[data-st=running]::after{background:var(--ui-yellow)}
+/* Inside a framed box the frame already carries the tint: rows keep their mark, lose the rail and
+   the lift, so a frame holds one accent instead of one per row. */
+.sw-fw .sw-acc{box-shadow:none}
+.sw-fw .sw-acc::after{display:none}
 .sw-card{margin:0 0 6px;border:1px solid var(--ui-stroke-tertiary);background:var(--ui-bg-secondary)}
 .sw-card:hover,.sw-nd.sw-acc:hover{background:var(--ui-bg-tertiary);border-color:var(--ui-stroke-secondary)}
 .sw-bn{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sw-bmore{font-size:11.5px;color:var(--ui-text-secondary);white-space:nowrap;flex:none}
 .sw-box .sw-bb{margin:4px 10px 10px 18px}
 .sw-box .sw-bb>.sw-nwrap:first-child::before{top:-4px}
 .sw-wn{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .sw-nl{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
 .sw-nl .sw-wn{flex:1 1 auto}
-.sw-model{font:10.5px var(--sw-mono);color:var(--ui-text-tertiary);border:1px solid var(--ui-stroke-tertiary);
+.sw-model{font:11.5px var(--sw-mono);color:var(--ui-text-secondary);border:1px solid var(--ui-stroke-tertiary);
  border-radius:4px;padding:0 5px;line-height:15px;white-space:nowrap;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
-.sw-muted{color:var(--ui-text-tertiary)!important}
-.sw-now{font:11px var(--sw-mono);color:var(--ui-text-tertiary);background:var(--ui-bg-tertiary);
- border-radius:4px;padding:1px 6px;flex:none;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-now{font:11.5px var(--sw-mono);color:var(--ui-text-secondary);background:var(--ui-bg-tertiary);
+ border-radius:4px;padding:1px 6px;flex:0 1 auto;min-width:0;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw-dt{display:flex;flex-direction:column;gap:6px;margin:6px 0 2px 22px;padding-left:18px}
 .sw-br{position:relative;min-width:0}
 .sw-br::before{content:"";position:absolute;left:-18px;top:14px;width:17px;border-top:1px solid var(--ui-stroke-secondary)}
@@ -935,7 +1007,7 @@ const CSS = `
 .sw-dtg>span{font-size:12px;line-height:18px;color:var(--ui-text-secondary);display:-webkit-box;-webkit-line-clamp:3;
  -webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
 .sw-dta{display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
-.sw-dtm{flex:1;min-width:0;margin-left:4px;font-size:11px;line-height:16px;color:var(--ui-text-tertiary);overflow-wrap:anywhere}
+.sw-dtm{flex:1;min-width:0;margin-left:4px;font-size:11.5px;line-height:16px;color:var(--ui-text-secondary);overflow-wrap:anywhere}
 .sw-fl{display:flex;flex-direction:column;align-items:stretch;padding:10px 10px 12px;margin:0 0 4px}
 .sw-fn{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:8px;border:1px solid var(--ui-stroke-tertiary);
  background:var(--ui-bg-secondary);font-size:12.5px;white-space:nowrap}
@@ -954,11 +1026,10 @@ const CSS = `
 .sw-nd:hover,.sw-nd.is-open{background:var(--ui-bg-tertiary)}
 .sw-fw .sw-nd,.sw-fw .sw-card{background:var(--ui-bg-quaternary)}
 .sw-fw .sw-nd:hover,.sw-fw .sw-nd.is-open,.sw-fw .sw-card:hover{background:var(--ui-bg-secondary)}
-:root:not(.dark) .sw-frame{box-shadow:0 1px 3px rgb(0 0 0 / .08)}
-:root:not(.dark) .sw-acc{box-shadow:0 1px 1px rgb(0 0 0 / .05)}
 .sw-nd[data-st=running]{border-color:color-mix(in srgb,var(--ui-yellow) 45%,var(--ui-stroke-tertiary))}
 .sw-nd[data-st=queued]{border-style:dashed;background:transparent}
-.sw-toast{position:sticky;bottom:8px;margin:8px auto 0;width:max-content;max-width:100%;padding:6px 12px;border-radius:8px;font-size:12px;
+.sw-live{position:sticky;bottom:8px}
+.sw-toast{margin:8px auto 0;width:max-content;max-width:100%;padding:6px 12px;border-radius:8px;font-size:12px;
  background:var(--ui-bg-tertiary);border:1px solid var(--ui-stroke-tertiary)}
 .sw-toast.is-bad{border-color:color-mix(in srgb,var(--ui-red) 55%,transparent)}
 .sw-procs{margin-top:6px}
@@ -973,15 +1044,15 @@ const CSS = `
 .sw-leaf{position:relative;min-width:0}
 .sw-leaf::before{content:"";position:absolute;left:-19px;top:18px;width:18px;border-top:1px solid var(--ui-stroke-secondary)}
 .sw-pn{font:11.5px var(--sw-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
-.sw-px{font-size:11px;color:var(--ui-text-secondary);white-space:nowrap;flex:none}
+.sw-px{font-size:11.5px;color:var(--ui-text-secondary);white-space:nowrap;flex:none}
 .sw-pc,.sw-po{margin:0;padding:8px 10px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary);
- font:11px/16px var(--sw-mono);color:var(--ui-text-secondary);white-space:pre-wrap;word-break:break-word;overflow:auto}
+ font:11.5px/16px var(--sw-mono);color:var(--ui-text-secondary);white-space:pre-wrap;word-break:break-word;overflow:auto}
 .sw-pc{max-height:98px}
 /* The output leaf is a card like its siblings; the text inside it needs no second box. */
 .sw-pob{display:flex;flex-direction:column;gap:4px;padding:6px 10px 8px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
 .sw-pob .sw-po{padding:0;border:0;border-radius:0;background:transparent;max-height:180px}
-.sw-pol{font-size:11px;color:var(--ui-text-tertiary)}
-.sw-po-note{font-size:12px;line-height:18px;color:var(--ui-text-tertiary)}
+.sw-pol{font-size:11.5px;color:var(--ui-text-secondary)}
+.sw-po-note{font-size:12px;line-height:18px;color:var(--ui-text-secondary)}
 `
 
 function navLabel() {

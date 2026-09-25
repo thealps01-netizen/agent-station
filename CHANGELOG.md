@@ -3,6 +3,58 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.1.7 — 2026-09-25
+
+Fixes from a second blind review.
+
+### Fixes
+
+- **A crashed worker no longer reads "running" forever.** A worker session that never got an end
+  (the app died under it) was running for good, and while any live tree showed, its whole batch was
+  hidden from Earlier. A worker with no end that has been silent (no heartbeat, no message) for
+  30 minutes now reads **stopped**, and a stored running batch is only matched to the live tree when
+  it started around the same time; an older one stays under Earlier.
+- **A dead background command no longer reads running when the core's PID check changes.** The
+  liveness test used to fail open (unknown = alive); it now falls back to psutil and, when nothing
+  can be asked, reads stopped.
+- **Switching chats drops the previous chat's errors.** A failed history read of one chat stayed on
+  screen after switching to another until the new read answered.
+- **A finished batch stays finished.** When `subagent.list` still returned a finished batch's
+  workers, the batch came back under Now and history was reloaded again; handed-over workers are
+  now ignored.
+- **An earlier batch of several workers is no longer labelled as its first worker alone:** the name
+  is followed by "+N more".
+- **Background commands show a loader** while their first read is pending, instead of nothing.
+- **The 503 for a missing `state.db` no longer prints the absolute path** (it is logged instead).
+- **Shadows and the check-mark ink come from the theme** (`--shadow-sm` / `--shadow-xs`,
+  `--dt-background`) instead of hard-coded `rgb()` values and the destructive token; the static
+  audit's colour rule now also rejects `rgb()`/`hsl()` literals.
+- **Less noise inside frames:** rows inside a framed box keep their status mark but no longer draw
+  their own coloured rail and shadow; the frame carries the one accent.
+- Removed the unused `sw-muted` rule; the worker detail and the command detail share one
+  `Branches` component instead of two copies.
+
+### Accessibility
+
+- Buttons, rows, header counts and tooltip triggers draw a **visible focus ring** (the app removes
+  every ring); header counts, the batch-root and merge marks and the section tooltip are focusable.
+- The title is an `h2` and Now / Earlier / Background commands are `h3` headings.
+- Times, counts, the current-tool and model chips and the output label use the secondary reading
+  token (measured 4.0–4.2:1 before, below WCAG AA); no text is smaller than 11.5 px.
+- The toast's live region stays mounted, so screen readers announce "Copied" / "Copy failed".
+- Copy full output shows a busy state ("Copying…", `aria-busy`) while it reads.
+
+### Copy
+
+- When every read fails, the page says "Nothing could be read. Press Refresh to try again." instead
+  of a blank body.
+- At 380 px sibling workers whose goals share a long opening ("Blind-review desktop panel 1: …")
+  drop the shared words so each row stays distinguishable; the batch strip hides at that width.
+- Duration and token units and the "what: detail" error format come from the string bundle;
+  "Output (end)" reads "End of output"; "1 tool" is singular.
+- The render check no longer mutates its shared fixtures mid-run (they are frozen; scenarios use
+  their own data).
+
 ## 1.1.6 — 2026-09-25
 
 Fixes from a blind review:

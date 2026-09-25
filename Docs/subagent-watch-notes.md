@@ -33,9 +33,15 @@ Sidebar entry "Subagents" → route `/subagent-watch`.
 | Command output tail | `GET /api/plugins/subagent-watch/process_output?session_id=<stored id>&process_id=<proc_…>` |
 
 The backend opens `state.db` with SQLite `mode=ro` (cannot write) and serves only sessions whose
-`model_config` carries `_delegate_from` — any other id gets 403. Batches = children started within
+`model_config` carries `_delegate_from` — any other id gets 403. `/children` takes any chat id on
+purpose: the plugin routes sit behind the same dashboard auth as the host's own
+`/api/sessions/{id}/messages`, which already returns every session to that client, so an ownership
+check there would guard nothing; the 403s exist so one chat's panel never shows another chat's work. Batches = children started within
 2 s of each other. A worker closed without an answer is **stopped** and gets no duration: its
-`ended_at` is when the app closed, not when the work ended.
+`ended_at` is when the app closed, not when the work ended. A worker that never got an end and has
+been silent for `STALE_S` (30 min: no `last_activity_at` heartbeat, no message) is also **stopped** —
+the app died under it. While a live tree shows, a stored batch that still reads running is hidden
+from Earlier only when it started no more than 2 min before the live tree (`LIVE_MATCH_S`).
 
 ### Background commands — where they come from
 Nothing is parsed out of chat text. Both sources are files Hermes itself writes, read-only:
@@ -50,7 +56,8 @@ Nothing is parsed out of chat text. Both sources are files Hermes itself writes,
   listed, and its output is refused with 403.
 - **Status:** receipt with `completion_reason == "killed"` → stopped; exit 0 → completed; any other
   exit → failed. A checkpoint entry whose PID is gone (asked through Hermes'
-  `ProcessRegistry._host_pid_is_ours`, which also rejects a recycled PID) → stopped. A receipt wins
+  `ProcessRegistry._host_pid_is_ours`, which also rejects a recycled PID; psutil when that API is
+  unavailable; stopped when neither can answer — never fail-open) → stopped. A receipt wins
   over a stale checkpoint entry for the same id.
 - **End time:** Hermes records none; the receipt's file mtime is used, because the receipt is
   written at the moment the process leaves the running set.
@@ -78,7 +85,7 @@ Interrupt / steer / live transcript — the composer status stack already owns t
 - `cd tests && npm install && node render_check.mjs` — jsdom render with real React (pinned
   jsdom 30.1.0, react 18.3.1): session scoping, status marks, tree nesting, history, copy/open,
   visible failures, chat switch.
-- `python tests/canary_audit.py` — the mutation canaries, no longer by hand: 42 mutations (render,
+- `python tests/canary_audit.py` — the mutation canaries, no longer by hand: 56 mutations (render,
   backend, static audit), each applied to a copy and required to turn its owning gate red. The first
   run found two behaviours no check covered (a failed command-output read, cards left open after a
   chat switch); both are now render checks.
