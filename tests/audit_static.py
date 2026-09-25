@@ -14,7 +14,8 @@ Rules
   expanded     every accordion row (`sw-acc`) carries `aria-expanded`
   markName     every status mark (`sw-mk`) and header count (`sw-stat`) carries `aria-label` — the svg is
                aria-hidden and the Tip is hover-only, so without it a screen reader hears nothing / a bare number
-  hexColor     no hard-coded colour in the page's CSS or SVG — tokens only, so every skin follows
+  hexColor     no hard-coded colour in the page's CSS or SVG — tokens only, so every skin follows; this
+               covers hex and rgb()/rgba()/hsl() literals (a shadow in rgb(0 0 0/.22) ignores the skin too)
   toneInk      no theme tone (--ui-red / green / yellow / blue) as the `color:` of text — the tone rides
                the mark, the text uses a reading token (tone red on the dark card measured 3.3:1 < 4.5)
   silentCatch  every `catch` in the page logs or surfaces the error; every `except` in the backend
@@ -84,7 +85,11 @@ def _has(tree: dict, key: str) -> bool:
 
 def check_i18n(js: str) -> None:
     bundle = _bundle(js)
-    for key in sorted(set(re.findall(r"\bt\(\s*'(sw\.[A-Za-z0-9_.]+)'", js))):
+    literal = re.findall(r"\bt\(\s*'(sw\.[A-Za-z0-9_.]+)'", js)
+    # `t(cond ? 'sw.a' : 'sw.b')` asks for either key.
+    literal += re.findall(r"\bt\([^()'`]*\?\s*'(sw\.[A-Za-z0-9_.]+)'", js)
+    literal += re.findall(r"\bt\([^()'`]*\?\s*'sw\.[A-Za-z0-9_.]+'\s*:\s*'(sw\.[A-Za-z0-9_.]+)'", js)
+    for key in sorted(set(literal)):
         if not _has(bundle, key):
             report(f"i18n: key '{key}' is not in the English bundle — the page would print the raw key")
     statuses = {"completed", "failed", "running", "queued", "stopped"}
@@ -138,6 +143,8 @@ def check_colors(js: str) -> None:
             continue
         for hex_value in re.findall(r"#[0-9a-fA-F]{3,8}\b", line):
             report(f"hexColor: line {line_no} hard-codes {hex_value} — use a theme token")
+        for literal in re.findall(r"\b(?:rgba?|hsla?)\([^)]*\)", line):
+            report(f"hexColor: line {line_no} hard-codes {literal} — use a theme token (e.g. var(--shadow-sm))")
 
 
 def check_tone_ink(js: str) -> None:
