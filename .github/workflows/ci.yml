@@ -41,7 +41,8 @@ jobs:
 
       - name: Install the gate dependencies
         run: |
-          python -m pip install --quiet "fastapi==0.115.*"
+          # psutil: the liveness fallback the host venv ships (hermes-agent venv has 7.2.2)
+          python -m pip install --quiet "fastapi==0.115.*" "psutil==7.2.2"
           (cd tests && npm ci)
 
       - name: Core sources for the contract (sparse, pinned)
