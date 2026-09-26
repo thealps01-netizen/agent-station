@@ -55,7 +55,7 @@ const HISTORY = {
     {
       started_at: NOW - 5400,
       workers: [
-        { session_id: 'c-a', goal: "Audit 'fleet-routing' against the kit", model: 'anthropic/claude-opus-5-5', status: 'completed', duration_s: 312, tool_calls: 40, tokens: 120000, summary: '' },
+        { session_id: 'c-a', goal: "Audit 'fleet-routing' against the kit", model: 'anthropic/claude-opus-5-5', effort: 'medium', status: 'completed', duration_s: 312, tool_calls: 40, tokens: 120000, summary: '' },
         { session_id: 'c-b', goal: "Audit 'fleet-status' against the kit", model: 'anthropic/claude-opus-5-5', status: 'stopped', duration_s: null, tool_calls: 12, tokens: 9000, summary: '' }
       ]
     },
@@ -110,7 +110,7 @@ const tick = ms => act(() => new Promise(r => setTimeout(r, ms)))
 const problems = []
 const frames = []
 
-async function frame(label, { fail = false, live = false, open = null, narrow = false } = {}) {
+async function frame(label, { fail = false, live = false, open = null, narrow = false, docked = false } = {}) {
   const { ctx, registered, emit } = makeCtx(fail)
   stub.state.listFails = fail
   stub.state.list['rt-1'] = []
@@ -155,13 +155,18 @@ async function frame(label, { fail = false, live = false, open = null, narrow = 
     await act(async () => { bad.click() })
     await tick(20)
   }
+  if (docked) {
+    // The older batch holds the Opus workers (one with a reasoning effort): open it too.
+    await act(async () => { host.querySelectorAll('.sw-hb')[1].click() })
+    await tick(20)
+  }
   const html = host.innerHTML
   const text = host.textContent || ''
   const raw = [...new Set(text.match(/\bsw\.[a-z][A-Za-z0-9_.]*/g) || [])]
   if (raw.length) problems.push(`${label}: raw i18n key(s) on screen: ${raw.join(', ')}`)
   const titled = host.querySelectorAll('[title]').length
   if (titled) problems.push(`${label}: ${titled} native title= attribute(s) — the themed Tip owns hover text`)
-  frames.push({ label, html, narrow })
+  frames.push({ label, html, narrow, docked })
   await act(async () => root.unmount())
   host.remove()
 }
@@ -170,6 +175,7 @@ await frame('1 · Now — a running batch as a live tree, earlier batches and ba
 await frame('2 · Earlier — a batch, a worker and a failed command opened', { open: 'earlier' })
 await frame('3 · Failures — every read failing: nothing is swallowed', { fail: true })
 await frame('4 · Narrow (380 px) — six running workers and a command with a long working directory', { narrow: true })
+await frame('5 · Docked (480 px) — an Earlier worker whose model chip carries its reasoning effort', { open: 'earlier', docked: true })
 stub.state.listFails = false
 
 const DIST_ASSETS = DESKTOP_APP ? `${DESKTOP_APP.replace(/\\/g, '/')}/dist/assets` : null
@@ -195,7 +201,7 @@ if (!appCss) console.log(`warning: ${styles}`)
 const DARK_SEEDS = ':root.dark { --theme-background-seed: #0d0d0e; --theme-sidebar-seed: #0a0a0b;'
   + ' --theme-card-seed: #161618; --theme-neutral-card: #161618; --theme-foreground: #f4f4f6; }'
 
-const body = frames.map(f => `<section class="swp-wrap${f.narrow ? ' is-narrow' : ''}">
+const body = frames.map(f => `<section class="swp-wrap${f.narrow ? ' is-narrow' : ''}${f.docked ? ' is-docked' : ''}">
   <p class="swp-label">${f.label}</p>
   <div class="swp-frame">${f.html}</div>
 </section>`).join('\n')
@@ -211,6 +217,7 @@ html,body{margin:0;background:var(--ui-bg-sidebar);color:var(--ui-text-primary);
 body{padding:16px 18px 28px}
 .swp-wrap{margin:0 0 22px;width:640px}
 .swp-wrap.is-narrow{width:380px}
+.swp-wrap.is-docked{width:480px}
 .swp-label{font-size:11px;color:var(--ui-text-tertiary);margin:0 0 6px}
 .swp-frame{border:1px solid var(--ui-stroke-primary);border-radius:10px;overflow:hidden;background:var(--ui-bg-primary)}
 </style>

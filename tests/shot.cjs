@@ -175,7 +175,12 @@ const PREPARE = `(() => {
       }
     }
   }
+  // A model chip is never cut: its whole text (model and reasoning effort) fits in its box.
+  const chips = [...document.querySelectorAll('.swp-frame .sw-model')]
+    .filter(el => getComputedStyle(el).display !== 'none')
+    .map(el => ({ text: el.textContent, docked: !!el.closest('.is-docked'), cut: el.scrollWidth > el.clientWidth }))
   return {
+    chips,
     frames: document.querySelectorAll('.swp-frame').length,
     overflow,
     overlaps,
@@ -229,7 +234,11 @@ app.whenReady().then(async () => {
       + ` (${row.klass}) ink ${row.ink} a${row.inkAlpha} on ${row.fill}`)
   }
   if (!ct.rows.length) red.push('no text node was measured')
-  if (measured.frames !== 4) red.push(`expected 4 preview frames, found ${measured.frames}`)
+  if (measured.frames !== 5) red.push(`expected 5 preview frames, found ${measured.frames}`)
+  for (const c of measured.chips.filter(c => c.cut)) red.push(`model chip cut: [${c.text}]`)
+  if (!measured.chips.some(c => c.docked && / · medium$/.test(c.text))) {
+    red.push(`no uncut model chip with its effort at 480 px (${measured.chips.filter(c => c.docked).map(c => c.text).join(' | ') || 'none'})`)
+  }
   for (const o of measured.overflow) red.push(`horizontal overflow: ${o}`)
   for (const o of measured.overlaps) red.push(`header: ${o}`)
   if (measured.rawKeyOnScreen) red.push(`raw i18n key on screen: ${measured.rawKeyOnScreen.join(', ')}`)

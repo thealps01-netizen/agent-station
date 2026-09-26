@@ -65,8 +65,12 @@ def build_fixture() -> None:
         " role text, content text, timestamp real);"
     )
 
-    def session(sid, started, ended=None, reason=None, parent=None, delegate_from=None, model="m", active=None):
-        cfg = json.dumps({"_delegate_from": delegate_from}) if delegate_from else "{}"
+    def session(sid, started, ended=None, reason=None, parent=None, delegate_from=None, model="m", active=None,
+                reasoning=None):
+        cfg = {"_delegate_from": delegate_from} if delegate_from else {}
+        if reasoning is not None:
+            cfg["reasoning_config"] = reasoning
+        cfg = json.dumps(cfg)
         db.execute(
             "insert into sessions values (?,?,?,?,?,?,?,?,?,?,?)",
             (sid, model, cfg, parent, started, ended, reason, 3, 100, 20, active),
@@ -79,12 +83,13 @@ def build_fixture() -> None:
     session("P1", 900, 1500, "compression")
     session("P2", 1500, parent="P1")
     session("Q", 900)
-    session("W1", 1000, 1042, "completed", delegate_from="P1", model="claude-sonnet-5")
+    session("W1", 1000, 1042, "completed", delegate_from="P1", model="claude-sonnet-5",
+            reasoning={"enabled": True, "effort": "medium"})
     message("W1", "user", "Read the notes\nsecond line is not part of the goal")
     message("W1", "assistant", LONG_ANSWER)
     session("W2", 1000.5, 1300, "closed", delegate_from="P1")
     message("W2", "user", "Count files")
-    session("W3", 2000, delegate_from="P2")
+    session("W3", 2000, delegate_from="P2", reasoning={"enabled": False, "effort": "high"})
     message("W3", "user", "Wait")
     session("W4", 1000.2, 1010, "completed", delegate_from="Q")
     message("W4", "assistant", "other conversation")
@@ -136,6 +141,14 @@ def run_fixture() -> None:
         check(w1["status"] == "completed" and w1["duration_s"] == 42, "answered worker: completed, 42 s")
         check(w1["goal"] == "Read the notes", "goal is the first line of the task")
         check(w1["model"] == "claude-sonnet-5", "worker model is reported")
+        check(w1.get("effort") == "medium", f"reasoning effort is reported from model_config ({w1.get('effort')!r})")
+        check("effort" in w2 and w2["effort"] is None, f"no reasoning_config: effort is null ({w2.get('effort', 'absent')!r})")
+        check("effort" in w3 and w3["effort"] is None, f"reasoning disabled: effort is null ({w3.get('effort', 'absent')!r})")
+        effort = getattr(api, "_effort", None)
+        cases = (("{not json", None), (None, None), ("[]", None), ('{"reasoning_config": "x"}', None),
+                 ('{"reasoning_config": {"effort": 3}}', None), ('{"reasoning_config": {"effort": "low"}}', "low"))
+        check(effort is not None and all(effort(cfg) == want for cfg, want in cases),
+              "effort never raises: bad JSON, no config, wrong shapes read null; enabled by default")
         check(len(w1["summary"]) == 600 and w1["summary_truncated"], "summary capped at 600 chars and flagged")
         check(w2["status"] == "stopped" and w2["duration_s"] is None, "closed without answer: stopped, no duration")
         check(w3["status"] == "running" and w3["duration_s"] is None, "open worker: running, no duration")
@@ -166,6 +179,91 @@ def run_fixture() -> None:
                 check(exc.status_code == code and str(exc.detail).startswith(detail), f"{what} [{exc.detail}]")
 
         run_processes(conn)
+    run_routes_close()
+    run_no_path_leak()
+
+
+class _TrackedConn:
+    """A real read-only connection that remembers whether close() was called."""
+
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self._real, self.closed = real, False
+
+    def close(self) -> None:
+        self.closed = True
+        self._real.close()
+
+    def __enter__(self):
+        self._real.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._real.__exit__(*exc)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def run_routes_close() -> None:
+    """Every route closes its connection before it returns (the panel polls them every 3 s)."""
+    real_connect, opened = api._connect, []
+
+    def tracking():
+        conn = _TrackedConn(real_connect())
+        opened.append(conn)
+        return conn
+
+    api._connect = tracking
+    try:
+        for name, call in (("/children", lambda: api.children("P2")),
+                           ("/output", lambda: api.output("P2", "W1")),
+                           ("/processes", lambda: api.processes("P2")),
+                           ("/process_output", lambda: api.process_output("P2", "proc_none")),
+                           ("/output refused", lambda: api.output("P2", "W4"))):
+            opened.clear()
+            try:
+                call()
+            except HTTPException:
+                pass
+            check(len(opened) == 1 and opened[0].closed, f"{name} closes its state.db connection when it returns")
+    finally:
+        api._connect = real_connect
+
+
+class _Unreadable:
+    """A path whose read fails with an OSError that names an absolute path."""
+
+    SECRET = "C:\\Users\\someone\\secret-home\\hermes"
+
+    def is_file(self) -> bool:
+        return True
+
+    def __truediv__(self, _name):
+        return self
+
+    def read_text(self, *a, **k):
+        raise PermissionError(13, "Permission denied", self.SECRET + "\\file.json")
+
+
+def run_no_path_leak() -> None:
+    """A 503 names the file and the error type, never an absolute path from the exception."""
+    saved = api._checkpoint_path, api._results_dir
+    api._checkpoint_path = lambda: _Unreadable()
+    api._results_dir = lambda: _Unreadable()
+    try:
+        with api._connect() as conn:
+            for what, call in (("processes.json", lambda: api.list_processes(conn, "P2")),
+                               ("a process record", lambda: api.read_process_output(conn, "P2", "proc_x"))):
+                try:
+                    call()
+                    check(False, f"an unreadable {what} is a 503")
+                except HTTPException as exc:
+                    detail = str(exc.detail)
+                    check(exc.status_code == 503 and "secret-home" not in detail and "Users" not in detail
+                          and "PermissionError" in detail,
+                          f"an unreadable {what} is a 503 that names the error but not the path [{detail}]")
+    finally:
+        api._checkpoint_path, api._results_dir = saved
 
 
 def write_json(path: Path, data, mtime: float | None = None) -> None:

@@ -3,6 +3,30 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.1.8 — 2026-09-26
+
+Fixes from a fourth blind review.
+
+### Fixes
+
+- **Every route now closes its state.db connection.** The routes used `with _connect() as conn:`,
+  which on a `sqlite3.Connection` only commits or rolls back and never closes, so each 3-second poll
+  left a handle open until garbage collection. They now use `contextlib.closing`, and
+  `check_api.py` proves each of the four routes (including a refused request) closes its connection.
+- **A 503 for an unreadable file no longer prints the exception text.** `processes.json unreadable`
+  and `record unreadable` put the raw OS error in the HTTP detail, which carries the absolute file
+  path. The detail is now `processes.json unreadable (PermissionError)` /
+  `process record unreadable (<error type>)`; the full error is logged server-side.
+- **The worker's model chip is readable and shows the reasoning effort.** Beside a docked chat the
+  chip shrank to "cl…" (it took the ellipsis instead of the name), and the effort the worker ran with
+  was never shown. `/children` now returns `effort` per worker, read from
+  `model_config.reasoning_config.effort` (null when missing, disabled or unparseable, never an error);
+  the chip reads `claude-opus-5-5 · medium` (the model alone when there is no effort), keeps its full
+  width while the worker name ellipsizes, and its tooltip names the full model id and the effort. It
+  is still hidden below 420 px. The preview gains a 480 px frame where the Electron gate measures that
+  no chip is cut.
+- Seven new canaries break each fix and require its gate to go red (63 mutations).
+
 ## 1.1.7 — 2026-09-25
 
 Fixes from a second blind review.
