@@ -25,6 +25,8 @@
  *      errors; a finished batch still listed is not re-added; commands show a loader; a batch of
  *      several workers says "+N more"; copy has a busy state; headings, focus rings, focusable
  *      tooltip triggers, reading tokens, a mounted live region; shared-prefix names stay distinct.
+ *  14. Round 4: a worker's model chip shows the model and its reasoning effort, never shrinks to a
+ *      stub (the name ellipsizes), and its tooltip names the full model id and effort.
  *   9. Background commands: read for the STORED chat id, newest first, one mark per status, exit
  *      code on a failed row, "—" for a stopped one; a row opens the full command + output tail read
  *      for that chat; a running command asks for no output; unreadable records and a failed read
@@ -135,8 +137,8 @@ const HISTORY = {
     {
       started_at: 1000,
       workers: [
-        { session_id: 'c-a', goal: "Polish 'alpha-panel' visuals", status: 'completed', duration_s: 312, tool_calls: 40, tokens: 120000, summary: 'Alpha answer paragraph.' },
-        { session_id: 'c-b', goal: "Polish 'beta-panel' visuals", status: 'stopped', duration_s: null, tool_calls: 12, tokens: 9000, summary: '' }
+        { session_id: 'c-a', goal: "Polish 'alpha-panel' visuals", model: 'anthropic/claude-opus-5-5', effort: 'medium', status: 'completed', duration_s: 312, tool_calls: 40, tokens: 120000, summary: 'Alpha answer paragraph.' },
+        { session_id: 'c-b', goal: "Polish 'beta-panel' visuals", model: 'claude-opus-5-5', effort: null, status: 'stopped', duration_s: null, tool_calls: 12, tokens: 9000, summary: '' }
       ]
     },
     {
@@ -258,6 +260,18 @@ const rows = qa('.sw-wr')
 check(rows.length === 2, 'batch opens to its two workers')
 check(rows[1].textContent.includes('—') && !/\d+[smh]/.test(rows[1].querySelector('.sw-wt').textContent), 'stopped worker shows — and no duration')
 check(rows[1].querySelector('.sw-mk').dataset.st === 'stopped', 'stopped worker draws the stopped mark')
+// M3: the chip shows the model with its reasoning effort, never a stub, and names both in its tooltip.
+const chip0 = rows[0].querySelector('.sw-model'), chip1 = rows[1].querySelector('.sw-model')
+check(chip0?.textContent === 'claude-opus-5-5 · medium', `an Earlier worker's chip shows model and effort (${chip0?.textContent})`)
+check(chip1?.textContent === 'claude-opus-5-5', `a worker without an effort shows the model alone (${chip1?.textContent})`)
+check(/anthropic\/claude-opus-5-5/.test(chip0?.dataset.tip || '') && /medium/.test(chip0?.dataset.tip || ''),
+  `the chip's tooltip names the full model id and the effort (${chip0?.dataset.tip})`)
+const modelRule = css.match(/\.sw-model\{[^}]*\}/)?.[0] || ''
+const nameRule = css.match(/\.sw-wn\{[^}]*\}/)?.[0] || ''
+check(/flex:0 0 auto/.test(modelRule) && !/text-overflow:ellipsis/.test(modelRule)
+  && /text-overflow:ellipsis/.test(nameRule) && /min-width:0/.test(nameRule),
+  `the model chip never shrinks to a stub; the worker name takes the ellipsis (${modelRule})`)
+check(/@container \(max-width:420px\)\{[^}]*\.sw-model/.test(css), 'the chip is still hidden below 420 px')
 await act(async () => { rows[0].click() })
 check(q('.sw-dt') && !q('.sw-dt p') && /tokens/.test(q('.sw-dtm')?.textContent || ''), 'worker detail is actions + stats only, no answer text')
 check(q('.sw-dtg')?.textContent === "Polish 'alpha-panel' visuals" && q('.sw-dt').firstElementChild?.querySelector('.sw-dtg') !== null, 'worker detail shows its goal above the actions')

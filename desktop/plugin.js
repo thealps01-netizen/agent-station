@@ -57,6 +57,7 @@ const BUNDLES = {
         stopped: 'Stopped — closed before it finished'
       },
       batch: n => `${n} worker${n === 1 ? '' : 's'}`,
+      modelTip: (model, effort) => (effort ? `${model} · reasoning effort ${effort}` : model),
       more: n => `+${n} more`,
       meta: (d, tools, tokens) => [d, `${tools} tool${tools === 1 ? '' : 's'}`, tokens ? `${tokens} tokens` : ''].filter(Boolean).join(' · '),
       units: {
@@ -153,14 +154,21 @@ export function modelLabel(model) {
   return String(model || '').split('/').pop()
 }
 
-// Full goal lives in the name's tooltip: the row stays one line, the purpose is one hover away.
-function NameBlock({ goal, model, name }) {
+/** Chip text: the model label, then the reasoning effort when the worker ran with one. */
+export function modelChip(model, effort) {
   const m = modelLabel(model)
+  return m && effort ? `${m} · ${effort}` : m
+}
+
+// Full goal lives in the name's tooltip: the row stays one line, the purpose is one hover away.
+// The chip keeps its full width; the name is what ellipsizes.
+function NameBlock({ t, goal, model, effort, name }) {
+  const chip = modelChip(model, effort)
   return jsxs('span', {
     className: 'sw-nl',
     children: [
       jsx(Tip, { label: String(goal || '').trim(), children: jsx('span', { className: 'sw-wn', children: name || workerName(goal) }) }, 'n'),
-      m ? jsx('span', { className: 'sw-model', children: m }, 'm') : null
+      chip ? jsx(Tip, { label: t('sw.modelTip', String(model), effort), children: jsx('span', { className: 'sw-model', children: chip }) }, 'm') : null
     ]
   })
 }
@@ -540,7 +548,7 @@ function WorkerRow({ t, w, name, open, onToggle }) {
     type: 'button', className: `sw-wr sw-nd sw-acc${open ? ' is-open' : ''}`, 'data-st': w.status, 'aria-expanded': open, onClick: onToggle,
     children: [
       jsx(Mark, { t, status: w.status }, 'm'),
-      jsx(NameBlock, { goal: w.goal, model: w.model, name }, 'n'),
+      jsx(NameBlock, { t, goal: w.goal, model: w.model, effort: w.effort, name }, 'n'),
       jsx('span', { className: 'sw-wt', children: time }, 't')
     ]
   })
@@ -603,7 +611,7 @@ function Node({ t, r, name, now, kids, depth, openWorker, setOpenWorker, onToast
         'aria-expanded': openWorker.has(key), onClick: () => setOpenWorker(key),
         children: [
           jsx(Mark, { t, status: r.status }, 'm'),
-          jsx(NameBlock, { goal: r.goal, model: r.model, name }, 'n'),
+          jsx(NameBlock, { t, goal: r.goal, model: r.model, effort: r.effort, name }, 'n'),
           running && r.last_tool ? jsx('span', { className: 'sw-now', children: r.last_tool }, 'l') : null,
           jsx('span', { className: 'sw-wt', children: time }, 't')
         ]
@@ -995,7 +1003,7 @@ const CSS = `
 .sw-nl{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
 .sw-nl .sw-wn{flex:1 1 auto}
 .sw-model{font:11.5px var(--sw-mono);color:var(--ui-text-secondary);border:1px solid var(--ui-stroke-tertiary);
- border-radius:4px;padding:0 5px;line-height:15px;white-space:nowrap;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+ border-radius:4px;padding:0 5px;line-height:15px;white-space:nowrap;flex:0 0 auto}
 .sw-now{font:11.5px var(--sw-mono);color:var(--ui-text-secondary);background:var(--ui-bg-tertiary);
  border-radius:4px;padding:1px 6px;flex:0 1 auto;min-width:0;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw-dt{display:flex;flex-direction:column;gap:6px;margin:6px 0 2px 22px;padding-left:18px}

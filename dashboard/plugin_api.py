@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import closing
 import re
 import sqlite3
 import time
@@ -74,6 +75,12 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _unreadable(what: str, exc: Exception) -> HTTPException:
+    """A 503 that names the file and the error type; the full message (with its path) is only logged."""
+    log.warning("subagent-watch: %s unreadable: %s", what, exc)
+    return HTTPException(status_code=503, detail=f"{what} unreadable ({type(exc).__name__})")
+
+
 def _delegate_from(model_config: str | None) -> str | None:
     if not model_config:
         return None
@@ -81,6 +88,19 @@ def _delegate_from(model_config: str | None) -> str | None:
         return (json.loads(model_config) or {}).get("_delegate_from")
     except (TypeError, ValueError):
         return None
+
+
+def _effort(model_config: str | None) -> str | None:
+    """The worker's reasoning effort from model_config.reasoning_config; None when off, absent or unreadable."""
+    try:
+        cfg = json.loads(model_config) if model_config else None
+    except (TypeError, ValueError):
+        return None
+    reasoning = cfg.get("reasoning_config") if isinstance(cfg, dict) else None
+    if not isinstance(reasoning, dict) or reasoning.get("enabled") is False:
+        return None
+    effort = reasoning.get("effort")
+    return effort if isinstance(effort, str) and effort else None
 
 
 def _lineage(conn: sqlite3.Connection, session_id: str) -> list[str]:
@@ -161,6 +181,7 @@ def _worker(conn: sqlite3.Connection, row: sqlite3.Row, now: float) -> dict:
         "session_id": row["id"],
         "goal": _goal(conn, row["id"]),
         "model": row["model"],
+        "effort": _effort(row["model_config"]),
         "status": status,
         "end_reason": row["end_reason"],
         "started_at": row["started_at"],
@@ -178,7 +199,7 @@ def list_children(conn: sqlite3.Connection, session_id: str, now: float | None =
     ids = _lineage(conn, session_id)
     marks = ",".join("?" * len(ids))
     rows = conn.execute(
-        "select id, model, started_at, ended_at, end_reason, tool_call_count, input_tokens, "
+        "select id, model, model_config, started_at, ended_at, end_reason, tool_call_count, input_tokens, "
         "output_tokens, last_activity_at from sessions "
         f"where json_extract(model_config, '$._delegate_from') in ({marks}) order by started_at",
         ids,
@@ -252,7 +273,7 @@ def _read_running() -> list[dict]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail=f"processes.json unreadable: {exc}") from exc
+        raise _unreadable("processes.json", exc) from exc
     return data if isinstance(data, list) else []
 
 
@@ -346,7 +367,7 @@ def read_process_output(conn: sqlite3.Connection, session_id: str, process_id: s
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"no finished record for {process_id}") from exc
     except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail=f"record unreadable: {exc}") from exc
+        raise _unreadable("process record", exc) from exc
     if record.get("parent_session_id") not in set(_lineage(conn, session_id)):
         raise HTTPException(status_code=403, detail="process belongs to another conversation")
     text = str(record.get("output") or "")
@@ -358,23 +379,23 @@ def read_process_output(conn: sqlite3.Connection, session_id: str, process_id: s
 
 @router.get("/children")
 def children(session_id: str) -> dict:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         return list_children(conn, session_id)
 
 
 @router.get("/output")
 def output(session_id: str, worker_id: str) -> dict:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         return read_output(conn, session_id, worker_id)
 
 
 @router.get("/processes")
 def processes(session_id: str) -> dict:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         return list_processes(conn, session_id)
 
 
 @router.get("/process_output")
 def process_output(session_id: str, process_id: str) -> dict:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         return read_process_output(conn, session_id, process_id)
