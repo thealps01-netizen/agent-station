@@ -3,6 +3,18 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.1.9 — 2026-09-27
+
+### Fixes
+
+- **Workers that finish early stay in the live tree.** The backend drops a worker from
+  `subagent.list` the moment it finishes, and while any worker of a batch was still running the
+  stored copy of that batch was hidden from Earlier, so a six-worker batch with five done read
+  "1 worker 0/1" and the five finished workers showed nowhere. Those workers are now taken from
+  state.db into the live tree, done, and counted in the header ("6 workers 5/6"); a worker the live
+  tree already has is not added twice. `render_check.mjs` gains three checks (the first fails on 1.1.8).
+- **The panel uses the full width of its pane.** `.sw-panel` no longer caps itself at 560 px.
+
 ## 1.1.8 — 2026-09-26
 
 Fixes from a fourth blind review.

@@ -381,6 +381,17 @@ extraBatches = [{ started_at: liveStart - 1, workers: [{ session_id: 'k9', goal:
 await act(async () => q('.sw-hd .sw-ib').click())
 await tick(10)
 check(qa('.sw-hb').length === 2, 'a stored batch still running is not repeated under Earlier while live')
+// Its finished workers are gone from subagent.list, so the live tree must take them from state.db.
+extraBatches = [{ started_at: liveStart - 1, workers: [
+  { session_id: 'k9', goal: "Build 'one'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' },
+  { session_id: 'k10', goal: "Build 'done-early'", status: 'completed', duration_s: 40, tool_calls: 3, tokens: 0, summary: 'ok' }
+] }]
+await act(async () => q('.sw-hd .sw-ib').click())
+await tick(10)
+check(qa('.sw-fl .sw-nd').some(n => n.textContent.includes('done-early') && n.querySelector('.sw-mk').dataset.st === 'completed'),
+  'a worker that finished before the rest stays in the live tree, done')
+check(!qa('.sw-hb').some(b => b.textContent.includes('done-early')), 'that finished worker is not also under Earlier')
+check(!qa('.sw-fl .sw-nd').some(n => n.textContent.includes("Build 'one'") && n.dataset.st === 'completed'), 'a live worker is not duplicated from state.db')
 // A stored batch that still reads running but started long before the live tree is not the live
 // tree (a crashed run, or another generation): it stays under Earlier.
 extraBatches = [{ started_at: 3000, workers: [{ session_id: 'k8', goal: "Old 'crashed-run'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' }] }]

@@ -827,15 +827,30 @@ export function Page() {
   // no earlier than the live tree (less LIVE_MATCH_S) IS that tree.
   const liveStarts = live.batches.flatMap(b => b.rows.map(r => r.started_at)).filter(Number.isFinite)
   const liveFrom = (liveStarts.length ? Math.min(...liveStarts) : now) - LIVE_MATCH_S
-  const past = (history.data?.batches || [])
-    .filter(b => !(live.batches.length && b.started_at >= liveFrom && b.workers.some(w => w.status === 'running')))
+  const isLiveStored = b => live.batches.length > 0 && b.started_at >= liveFrom && b.workers.some(w => w.status === 'running')
+  const stored = history.data?.batches || []
+  // The backend drops a worker from subagent.list the moment it finishes, so a half-done batch's
+  // finished workers exist only in state.db. They join the live tree; hiding the stored batch
+  // without them turned '6 workers 5/6' into '1 worker 0/1'.
+  const liveDoneGoals = live.batches.flatMap(b => b.rows).filter(r => TERMINAL.has(r.status)).map(r => String(r.goal || '').trim())
+  const storedDone = stored.filter(isLiveStored).flatMap(b => b.workers)
+    .filter(w => w.status !== 'running' && !liveSessions.has(w.session_id)
+      && !liveDoneGoals.some(g => g && w.goal && g.startsWith(w.goal)))
+  const nowBatches = storedDone.length
+    ? live.batches.map((b, i) => (i < live.batches.length - 1 ? b : liveBatches([
+      ...b.rows,
+      ...storedDone.map(w => ({ ...w, subagent_id: `db:${w.session_id}`, delegation_id: b.id, tool_count: w.tool_calls, task_index: -1 }))
+    ])[0]))
+    : live.batches
+  const past = stored
+    .filter(b => !isLiveStored(b))
     .map(b => ({ ...b, workers: b.workers.filter(w => !liveSessions.has(w.session_id)) }))
     .filter(b => b.workers.length)
     .reverse()
   const shown = showAll ? past : past.slice(0, HISTORY_PAGE)
   const totals = {
-    batches: live.batches.length + past.length,
-    workers: live.batches.reduce((n, b) => n + b.rows.length, 0) + past.reduce((n, b) => n + b.workers.length, 0)
+    batches: nowBatches.length + past.length,
+    workers: nowBatches.reduce((n, b) => n + b.rows.length, 0) + past.reduce((n, b) => n + b.workers.length, 0)
   }
   const runningN = live.batches.reduce((n, b) => n + b.rows.filter(r => r.status === 'running').length, 0)
   const procSection = storedId
@@ -857,7 +872,7 @@ export function Page() {
   } else {
     body = [
       live.batches.length ? jsx('h3', { className: 'sw-lab', children: t('sw.now') }, 'nl') : null,
-      ...live.batches.map(b => jsx(Flow, { t, batch: b, now, openWorker, setOpenWorker, onToast }, b.id)),
+      ...nowBatches.map(b => jsx(Flow, { t, batch: b, now, openWorker, setOpenWorker, onToast }, b.id)),
       past.length ? jsx('h3', { className: 'sw-lab', children: t('sw.earlier') }, 'el') : null,
       ...shown.map(b => {
         const key = String(b.started_at)
@@ -925,7 +940,7 @@ export function Page() {
 
 const CSS = `
 .sw-page{height:100%;min-height:0;overflow:auto;padding:20px 24px;color:var(--ui-text-primary);font-size:12px}
-.sw-panel{max-width:560px;position:relative;container-type:inline-size;
+.sw-panel{position:relative;container-type:inline-size;
  --sw-mono:ui-monospace,"Cascadia Mono",Consolas,var(--dt-font-mono,monospace)}
 /* Docked beside the chat the worker name needs every pixel: a model chip cut to 'c…' says nothing. */
 @container (max-width:420px){.sw-panel .sw-model,.sw-panel .sw-strip{display:none}.sw-panel .sw-bl{gap:7px;padding:0 8px}.sw-panel .sw-now{max-width:72px}}
