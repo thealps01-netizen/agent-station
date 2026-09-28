@@ -3,6 +3,21 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.1.10 — 2026-09-28
+
+### Fixes
+
+- **A click inside the panel no longer switches it to another chat.** The page followed the app's
+  focused chat, and the app names its MAIN chat as focused once a zone that is not a chat is
+  clicked. With the watched chat open as a tab beside another main chat, clicking a worker row
+  moved the panel to the main chat ("No subagents yet"). The page now keeps the chat it shows while
+  the last click or focus move landed in the panel or in another page's tile (`route-tile:` /
+  `preview-tile:`), and follows the app on any other click (a chat, the Sessions sidebar).
+  Copy full output reads for the watched chat too. `render_check.mjs` gains six checks (three fail
+  on 1.1.9).
+- **Canary #12 applies again.** 1.1.9 renamed the Earlier filter (`isLiveStored`) and the mutation's
+  anchor stopped matching; it now targets the new line. Three canaries lock the watched-chat hold.
+
 ## 1.1.9 — 2026-09-27
 
 ### Fixes

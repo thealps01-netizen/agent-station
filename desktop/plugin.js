@@ -17,7 +17,7 @@
  */
 import { ErrorState, host, Loader, PanelEmpty, Tip, usePluginI18n, useValue } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 const ID = 'subagent-watch'
 const ROUTE = '/subagent-watch'
@@ -38,6 +38,8 @@ const STATUS_OF = {
 const TERMINAL = new Set(['completed', 'failed', 'stopped'])
 
 let ctxRef = null
+// The stored id of the chat the page watches (see useWatchedChat), for reads deep in the tree.
+const WatchedChat = createContext(null)
 
 const BUNDLES = {
   en: {
@@ -501,7 +503,7 @@ async function writeClip(text, t, onToast) {
 function Detail({ t, worker, onToast }) {
   const [busy, setBusy] = useState(false)
   // The backend serves a worker's output only to the chat that delegated it.
-  const storedId = useValue(host.state.focusedStoredSessionId)
+  const storedId = useContext(WatchedChat)
   const sid = worker.session_id || worker.child_session_id
   const copy = async () => {
     if (!sid) return
@@ -792,10 +794,61 @@ function useOpenSet() {
   return [open, toggle, () => setOpen(new Set())]
 }
 
+// Zones whose click makes the app name its MAIN chat as focused although no chat was picked: this
+// page's own route tile, other plugin pages and previews. A click in them keeps the watched chat.
+const HOLD_PANES = ['route-tile:', 'preview-tile:']
+
+function heldBy(target, pageEl) {
+  if (typeof target?.closest !== 'function') return false
+  if (pageEl && pageEl.contains(target)) return true
+  const zone = target.closest('[data-tree-group]')
+  const pane = target.closest('[data-tree-tab]')?.getAttribute('data-tree-tab')
+    || zone?.querySelector('[data-tree-tab][aria-selected="true"]')?.getAttribute('data-tree-tab')
+    || ''
+  return HOLD_PANES.some(p => pane.startsWith(p))
+}
+
+/**
+ * The chat this page watches. It follows the app's focused chat, except while the last click (or
+ * focus move) landed in this page or in another page's tile: there the app falls back to the main
+ * chat, and following it made a click on a worker row show another chat's (empty) history.
+ */
+function useWatchedChat(pageRef) {
+  const appRuntime = useValue(host.state.focusedSessionId)
+  const appStored = useValue(host.state.focusedStoredSessionId)
+  const [watched, setWatched] = useState({ runtimeId: appRuntime, storedId: appStored })
+  const held = useRef(false)
+
+  useEffect(() => {
+    const onInteract = event => {
+      held.current = heldBy(event.target, pageRef.current)
+      if (!held.current) {
+        setWatched({ runtimeId: host.state.focusedSessionId.get(), storedId: host.state.focusedStoredSessionId.get() })
+      }
+    }
+    window.addEventListener('pointerdown', onInteract, true)
+    window.addEventListener('focusin', onInteract, true)
+    return () => {
+      window.removeEventListener('pointerdown', onInteract, true)
+      window.removeEventListener('focusin', onInteract, true)
+    }
+  }, [])
+
+  useEffect(() => {
+    // Decided after the click has run every listener: the app moves its focused chat in its own
+    // pointerdown listener, and React can render that before this page's listener has seen the click.
+    return ctxRef.setTimeout(() => {
+      if (!held.current) setWatched({ runtimeId: host.state.focusedSessionId.get(), storedId: host.state.focusedStoredSessionId.get() })
+    }, 0)
+  }, [appRuntime, appStored])
+
+  return watched
+}
+
 export function Page() {
   const t = usePluginI18n(ID)
-  const runtimeId = useValue(host.state.focusedSessionId)
-  const storedId = useValue(host.state.focusedStoredSessionId)
+  const pageRef = useRef(null)
+  const { runtimeId, storedId } = useWatchedChat(pageRef)
   const history = useHistory(storedId)
   const live = useLive(runtimeId, history.reload)
   const procs = useProcesses(storedId)
@@ -894,8 +947,8 @@ export function Page() {
     procs.error ? t('sw.err.withDetail', t('sw.err.procs'), procs.error) : null
   ].filter(Boolean)
 
-  return jsxs('div', {
-    className: 'sw-page',
+  return jsx(WatchedChat.Provider, { value: storedId, children: jsxs('div', {
+    className: 'sw-page', ref: pageRef,
     children: [
       jsx('style', { children: CSS }, 'css'),
       jsxs('div', {
@@ -935,7 +988,7 @@ export function Page() {
         ]
       }, 'panel')
     ]
-  })
+  }) })
 }
 
 const CSS = `
