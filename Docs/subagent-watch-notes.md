@@ -26,6 +26,7 @@ Sidebar entry "Subagents" → route `/subagent-watch`.
 ## Data
 | What | Source |
 |---|---|
+| Watched chat | the app's focused chat (`focusedStoredSessionId` / `focusedSessionId`), held while the last pointerdown/focusin landed in this page or in a `route-tile:` / `preview-tile:` zone — see below |
 | Live workers | gateway events `subagent.spawn_requested/start/progress/tool/complete`, filtered to the focused runtime session id; reconciled every 3 s by `subagent.list({session_id})` |
 | Earlier batches | `GET /api/plugins/subagent-watch/children?session_id=<stored id>` — `dashboard/plugin_api.py` |
 | Full output | `GET /api/plugins/subagent-watch/output?session_id=<stored id>&worker_id=<child id>` — 403 unless the child was delegated from that chat (or a worker of it) |
@@ -67,6 +68,19 @@ Nothing is parsed out of chat text. Both sources are files Hermes itself writes,
   (~3 ms on this machine). The list never carries output; `/process_output` reads one receipt.
 - **Failures are shown:** an unreadable receipt is counted and printed in red beside the section
   title; an unreadable `processes.json` is a 503 shown in the page's alert box.
+
+### Which chat the page watches
+The app derives its focused chat from the last clicked zone (`store/session-focus.ts`): a
+`session-tile:` pane is that chat, ANY other zone falls back to the main chat. This page is such a
+zone, so following the app blindly made a click on a worker row switch the page to the main chat
+whenever the watched chat was open as a tab beside another main chat (1.1.10 fix).
+`useWatchedChat` listens to `pointerdown` / `focusin` (capture) and holds the watched chat while
+the target is inside this page, or in a zone whose tab (clicked or active) is a `route-tile:` /
+`preview-tile:` pane. Any other interaction — a chat tile, the Sessions sidebar, outside every
+zone — follows the app again. Depends on the app's `data-tree-group` / `data-tree-tab` /
+`aria-selected` markup; if the app renames it, the hold stops working and the page falls back to
+the old behaviour (it never shows a wrong chat that the app did not name). A chat switch made only
+by keyboard while the hold is on is picked up at the next click outside the panel.
 
 ## Not here on purpose
 Interrupt / steer / live transcript — the composer status stack already owns them.

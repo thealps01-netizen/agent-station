@@ -27,6 +27,9 @@
  *      tooltip triggers, reading tokens, a mounted live region; shared-prefix names stay distinct.
  *  14. Round 4: a worker's model chip shows the model and its reasoning effort, never shrinks to a
  *      stub (the name ellipsizes), and its tooltip names the full model id and effort.
+ *  15. The watched chat: the app names the MAIN chat as focused once a zone that is not a chat is
+ *      clicked, so a click inside the panel (or on another page's route-tile tab) keeps the chat the
+ *      page shows; a click on a chat, in the Sessions sidebar, or anywhere else follows the app.
  *   9. Background commands: read for the STORED chat id, newest first, one mark per status, exit
  *      code on a failed row, "—" for a stopped one; a row opens the full command + output tail read
  *      for that chat; a running command asks for no output; unreadable records and a failed read
@@ -218,6 +221,19 @@ check(tr('sw.nProcs', 1) === '1 background command' && tr('sw.nProcs', 3) === '3
 check(tr('sw.nWorkers', 1) === '1 worker' && tr('sw.nWorkers', 2) === '2 workers', `worker count is singular for one (${tr('sw.nWorkers', 1)})`)
 
 // mount
+// The app's own focus tracker (store.ts trackActiveTreeGroup) is a window capture listener registered
+// at boot, before any page mounts: it moves the focused chat INSIDE the click, before the page's own
+// listener runs. `appFocusNext` is what that click makes the app report. A real click runs a microtask
+// checkpoint after each listener, so React renders that change (sync lane, passive effects flushed)
+// before the page's listener sees the event: flushSync reproduces that order under jsdom.
+const { flushSync } = await import('react-dom')
+let appFocusNext = null
+window.addEventListener('pointerdown', () => {
+  if (!appFocusNext) return
+  const [rt, st] = appFocusNext
+  appFocusNext = null
+  flushSync(() => { stub.atoms.focusedSessionId.set(rt); stub.atoms.focusedStoredSessionId.set(st) })
+}, true)
 const host = document.createElement('div')
 document.body.appendChild(host)
 const root = createRoot(host)
@@ -492,6 +508,49 @@ check(q('.sw-procs [data-slot=loader]') !== null, 'background commands show a lo
 await act(async () => { releaseProcs() })
 await tick(10)
 check(!q('.sw-procs [data-slot=loader]') && qa('.sw-pr').length === 4, 'the loading state gives way to the commands')
+
+// 15. the watched chat survives clicks that are not a chat switch
+const pointer = el => el.dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
+const chatTab = (id) => { const el = document.createElement('div'); el.setAttribute('data-tree-tab', id); document.body.appendChild(el); return el }
+await act(async () => { pointer(document.body) })
+await tick(10)
+check(qa('.sw-pr').length === 4, `watching the first chat before the clicks (${qa('.sw-pr').length})`)
+let mark = rest.length
+// A click on a panel row: the app, inside that click, now reports the main chat (st-2) as focused.
+await act(async () => {
+  appFocusNext = ['rt-2', 'st-2']
+  pointer(q('.sw-hb'))
+})
+await tick(10)
+check(!rest.slice(mark).some(p => p.includes('session_id=st-2')) && qa('.sw-pr').length === 4,
+  `a click inside the panel keeps the watched chat (${rest.slice(mark).join(' ')})`)
+// A click on a chat tab is a real switch: the page follows the app's focused chat.
+mark = rest.length
+await act(async () => { pointer(chatTab('session-tile:st-2')) })
+await tick(10)
+check(rest.slice(mark).includes('/processes?session_id=st-2') && !qa('.sw-pr').length,
+  `a click on a chat moves the panel to that chat (${rest.slice(mark).join(' ')})`)
+// A click on another page's tab (a route tile, e.g. Approvals) is held like a click inside the panel.
+mark = rest.length
+await act(async () => {
+  appFocusNext = ['rt-1', 'st-1']
+  pointer(chatTab('route-tile:/approvals'))
+})
+await tick(10)
+check(!rest.slice(mark).some(p => p.includes('session_id=st-1')) && !qa('.sw-pr').length,
+  `a click on another page's tab keeps the watched chat (${rest.slice(mark).join(' ')})`)
+// A switch the user makes elsewhere is followed: outside every zone, and from the Sessions sidebar.
+await act(async () => { pointer(document.body) })
+await tick(10)
+check(qa('.sw-pr').length === 4, 'a click outside the panel follows the focused chat again')
+await act(async () => {
+  pointer(chatTab('sessions'))
+  stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2')
+})
+await tick(10)
+check(!qa('.sw-pr').length, 'a chat picked in the Sessions sidebar is followed')
+await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
+await tick(10)
 
 // empty chat
 historyFails = false

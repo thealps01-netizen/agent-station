@@ -2,6 +2,6 @@
   "name": "subagent-watch",
   "label": "Subagent Watch",
   "description": "Read-only view of delegate_task workers: the live batch as a tree, earlier batches as a list, full worker output on demand; plus the chat's background shell commands.",
-  "version": "1.1.9",
+  "version": "1.1.10",
   "api": "plugin_api.py"
 }
