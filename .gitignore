@@ -5,3 +5,5 @@ __pycache__/
 tests/preview.html
 tests/*.measure.json
 tests/*.contrast.json
+# local pre-edit copies (restore points), never shipped
+Docs/backups/
