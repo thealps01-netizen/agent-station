@@ -77,6 +77,11 @@ selftest), the release gate, the jsdom render check and the canary run on Ubuntu
 a sparse checkout of the core pinned at `CORE_SHA`. The measured Electron render needs a built app
 and stays local — run it before a release.
 
+It runs once per pull request (a newer commit cancels the older run) and on every push to `main`;
+Actions → CI → "Run workflow" runs it by hand. `main` has no GitHub-enforced protection (branch
+protection needs GitHub Pro on a private repo), so the rule lives in `AGENTS.md`: every change reaches
+`main` through a pull request whose CI is green.
+
 ## Versioning
 
 `plugin.yaml` is the source; `dashboard/manifest.json` and the top `CHANGELOG.md` heading must match.
