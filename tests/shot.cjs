@@ -17,11 +17,16 @@
 const { app, BrowserWindow } = require('electron')
 const fs = require('fs')
 const path = require('path')
+if (process.env.SUBAGENT_PREVIEW_HOME) {
+  const userData = path.join(path.resolve(process.env.SUBAGENT_PREVIEW_HOME), String(process.pid))
+  fs.mkdirSync(userData, { recursive: true })
+  app.setPath('userData', userData)
+}
 
 const [htmlArg, outArg] = process.argv.slice(2)
 const htmlPath = htmlArg || path.join(__dirname, 'preview.html')
 const outPath = outArg || path.join(__dirname, 'preview.png')
-const WIDTH = 690
+const WIDTH = 1000
 
 app.disableHardwareAcceleration()
 
@@ -92,12 +97,17 @@ const PREPARE = `(() => {
     return null
   }
   const root = document.body
+  const visible = el => {
+    if (!el.getClientRects().length) return false
+    const closed = el.closest('details:not([open])')
+    return !closed || closed.querySelector('summary')?.contains(el)
+  }
   const textRows = []
   for (const el of [root, ...root.querySelectorAll('*')]) {
     const own = [...el.childNodes]
       .filter(n => n.nodeType === 3 && (n.nodeValue || '').trim())
       .map(n => n.nodeValue.trim()).join(' ')
-    if (!own) continue
+    if (!own || !visible(el)) continue
     const cs = getComputedStyle(el)
     if (cs.visibility === 'hidden' || cs.display === 'none') continue
     const ink = parseColor(cs.color)
@@ -179,7 +189,13 @@ const PREPARE = `(() => {
   const chips = [...document.querySelectorAll('.swp-frame .sw-model')]
     .filter(el => getComputedStyle(el).display !== 'none')
     .map(el => ({ text: el.textContent, docked: !!el.closest('.is-docked'), cut: el.scrollWidth > el.clientWidth }))
+  const desks = [...document.querySelectorAll('.sw-attention')].map(el => ({
+    width: el.closest('.sw-panel').getBoundingClientRect().width,
+    columns: getComputedStyle(el).gridTemplateColumns.split(' ').filter(Boolean).length,
+    inspectors: el.querySelectorAll('.sw-inspector').length
+  }))
   return {
+    desks,
     chips,
     frames: document.querySelectorAll('.swp-frame').length,
     overflow,
@@ -229,6 +245,11 @@ app.whenReady().then(async () => {
   console.log(`  lowest gated ${lowest ? `${lowest.ratio}:1 need ${lowest.need} .${lowest.sel} [${lowest.text}]` : '—'}`)
 
   const red = []
+  for (const desk of measured.desks) {
+    if (desk.columns !== (desk.width > 690 ? 2 : 1) || desk.inspectors !== 1) {
+      red.push('Attention Desk queue/inspector composition changed')
+    }
+  }
   for (const row of ct.violations) {
     red.push(`contrast ${row.ratio}:1 < ${row.need}:1 for .${row.sel} [${row.text}] ${row.px}px/${row.weight}`
       + ` (${row.klass}) ink ${row.ink} a${row.inkAlpha} on ${row.fill}`)

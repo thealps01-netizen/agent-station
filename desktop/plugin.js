@@ -24,6 +24,7 @@ const ROUTE = '/subagent-watch'
 const POLL_MS = 3000
 const MAX_POLL_FAILS = 3
 const HISTORY_PAGE = 8
+const DESK = { height: 560, minHeight: 320, row: 64, output: 340, context: 260, narrow: 690 }
 // A stored batch still reading "running" is the live tree only when it started around the same time:
 // one that started well before the live tree began is a crashed run and stays under Earlier.
 const LIVE_MATCH_S = 120
@@ -45,6 +46,16 @@ const BUNDLES = {
   en: {
     sw: {
       title: 'Subagents',
+      desk: {
+        queue: 'Workers and background commands',
+        detail: 'Selected original evidence',
+        context: 'Live tree and earlier batches',
+        next: 'Read the original evidence, then copy it or open the worker session.',
+        waiting: 'No stored answer is available yet.',
+        loading: 'Reading the original worker answer',
+        output: 'Original worker answer',
+        summary: 'Live result summary — not a stored answer'
+      },
       running: n => `${n} running`,
       nBatches: n => `${n} batch${n === 1 ? '' : 'es'}`,
       nWorkers: n => `${n} worker${n === 1 ? '' : 's'}`,
@@ -315,6 +326,35 @@ function IconButton({ label, icon, onClick, disabled, busy }) {
 
 // ── data hooks ───────────────────────────────────────────────────────────────
 
+function reconcileBatches(liveTrees, stored, now) {
+  const liveSessions = new Set(liveTrees.flatMap(b => b.rows.map(r => r.child_session_id).filter(Boolean)))
+  // subagent.list carries no child_session_id, so a batch still running on the backend is matched by
+  // state and time: while a live tree is drawn, a stored batch with an unfinished worker that started
+  // no earlier than the live tree (less LIVE_MATCH_S) IS that tree.
+  const liveStarts = liveTrees.flatMap(b => b.rows.map(r => r.started_at)).filter(Number.isFinite)
+  const liveFrom = (liveStarts.length ? Math.min(...liveStarts) : now) - LIVE_MATCH_S
+  const isLiveStored = b => liveTrees.length > 0 && b.started_at >= liveFrom && b.workers.some(w => w.status === 'running')
+  // The backend drops a worker from subagent.list the moment it finishes, so a half-done batch's
+  // finished workers exist only in state.db. They join the live tree; hiding the stored batch
+  // without them turned '6 workers 5/6' into '1 worker 0/1'.
+  const liveDoneGoals = liveTrees.flatMap(b => b.rows).filter(r => TERMINAL.has(r.status)).map(r => String(r.goal || '').trim())
+  const storedDone = stored.filter(isLiveStored).flatMap(b => b.workers)
+    .filter(w => w.status !== 'running' && !liveSessions.has(w.session_id)
+      && !liveDoneGoals.some(g => g && w.goal && g.startsWith(w.goal)))
+  const nowBatches = storedDone.length
+    ? liveTrees.map((b, i) => (i < liveTrees.length - 1 ? b : liveBatches([
+      ...b.rows,
+      ...storedDone.map(w => ({ ...w, subagent_id: `db:${w.session_id}`, delegation_id: b.id, tool_count: w.tool_calls, task_index: -1 }))
+    ])[0]))
+    : liveTrees
+  const past = stored
+    .filter(b => !isLiveStored(b))
+    .map(b => ({ ...b, workers: b.workers.filter(w => !liveSessions.has(w.session_id)) }))
+    .filter(b => b.workers.length)
+    .reverse()
+  return { nowBatches, past }
+}
+
 function useNow(active) {
   const [now, setNow] = useState(() => Date.now() / 1000)
   useEffect(() => {
@@ -324,55 +364,45 @@ function useNow(active) {
   return now
 }
 
-/** Earlier batches for one stored session, from the plugin backend. */
-function useHistory(storedId) {
+function useSessionRead(storedId, route, ms) {
   const [state, setState] = useState({ key: null, data: null, error: null, loading: false })
-  const gen = useRef(0)
-  const load = useCallback(() => {
-    if (!storedId) {
-      setState({ key: null, data: null, error: null, loading: false })
-      return
+  const reloadRef = useRef(() => Promise.resolve())
+  useEffect(() => {
+    let alive = true
+    let pending = false
+    let queued = false
+    const load = async () => {
+      if (!alive || !storedId) return
+      if (pending) { queued = true; return }
+      pending = true
+      setState(prev => prev.key === storedId ? { ...prev, loading: true }
+        : { key: storedId, data: null, error: null, loading: true })
+      try {
+        const data = await ctxRef.rest(`/${route}?session_id=${encodeURIComponent(storedId)}`)
+        if (alive) setState({ key: storedId, data, error: null, loading: false })
+      } catch (err) {
+        if (alive) setState(prev => ({ ...prev, key: storedId, error: String(err?.message || err), loading: false }))
+      } finally {
+        pending = false
+        if (alive && queued) { queued = false; void load() }
+      }
     }
-    const mine = ++gen.current
-    // Another chat's data and error never ride along into this one.
-    setState(prev => (prev.key === storedId ? { ...prev, loading: true } : { key: storedId, data: null, error: null, loading: true }))
-    ctxRef.rest(`/children?session_id=${encodeURIComponent(storedId)}`).then(
-      data => mine === gen.current && setState({ key: storedId, data, error: null, loading: false }),
-      err => mine === gen.current && setState(prev => ({ ...prev, error: String(err?.message || err), loading: false }))
-    )
-  }, [storedId])
-  useEffect(load, [load])
-  return { ...state, reload: load }
+    reloadRef.current = load
+    if (storedId) void load()
+    else setState({ key: null, data: null, error: null, loading: false })
+    const stop = storedId && ms ? ctxRef.setInterval(() => void load(), ms) : null
+    return () => { alive = false; stop?.(); reloadRef.current = () => Promise.resolve() }
+  }, [storedId, route, ms])
+  const own = state.key === storedId ? state : { key: storedId, data: null, error: null, loading: Boolean(storedId) }
+  return { ...own, reload: useCallback(() => reloadRef.current(), []) }
 }
 
-/**
- * Background shell processes of one stored session, from the plugin backend, polled every POLL_MS
- * so a command started after the page opened appears without a refresh. The backend parses each
- * finished receipt once, so a poll is a directory listing plus a small JSON file.
- */
+function useHistory(storedId) {
+  return useSessionRead(storedId, 'children', 0)
+}
+
 function useProcesses(storedId) {
-  const [state, setState] = useState({ key: null, data: null, error: null })
-  const gen = useRef(0)
-  const load = useCallback(() => {
-    if (!storedId) {
-      setState({ key: null, data: null, error: null })
-      return
-    }
-    const mine = ++gen.current
-    setState(prev => (prev.key === storedId ? prev : { key: storedId, data: null, error: null }))
-    ctxRef.rest(`/processes?session_id=${encodeURIComponent(storedId)}`).then(
-      data => { if (mine === gen.current) setState({ key: storedId, data, error: null }) },
-      err => { if (mine === gen.current) setState(prev => ({ ...prev, key: storedId, error: String(err?.message || err) })) }
-    )
-  }, [storedId])
-  useEffect(() => {
-    load()
-    if (!storedId) return undefined
-    return ctxRef.setInterval(load, POLL_MS)
-  }, [load])
-  const own = state.key === storedId ? state : { data: null, error: null }
-  // Loading = this chat's first read has not answered yet (later polls keep the last answer shown).
-  return { ...own, loading: Boolean(storedId) && !own.data && !own.error, reload: load }
+  return useSessionRead(storedId, 'processes', POLL_MS)
 }
 
 function mergeRecord(prev, patch) {
@@ -423,8 +453,12 @@ function useLive(runtimeId, onBatchEnded) {
     }))
 
     let alive = true
+    let pending = false
+    let queued = false
     const poll = async () => {
       if (!alive || fails.current >= MAX_POLL_FAILS) return
+      if (pending) { queued = true; return }
+      pending = true
       try {
         const snap = await host.request('subagent.list', { session_id: runtimeId })
         if (!alive) return
@@ -445,9 +479,13 @@ function useLive(runtimeId, onBatchEnded) {
           return next
         })
       } catch (err) {
+        if (!alive) return
         fails.current += 1
         console.warn(`[${ID}] subagent.list failed (${fails.current}/${MAX_POLL_FAILS})`, err)
         if (alive && fails.current >= MAX_POLL_FAILS) setError(String(err?.message || err))
+      } finally {
+        pending = false
+        if (alive && queued) { queued = false; void poll() }
       }
     }
     pollRef.current = poll
@@ -466,16 +504,19 @@ function useLive(runtimeId, onBatchEnded) {
   const finished = batches.filter(b => b.rows.every(r => TERMINAL.has(r.status))).map(b => b.id).join('|')
   useEffect(() => {
     if (!finished) return
+    let alive = true
     const ids = new Set(finished.split('|'))
     for (const b of batches) if (ids.has(b.id)) for (const r of b.rows) gone.current.add(r.subagent_id)
     Promise.resolve(endedRef.current?.()).finally(() => {
+      if (!alive) return
       setRecords(prev => {
         const next = { ...prev }
         for (const [k, r] of Object.entries(next)) if (ids.has(r.delegation_id || `solo:${k}`)) delete next[k]
         return next
       })
     })
-  }, [finished])
+    return () => { alive = false }
+  }, [finished, runtimeId])
 
   // Refresh after polling gave up: reset the failure count so the interval polls again, and poll now.
   const retry = useCallback(() => {
@@ -500,16 +541,29 @@ async function writeClip(text, t, onToast) {
   onToast(ok ? t('sw.copied') : t('sw.copyFailed'), !ok)
 }
 
-function Detail({ t, worker, onToast }) {
+function Detail({ t, worker, onToast, showOutput = false }) {
   const [busy, setBusy] = useState(false)
   // The backend serves a worker's output only to the chat that delegated it.
   const storedId = useContext(WatchedChat)
   const sid = worker.session_id || worker.child_session_id
+  const [answer, setAnswer] = useState({ loading: false, data: null, error: null })
+  useEffect(() => {
+    if (!showOutput || !sid) return undefined
+    let alive = true
+    setAnswer({ loading: true, data: null, error: null })
+    ctxRef.rest(`/output?session_id=${encodeURIComponent(storedId || '')}&worker_id=${encodeURIComponent(sid)}`).then(
+      data => alive && setAnswer({ loading: false, data, error: null }),
+      err => alive && setAnswer({ loading: false, data: null, error: String(err?.message || err) })
+    )
+    return () => { alive = false }
+  }, [sid, storedId, showOutput])
+
   const copy = async () => {
     if (!sid) return
     setBusy(true)
     try {
-      const out = await ctxRef.rest(`/output?session_id=${encodeURIComponent(storedId || '')}&worker_id=${encodeURIComponent(sid)}`)
+      const out = showOutput && answer.data ? answer.data
+        : await ctxRef.rest(`/output?session_id=${encodeURIComponent(storedId || '')}&worker_id=${encodeURIComponent(sid)}`)
       await writeClip(out?.text || '', t, onToast)
     } catch (err) {
       console.warn(`[${ID}] output read failed`, err)
@@ -526,8 +580,7 @@ function Detail({ t, worker, onToast }) {
     })
   }
   const goal = String(worker.goal || '').trim()
-  return jsx(Branches, {
-    children: [
+  const children = [
       goal ? jsx(Tip, { label: goal, children: jsx('div', { className: 'sw-dtg', tabIndex: 0, children: jsx('span', { children: goal }) }) }, 'g') : null,
       jsxs('div', {
         className: 'sw-dta',
@@ -540,8 +593,18 @@ function Detail({ t, worker, onToast }) {
           }, 'm')
         ]
       }, 'a')
-    ]
-  })
+  ]
+  if (!showOutput) return jsx(Branches, { children })
+  const output = !sid && worker.summary
+    ? jsxs('div', { children: [
+        jsx('p', { children: t('sw.desk.summary') }, 'label'),
+        jsx('pre', { className: 'sw-original-output', children: worker.summary }, 'summary')
+      ] })
+    : !sid ? jsx('p', { children: t('sw.desk.waiting') })
+    : answer.loading ? jsx(Loader, { label: t('sw.desk.loading') })
+      : answer.error ? jsx(ErrorState, { title: t('sw.err.withDetail', t('sw.err.output'), answer.error) })
+        : jsx('pre', { className: 'sw-original-output', children: answer.data?.text || t('sw.proc.noOutput') })
+  return jsxs('section', { className: 'sw-selected-detail', children: [...children, output] })
 }
 
 function WorkerRow({ t, w, name, open, onToggle }) {
@@ -845,6 +908,64 @@ function useWatchedChat(pageRef) {
   return watched
 }
 
+function WorkerDesk({ t, nowBatches, past, procRows, now, storedId, onToast }) {
+  const [selected, setSelected] = useState('')
+  const entries = [
+    ...nowBatches.flatMap(batch => batch.rows.map(worker => ({
+      key: `worker:${worker.session_id || worker.child_session_id || worker.subagent_id}`,
+      kind: 'worker', worker, status: worker.status, goal: worker.goal
+    }))),
+    ...past.flatMap(batch => batch.workers.map(worker => ({
+      key: `worker:${worker.session_id}`, kind: 'worker', worker, status: worker.status, goal: worker.goal
+    }))),
+    ...procRows.map(process => ({
+      key: `process:${process.id}`, kind: 'process', process, status: process.status, goal: process.command
+    }))
+  ]
+  const priority = { failed: 4, stopped: 3, queued: 2, running: 1 }
+  const rank = entry => priority[entry.status] || 0
+  entries.sort((a, b) => rank(b) - rank(a))
+  const signature = entries.map(entry => entry.key).join('|')
+  useEffect(() => {
+    if (selected && !entries.some(entry => entry.key === selected)) setSelected('')
+  }, [signature, selected])
+  const active = entries.find(entry => entry.key === selected) || entries[0]
+  const names = distinctNames(entries.map(entry => entry.goal))
+  if (!active) return null
+  return jsxs('div', {
+    className: 'sw-attention',
+    children: [
+      jsx('section', {
+        className: 'sw-queue', 'aria-label': t('sw.desk.queue'),
+        children: entries.map((entry, i) => jsxs('button', {
+          type: 'button', className: 'sw-attention-item', 'data-key': entry.key, 'data-st': entry.status,
+          'aria-pressed': entry.key === active.key, onClick: () => setSelected(entry.key),
+          children: [
+            jsx(Mark, { t, status: entry.status }, 'mark'),
+            jsxs('span', {
+              className: 'sw-queue-text',
+              children: [
+                jsx('span', { className: 'sw-queue-title', children: names[i] || entry.goal }, 'name'),
+                jsx('span', { className: 'sw-queue-state', children: t(`sw.status.${entry.status}`) }, 'state')
+              ]
+            }, 'text')
+          ]
+        }, entry.key))
+      }, 'queue'),
+      jsxs('aside', {
+        className: 'sw-inspector', 'aria-label': t('sw.desk.detail'),
+        children: [
+          jsx('h3', { className: 'sw-inspector-title', children: active.goal || t('sw.desk.detail') }, 'title'),
+          jsx('p', { className: 'sw-inspector-hint', children: t('sw.desk.next') }, 'next'),
+          active.kind === 'process'
+            ? jsx(ProcDetail, { t, p: active.process, storedId, onToast }, active.key)
+            : jsx(Detail, { t, worker: active.worker, onToast, showOutput: true }, active.key)
+        ]
+      }, 'inspector')
+    ]
+  })
+}
+
 export function Page() {
   const t = usePluginI18n(ID)
   const pageRef = useRef(null)
@@ -874,32 +995,7 @@ export function Page() {
   }, [toast])
   const onToast = (text, bad) => setToast({ text, bad })
 
-  const liveSessions = new Set(live.batches.flatMap(b => b.rows.map(r => r.child_session_id).filter(Boolean)))
-  // subagent.list carries no child_session_id, so a batch still running on the backend is matched by
-  // state and time: while a live tree is drawn, a stored batch with an unfinished worker that started
-  // no earlier than the live tree (less LIVE_MATCH_S) IS that tree.
-  const liveStarts = live.batches.flatMap(b => b.rows.map(r => r.started_at)).filter(Number.isFinite)
-  const liveFrom = (liveStarts.length ? Math.min(...liveStarts) : now) - LIVE_MATCH_S
-  const isLiveStored = b => live.batches.length > 0 && b.started_at >= liveFrom && b.workers.some(w => w.status === 'running')
-  const stored = history.data?.batches || []
-  // The backend drops a worker from subagent.list the moment it finishes, so a half-done batch's
-  // finished workers exist only in state.db. They join the live tree; hiding the stored batch
-  // without them turned '6 workers 5/6' into '1 worker 0/1'.
-  const liveDoneGoals = live.batches.flatMap(b => b.rows).filter(r => TERMINAL.has(r.status)).map(r => String(r.goal || '').trim())
-  const storedDone = stored.filter(isLiveStored).flatMap(b => b.workers)
-    .filter(w => w.status !== 'running' && !liveSessions.has(w.session_id)
-      && !liveDoneGoals.some(g => g && w.goal && g.startsWith(w.goal)))
-  const nowBatches = storedDone.length
-    ? live.batches.map((b, i) => (i < live.batches.length - 1 ? b : liveBatches([
-      ...b.rows,
-      ...storedDone.map(w => ({ ...w, subagent_id: `db:${w.session_id}`, delegation_id: b.id, tool_count: w.tool_calls, task_index: -1 }))
-    ])[0]))
-    : live.batches
-  const past = stored
-    .filter(b => !isLiveStored(b))
-    .map(b => ({ ...b, workers: b.workers.filter(w => !liveSessions.has(w.session_id)) }))
-    .filter(b => b.workers.length)
-    .reverse()
+  const { nowBatches, past } = reconcileBatches(live.batches, history.data?.batches || [], now)
   const shown = showAll ? past : past.slice(0, HISTORY_PAGE)
   const totals = {
     batches: nowBatches.length + past.length,
@@ -979,7 +1075,18 @@ export function Page() {
           errors.length
             ? jsx('div', { className: 'sw-err', role: 'alert', children: errors.map(e => jsx(ErrorState, { title: e }, e)) }, 'e')
             : null,
-          jsx('div', { className: 'sw-bd', children: body }, 'b'),
+          jsxs('div', {
+            className: 'sw-bd',
+            children: [
+              jsx(WorkerDesk, { t, nowBatches, past, procRows, now, storedId, onToast }, `${storedId}:${runtimeId}`),
+              nowBatches.length || past.length || procRows.length
+                ? jsx('details', {
+                    className: 'sw-context',
+                    children: [jsx('summary', { children: t('sw.desk.context') }, 'label'), body]
+                  }, 'context')
+                : jsx('div', { className: 'sw-status-surface', children: body }, 'status')
+            ]
+          }, 'b'),
           // The live region stays mounted so a screen reader is already listening when a toast lands.
           jsx('div', {
             className: 'sw-live', role: 'status', 'aria-live': 'polite',
@@ -1129,6 +1236,26 @@ const CSS = `
 .sw-pob .sw-po{padding:0;border:0;border-radius:0;background:transparent;max-height:180px}
 .sw-pol{font-size:11.5px;color:var(--ui-text-secondary)}
 .sw-po-note{font-size:12px;line-height:18px;color:var(--ui-text-secondary)}
+.sw-panel{height:100%;min-height:0;display:flex;flex-direction:column}
+.sw-bd{flex:1;min-height:0;display:flex;flex-direction:column;gap:12px}
+.sw-attention{height:${DESK.height}px;min-height:${DESK.minHeight}px;max-height:100%;display:grid;grid-template-columns:minmax(200px,.7fr) minmax(0,1.3fr);border:1px solid var(--ui-stroke-tertiary);border-radius:10px;overflow:hidden}
+.sw-queue{min-width:0;overflow-y:auto;border-right:1px solid var(--ui-stroke-tertiary);scrollbar-width:thin;scrollbar-color:var(--ui-stroke-primary) transparent}
+.sw-attention-item{display:flex;align-items:center;gap:10px;width:100%;height:${DESK.row}px;text-align:left;padding:10px 12px;border:0;border-bottom:1px solid var(--ui-stroke-tertiary);color:var(--ui-text-primary);background:transparent;cursor:pointer}
+.sw-attention-item[aria-pressed=true]{background:var(--ui-row-active-background)}
+.sw-attention-item:hover{background:var(--ui-row-hover-background)}
+.sw-attention-item:focus-visible{outline:2px solid var(--ui-text-primary);outline-offset:-3px}
+.sw-queue-text{min-width:0;display:flex;flex-direction:column;gap:4px}
+.sw-queue-title{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-queue-state{font-size:11.5px;color:var(--ui-text-primary)}
+.sw-inspector{min-width:0;overflow-y:auto;padding:16px;scrollbar-width:thin;scrollbar-color:var(--ui-stroke-primary) transparent}
+.sw-inspector-title{margin:0;font-size:14px;line-height:20px;overflow-wrap:anywhere}
+.sw-inspector-hint{font-size:12px;line-height:18px;color:var(--ui-text-primary)}
+.sw-selected-detail{display:flex;flex-direction:column;gap:12px}
+.sw-original-output{margin:0;max-height:${DESK.output}px;overflow:auto;padding:12px;border:1px solid var(--ui-stroke-tertiary);border-radius:6px;background:var(--ui-bg-secondary);font:12px/18px var(--sw-mono);color:var(--ui-text-primary);white-space:pre-wrap;overflow-wrap:anywhere}
+.sw-context{max-height:${DESK.context}px;overflow:auto}
+.sw-context>summary{font-size:12px;padding:8px 0;cursor:pointer;color:var(--ui-text-primary)}
+@container (max-width:${DESK.narrow}px){.sw-attention{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(90px,30%) minmax(0,1fr)}.sw-queue{border-right:0;border-bottom:1px solid var(--ui-stroke-tertiary)}}
+
 `
 
 function navLabel() {

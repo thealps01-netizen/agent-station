@@ -194,6 +194,17 @@ def check_backend(source: str) -> None:
                        f"{'everything' if '<bare>' in names else ', '.join(sorted(names))} without a trace")
 
 
+def check_attention(js: str) -> None:
+    for token, message in (
+        ("className: 'sw-inspector'", "selected inspector missing"),
+        ("entries.sort((a, b) => rank(b) - rank(a))", "failed work must lead the queue"),
+        ("className: 'sw-original-output'", "original worker answer missing"),
+        ("if (pending) { queued = true; return }", "reads must be single-flight"),
+    ):
+        if token not in js:
+            report("attention: " + message)
+
+
 def main() -> int:
     js = JS.read_text(encoding="utf-8")
     release_gate.check(report)
@@ -202,6 +213,7 @@ def main() -> int:
     check_colors(js)
     check_tone_ink(js)
     check_js_catches(js)
+    check_attention(js)
     check_backend(BACKEND.read_text(encoding="utf-8"))
     for problem in problems:
         print(f"PROBLEM  {problem}")

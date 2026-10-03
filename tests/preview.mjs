@@ -160,6 +160,7 @@ async function frame(label, { fail = false, live = false, open = null, narrow = 
     await act(async () => { host.querySelectorAll('.sw-hb')[1].click() })
     await tick(20)
   }
+  if (live || open || docked) host.querySelector('.sw-context')?.setAttribute('open', '')
   const html = host.innerHTML
   const text = host.textContent || ''
   const raw = [...new Set(text.match(/\bsw\.[a-z][A-Za-z0-9_.]*/g) || [])]
@@ -171,8 +172,8 @@ async function frame(label, { fail = false, live = false, open = null, narrow = 
   host.remove()
 }
 
-await frame('1 · Now — a running batch as a live tree, earlier batches and background commands', { live: true })
-await frame('2 · Earlier — a batch, a worker and a failed command opened', { open: 'earlier' })
+await frame('1 · Attention Desk — failed work selected, live tree opened as context', { live: true })
+await frame('2 · Attention Desk — one inspector with earlier worker/process context opened', { open: 'earlier' })
 await frame('3 · Failures — every read failing: nothing is swallowed', { fail: true })
 await frame('4 · Narrow (380 px) — six running workers and a command with a long working directory', { narrow: true })
 await frame('5 · Docked (480 px) — an Earlier worker whose model chip carries its reasoning effort', { open: 'earlier', docked: true })
@@ -215,11 +216,11 @@ const page = `<!doctype html>
 html,body{margin:0;background:var(--ui-bg-sidebar);color:var(--ui-text-primary);font-family:system-ui,'Segoe UI',sans-serif}
 *,*::before,*::after{box-sizing:border-box}
 body{padding:16px 18px 28px}
-.swp-wrap{margin:0 0 22px;width:640px}
+.swp-wrap{margin:0 0 22px;width:880px}
 .swp-wrap.is-narrow{width:380px}
 .swp-wrap.is-docked{width:480px}
 .swp-label{font-size:11px;color:var(--ui-text-tertiary);margin:0 0 6px}
-.swp-frame{border:1px solid var(--ui-stroke-primary);border-radius:10px;overflow:hidden;background:var(--ui-bg-primary)}
+.swp-frame{height:720px;border:1px solid var(--ui-stroke-primary);border-radius:10px;overflow:hidden;background:var(--ui-bg-primary)}
 </style>
 </head>
 <body>

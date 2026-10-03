@@ -4,7 +4,33 @@ Read-only desktop page for `delegate_task` workers of the focused chat, plus tha
 shell commands (`terminal(background=true)`).
 Sidebar entry "Subagents" → route `/subagent-watch`.
 
-## Layout
+## Current composition: Attention Desk
+
+The working surface is a priority queue of this watched chat's workers and background commands,
+with one selected original-evidence inspector. Failed and stopped work comes first, then queued
+and running work, then completed work. Selecting a worker reads its owned original answer; a live
+worker without a stored child id shows any received live result summary with its provenance,
+not as a full stored answer; otherwise it says the answer is not available yet. Selecting a command keeps
+its full command, exit/stop evidence and output-tail limit. Copy and Open session keep their
+existing routes. A late deselected answer cannot replace the selected inspector.
+
+The live tree, earlier batches and independent expansion controls remain in a closed contextual
+view. They are not a second worker system. Empty, loading and all-failed guidance stays visible
+without opening that context. Focus and the explicit watched-chat adapter are unchanged: clicking
+the panel must not silently move it to the main chat.
+
+History/process reads share one request-lifecycle helper: one in-flight read and one coalesced
+refresh, with ownership invalidated on chat change or unmount. Live snapshots have a separate
+single-flight boundary and retain the existing stop-after-three-failures/Refresh recovery. The
+pure reconciliation seam retains the existing time window, goal-prefix fallback, early-finished
+child handling, `db:` identities and newest-first stored order.
+
+This is a behavior-preserving extraction, not a durable identity migration. When several live
+trees overlap and the producer has no child-session identity, the existing newest-tree fallback
+and goal-prefix ambiguity remain. Changing that host contract requires a separate scoped change;
+this panel does not claim to have solved the attribution ambiguity or to have changed SQL.
+
+## Contextual layout
 - **Header** — the same card as the batches: icon, title, batch / worker / background-command counts, a
   running pill while workers run, refresh. Its accent is yellow while anything (worker or command)
   runs, green otherwise.

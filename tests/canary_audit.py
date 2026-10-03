@@ -28,6 +28,11 @@ PY = "dashboard/plugin_api.py"
 
 # (gate, file, old, new, what the mutation breaks)
 MUTATIONS = [
+    ("audit", JS, "className: 'sw-inspector'", "className: 'sw-retired-inspector'", "selected inspector missing"),
+    ("audit", JS, "entries.sort((a, b) => rank(b) - rank(a))", "entries.sort((a, b) => rank(a) - rank(b))", "failed work must lead the queue"),
+    ("audit", JS, "className: 'sw-original-output'", "className: 'sw-missing-answer'", "original worker answer missing"),
+    ("render", JS, "if (pending) { queued = true; return }", "if (false) { queued = true; return }", "process refresh coalesces"),
+
     # ── render: the page ────────────────────────────────────────────────────────────────────
     ("render", JS, "if (event?.session_id !== runtimeId) return", "",
      "events of another chat are no longer filtered out"),

@@ -80,6 +80,7 @@ export const host = {
   state: atoms,
   request: async (method, params) => {
     calls.request.push([method, params])
+    if (state.listHold) await state.listHold
     if (state.listFails) throw new Error('gateway down')
     return { subagents: state.list[params.session_id] || [] }
   },
@@ -89,7 +90,7 @@ export default { host }
 `)
 
 const src = readFileSync(SRC, 'utf8').replace("'@hermes/plugin-sdk'", `'${HERE_URL.href}.out/sdk-stub.mjs'`)
-writeFileSync(`${OUT}plugin-under-test.mjs`, src)
+writeFileSync(`${OUT}plugin-under-test.mjs`, src + '\nexport { useHistory, useProcesses, useLive, Detail }; export const testReconcile = typeof reconcileBatches === \'function\' ? reconcileBatches : null\n')
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true })
 global.window = dom.window
@@ -109,6 +110,31 @@ const check = (ok, what) => {
   if (!ok) failures++
 }
 const tick = (ms = 0) => act(() => new Promise(r => setTimeout(r, ms)))
+const reconcile = mod.testReconcile
+check(typeof reconcile === 'function', 'reconciliation has a pure, testable seam')
+if (reconcile) {
+  const live = [{ id: 'tree-a', rows: [{ subagent_id: 'live-1', delegation_id: 'tree-a', goal: 'run', status: 'running', started_at: 1100 }] }]
+  const stored = [{ started_at: 1110, workers: [
+    { session_id: 'early', goal: 'already done', status: 'completed', tool_calls: 2 },
+    { session_id: 'active', goal: 'run', status: 'running', tool_calls: 1 }
+  ] }, { started_at: 900, workers: [{ session_id: 'past', goal: 'previous', status: 'completed' }] }]
+  const before = JSON.stringify({ live, stored })
+  const result = reconcile(live, stored, 1200)
+  check(result.nowBatches[0].rows.some(worker => worker.subagent_id === 'db:early'), 'early-finished children remain in the live tree')
+  check(result.past.length === 1 && result.past[0].workers[0].session_id === 'past', 'stored batch dedupe and history order remain unchanged')
+  check(JSON.stringify({ live, stored }) === before, 'reconciliation does not mutate source batches')
+  const twins = [...live, { id: 'tree-b', rows: [{ subagent_id: 'live-2', delegation_id: 'tree-b', goal: 'other', status: 'running', started_at: 1120 }] }]
+  const multiple = reconcile(twins, stored, 1200)
+  check(multiple.nowBatches.length === 2 && multiple.nowBatches[1].rows.filter(worker => worker.subagent_id === 'db:early').length === 1,
+    'multiple live trees retain one early child without inventing a durable identity')
+  const terminalLive = [{ id: 'tree-a', rows: [
+    ...live[0].rows, { subagent_id: 'finished', delegation_id: 'tree-a', goal: 'already done with more context', status: 'completed' }
+  ] }]
+  check(reconcile(terminalLive, stored, 1200).nowBatches[0].rows.length === 2,
+    'truncated/repeated goal-prefix fallback does not double-count terminal children')
+  check(reconcile([], stored, 1200).past.length === 2, 'a stored batch survives when no live tree exists')
+}
+
 
 // ── fake ctx ────────────────────────────────────────────────────────────────
 const listeners = new Map()
@@ -202,6 +228,52 @@ check(route && route.data.path === '/subagent-watch', 'routes page at /subagent-
 check(nav && nav.data.path === '/subagent-watch' && nav.data.label === 'Subagents', 'sidebar entry with a resolved label')
 check(!registered.some(c => String(c.area).startsWith('pane')), 'never registers a pane')
 
+// Request ownership is exercised before the real page mounts, with the panel's actual hooks.
+{
+  let state
+  const Probe = ({ sid, kind }) => { state = kind === 'history' ? mod.useHistory(sid) : mod.useProcesses(sid); return null }
+  const el = document.createElement('div')
+  document.body.append(el)
+  const probe = createRoot(el)
+  const release = hold('processes')
+  const start = rest.filter(path => path.startsWith('/processes')).length
+  await act(async () => { probe.render(React.createElement(Probe, { sid: 'st-1', kind: 'process' })) })
+  await act(async () => { state.reload(); state.reload() })
+  check(rest.filter(path => path.startsWith('/processes')).length === start + 1,
+    'process refresh coalesces while one read is pending')
+  await act(async () => { release() })
+  await tick(10)
+  check(rest.filter(path => path.startsWith('/processes')).length === start + 2, 'one queued process refresh follows the pending read')
+  await act(async () => { probe.unmount() })
+  const historyProbe = createRoot(el)
+  const finishHistory = hold('children')
+  await act(async () => { historyProbe.render(React.createElement(Probe, { sid: 'st-1', kind: 'history' })) })
+  await act(async () => { historyProbe.render(React.createElement(Probe, { sid: null, kind: 'history' })) })
+  await act(async () => { finishHistory() })
+  await tick(10)
+  check(!state.data && !state.error, 'pending history cannot repopulate a cleared watched chat')
+  await act(async () => { historyProbe.unmount() })
+  el.remove()
+}
+
+// Live snapshots have their own single-flight boundary, separate from REST history/process reads.
+{
+  let liveState
+  const Probe = () => { liveState = mod.useLive('rt-probe', () => {}); return null }
+  let finish
+  stub.state.listHold = new Promise(resolve => { finish = resolve })
+  const el = document.createElement('div')
+  const probe = createRoot(el)
+  const before = stub.calls.request.length
+  await act(async () => { probe.render(React.createElement(Probe)) })
+  await act(async () => { liveState.retry(); liveState.retry() })
+  check(stub.calls.request.length === before + 1, 'live Refresh coalesces while the snapshot is pending')
+  await act(async () => { stub.state.listHold = null; finish() })
+  await tick(10)
+  check(stub.calls.request.length === before + 2, 'one live follow-up snapshot answers the queued Refresh')
+  await act(async () => { probe.unmount() })
+}
+
 // pure helpers
 check(mod.fmtDuration(312) === '5m 12s' && mod.fmtDuration(null) === '' && mod.fmtDuration(4000) === '1h 6m', 'duration format')
 check(mod.workerName("Round 3 on 'fleet-status' panel") === 'fleet-status', 'worker name takes the quoted slug')
@@ -216,6 +288,17 @@ check(mod.fmtDuration(4000, (k, ...a) => `${k}:${a.join('/')}`) === 'sw.units.hm
 check(mod.modelLabel('anthropic/claude-opus-5-5') === 'claude-opus-5-5', 'model label drops the provider')
 check(mod.batchState(['completed', 'queued']) === 'queued' && mod.batchState(['completed', 'failed']) === 'failed', 'batch state never reads done while one is not')
 const tr = stub.usePluginI18n('subagent-watch')
+{
+  const el = document.createElement('div')
+  const probe = createRoot(el)
+  await act(async () => { probe.render(React.createElement(mod.Detail, {
+    t: tr, showOutput: true, onToast: () => {}, worker: { goal: 'live failed worker', status: 'failed', summary: 'Original live failure summary' }
+  })) })
+  check(el.querySelector('.sw-original-output')?.textContent === 'Original live failure summary',
+    'a live result summary stays visible when no stored child id exists')
+  await act(async () => { probe.unmount() })
+}
+
 check(tr('sw.nBatches', 1) === '1 batch' && tr('sw.nBatches', 2) === '2 batches', `batch count is singular for one (${tr('sw.nBatches', 1)})`)
 check(tr('sw.nProcs', 1) === '1 background command' && tr('sw.nProcs', 3) === '3 background commands', `command count is singular for one (${tr('sw.nProcs', 1)})`)
 check(tr('sw.nWorkers', 1) === '1 worker' && tr('sw.nWorkers', 2) === '2 workers', `worker count is singular for one (${tr('sw.nWorkers', 1)})`)
@@ -241,6 +324,31 @@ await act(async () => { root.render(React.createElement(route.render)) })
 await tick(10)
 const q = s => host.querySelector(s)
 const qa = s => [...host.querySelectorAll(s)]
+check(q('.sw-attention .sw-inspector') && qa('.sw-inspector').length === 1,
+  'Attention Desk has one queue and selected original-output inspector')
+check(!q('.sw-context')?.open, 'tree and history are contextual, not the default working surface')
+check(q('.sw-attention-item')?.getAttribute('data-st') === 'failed', 'failed workers/commands lead the queue')
+const finishOwnedAnswer = hold('output')
+await act(async () => { q('.sw-attention-item[data-key="worker:c-b"]')?.click() })
+await act(async () => { q('.sw-attention-item[data-key="worker:c-a"]')?.click() })
+await act(async () => { finishOwnedAnswer() })
+await tick(10)
+check(q('.sw-original-output')?.textContent === 'FULL OUTPUT of c-a for st-1',
+  'a late deselected worker answer cannot replace the current inspector')
+
+const badProcess = q('.sw-attention-item[data-key="process:proc_bad"]')
+if (badProcess) {
+  await act(async () => { badProcess.click() })
+  await tick(10)
+  check(q('.sw-inspector')?.textContent.includes('tail of proc_bad in st-1'), 'selected command shows its original stored output')
+}
+const answer = q('.sw-attention-item[data-key="worker:c-a"]')
+if (answer) {
+  await act(async () => { answer.click() })
+  await tick(10)
+  check(q('.sw-original-output')?.textContent === 'FULL OUTPUT of c-a for st-1', 'selected worker answer comes from its owned output route')
+}
+
 
 // 5. history
 const bls = qa('.sw-hb')
@@ -559,6 +667,7 @@ procFails = false
 await act(async () => { stub.atoms.focusedSessionId.set(null); stub.atoms.focusedStoredSessionId.set(null) })
 await tick(10)
 check(q('[data-slot=panel-empty]')?.textContent.includes('No chat selected'), 'no chat -> empty state')
+check(!q('[data-slot=panel-empty]')?.closest('details:not([open])'), 'no-chat guidance is visible outside closed context')
 
 await act(async () => root.unmount())
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED')
