@@ -201,7 +201,8 @@ def check_attention(js: str) -> None:
         ("className: 'sw-original-output'", "original worker answer missing"),
         ("if (pending) { queued = true; return }", "reads must be single-flight"),
     ):
-        if token not in js:
+        missing = js.count(token) < 2 if token == "className: 'sw-original-output'" else token not in js
+        if missing:
             report("attention: " + message)
 
 
