@@ -28,6 +28,10 @@ PY = "dashboard/plugin_api.py"
 
 # (gate, file, old, new, what the mutation breaks)
 MUTATIONS = [
+    ("audit", JS, "const CSS = `", "const CSS = `/* mutation fixture: explanation belongs in Docs */", "noComments: embedded CSS comment"),
+    ("audit", JS, "export default {", "// mutation fixture: explanation belongs in Docs\nexport default {", "noComments: JavaScript comment"),
+    ("audit", PY, "from __future__ import annotations", "from __future__ import annotations\n# mutation fixture: explanation belongs in Docs", "noComments: Python comment"),
+    ("audit", PY, 'from __future__ import annotations', '"""Mutation fixture docstring."""\nfrom __future__ import annotations', "noComments: Python docstring"),
     ("audit", JS, "className: 'sw-inspector'", "className: 'sw-retired-inspector'", "selected inspector missing"),
     ("audit", JS, "entries.sort((a, b) => rank(b) - rank(a))", "entries.sort((a, b) => rank(a) - rank(b))", "failed work must lead the queue"),
     ("audit", JS, "className: 'sw-original-output'", "className: 'sw-missing-answer'", "original worker answer missing"),
@@ -120,7 +124,7 @@ MUTATIONS = [
      "a running worker that already wrote text reads as completed"),
     ("backend", PY, "raise HTTPException(status_code=403, detail=\"worker belongs to another conversation\")", "pass",
      "/output serves another chat's worker"),
-    ("backend", PY, "    except Exception as exc:  # noqa: BLE001 - a private core API", "    except ImportError as exc:  # noqa: BLE001 - a private core API",
+    ("backend", PY, '    except Exception as exc:\n        log.warning("subagent-watch: PID liveness check unavailable (%s: %s); asking psutil",', '    except ImportError as exc:\n        log.warning("subagent-watch: PID liveness check unavailable (%s: %s); asking psutil",',
      "a changed liveness API becomes a 500"),
     ("backend", PY, "    if ended is None and now - _last_seen(conn, row) > STALE_S:", "    if False:",
      "a crashed worker reads running forever"),
@@ -221,7 +225,8 @@ def main() -> int:
                 continue
             path.write_text(text.replace(old, new, 1), encoding="utf-8")
             code, out = _run(gate, tree)
-            caught = code != 0
+            expected = what.split(":", 1)[0] if gate == "audit" else ""
+            caught = code != 0 and (not expected or expected in out)
             fired = next((line.strip() for line in out.splitlines()
                           if line.startswith(("FAIL", "PROBLEM"))), f"exit {code}")
             print(f"{'OK  ' if caught else 'FAIL'}  #{n:02d} [{gate}] {what}  ->  {fired[:110]}")

@@ -148,6 +148,8 @@ let procOutputFails = false
 let clipRejects = false
 // Scenario state: extra stored batches and held (pending) reads. The fixtures below are never mutated.
 let extraBatches = []
+let historyOverride = null
+let processOverride = null
 const holds = {}
 const hold = name => { let release; holds[name] = new Promise(r => { release = r }); return () => { delete holds[name]; release() } }
 const PROCS = {
@@ -194,7 +196,7 @@ const ctx = {
     if (path.startsWith('/children')) {
       if (holds.children) await holds.children
       if (historyFails) throw new Error('backend 503')
-      return { ...HISTORY, batches: [...HISTORY.batches, ...extraBatches] }
+      return historyOverride || { ...HISTORY, batches: [...HISTORY.batches, ...extraBatches] }
     }
     if (path.startsWith('/output')) {
       if (holds.output) await holds.output
@@ -205,7 +207,7 @@ const ctx = {
       if (holds.processes) await holds.processes
       if (procFails) throw new Error('procs 503')
       const sid = new URLSearchParams(path.split('?')[1]).get('session_id')
-      return { session_id: sid, processes: PROCS[sid] || [], unreadable: sid === 'st-1' ? procUnreadable : 0 }
+      return { session_id: sid, processes: processOverride || PROCS[sid] || [], unreadable: sid === 'st-1' ? procUnreadable : 0 }
     }
     if (path.startsWith('/process_output')) {
       if (procOutputFails) throw new Error('output 503')
@@ -317,6 +319,48 @@ window.addEventListener('pointerdown', () => {
   appFocusNext = null
   flushSync(() => { stub.atoms.focusedSessionId.set(rt); stub.atoms.focusedStoredSessionId.set(st) })
 }, true)
+// The full-page queue keeps focus after selected worker removal and exposes an empty recovery action.
+{
+  const workers = [
+    { ...HISTORY.batches[0].workers[0], session_id: 'focus-drop', goal: 'Focus drop', status: 'failed' },
+    { ...HISTORY.batches[0].workers[0], session_id: 'focus-keep', goal: 'Focus keep', status: 'completed' }
+  ]
+  const setWorkers = rows => { historyOverride = { batches: rows.length ? [{ started_at: 1000, workers: rows }] : [] } }
+  processOverride = []
+  setWorkers(workers)
+  const el = document.createElement('div')
+  document.body.appendChild(el)
+  const probe = createRoot(el)
+  await act(async () => { probe.render(React.createElement(route.render)) })
+  await tick(30)
+  const reload = async () => { await act(async () => { el.querySelector('button[aria-label="Refresh"]').click() }); await tick(80) }
+  let row = el.querySelector('.sw-attention-item[data-key="worker:focus-drop"]')
+  await act(async () => { row.click() })
+  row.focus()
+  setWorkers([workers[1]])
+  await reload()
+  const survivor = el.querySelector('.sw-attention-item[data-key="worker:focus-keep"]')
+  check(document.activeElement === survivor, 'removed focused worker left keyboard focus outside the surviving queue')
+  survivor.focus()
+  setWorkers([])
+  await reload()
+  check(document.activeElement === el.querySelector('button[aria-label="Refresh"]'), 'empty worker queue did not focus its recovery action')
+  setWorkers(workers)
+  await reload()
+  row = el.querySelector('.sw-attention-item[data-key="worker:focus-drop"]')
+  await act(async () => { row.click() })
+  row.focus()
+  const outside = document.createElement('input')
+  document.body.appendChild(outside)
+  outside.focus()
+  setWorkers([])
+  await reload()
+  check(document.activeElement === outside, 'worker removal must not steal unrelated keyboard focus')
+  outside.remove()
+  await act(async () => { probe.unmount() })
+  el.remove()
+  historyOverride = processOverride = null
+}
 const host = document.createElement('div')
 document.body.appendChild(host)
 const root = createRoot(host)

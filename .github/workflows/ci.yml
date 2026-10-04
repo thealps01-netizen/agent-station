@@ -23,17 +23,19 @@ env:
   PYTHONUTF8: "1"   # Windows runners print cp1252 otherwise; audit messages carry non-ASCII
   # The core revision this panel's contract is verified against. Bump deliberately.
   CORE_REPO: https://github.com/NousResearch/hermes-agent.git
-  CORE_SHA: 54718306e348dbf62ab18a256cb8299615cc0493
 
 jobs:
   gates:
-    name: gates (${{ matrix.os }})
+    name: gates (${{ matrix.os }}, ${{ matrix.core_sha }})
     runs-on: ${{ matrix.os }}
+    env:
+      CORE_SHA: ${{ matrix.core_sha }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        core_sha: [54718306e348dbf62ab18a256cb8299615cc0493, fd1a93d319044a6780e8aa95ec9ae1c0cf862ba0]
     defaults:
       run:
         shell: bash
