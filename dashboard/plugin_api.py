@@ -1,27 +1,3 @@
-"""subagent-watch backend: read-only history of delegate_task workers.
-
-The desktop plugin SDK has no way to list a session's delegated child sessions or read a
-child's final output, so this router reads state.db directly — opened with SQLite's
-``mode=ro`` URI, so it can never write. Only sessions whose ``model_config`` carries
-``_delegate_from`` (the marker delegate_task writes on every child) are ever returned;
-any other session id is refused, so the router cannot be used to read arbitrary chats.
-
-Background shell processes (terminal background=true) are read from the two files Hermes itself
-keeps: ``processes.json`` (running, the crash-recovery checkpoint) and
-``logs/process-results/proc_*.json`` (finished, one durable receipt each, 7 days / 64 files).
-A process belongs to a conversation when its ``parent_session_id`` is a link of that
-conversation's compression chain — the same ownership rule Hermes applies when it reloads a
-receipt (tools/process_registry_results.py::_owns_result).
-
-Routes (mounted at /api/plugins/subagent-watch/):
-  GET /children?session_id=<id>  -> workers delegated from that conversation, grouped into
-                                    batches (children started within BATCH_GAP_S of each other)
-  GET /output?session_id=<id>&worker_id=<child> -> the child's final answer, full length; 403 when
-                                    the child was not delegated from that conversation
-  GET /processes?session_id=<id> -> that conversation's background processes, running and finished
-  GET /process_output?session_id=<id>&process_id=<proc_...> -> a finished process's output tail
-"""
-
 from __future__ import annotations
 
 import json
@@ -37,12 +13,12 @@ from fastapi import APIRouter, HTTPException
 router = APIRouter()
 log = logging.getLogger(__name__)
 
-BATCH_GAP_S = 2.0  # delegate_task starts a batch's children within ~1 s of each other
-MAX_CHAIN = 100  # compression chains deeper than this are pathological
+BATCH_GAP_S = 2.0
+MAX_CHAIN = 100
 GOAL_CHARS = 240
-COMMAND_CHARS = 4000  # a command longer than this is cut for display and flagged
-OUTPUT_TAIL = 8000  # last chars of a finished process's output served to the detail
-STALE_S = 1800  # a worker silent this long (no heartbeat, no message) with no end is not running
+COMMAND_CHARS = 4000
+OUTPUT_TAIL = 8000
+STALE_S = 1800
 PROC_ID = re.compile(r"proc_\w+")
 _RECEIPTS: dict[tuple[str, float, int], dict | bool] = {}
 
@@ -76,7 +52,6 @@ def _connect() -> sqlite3.Connection:
 
 
 def _unreadable(what: str, exc: Exception) -> HTTPException:
-    """A 503 that names the file and the error type; the full message (with its path) is only logged."""
     log.warning("subagent-watch: %s unreadable: %s", what, exc)
     return HTTPException(status_code=503, detail=f"{what} unreadable ({type(exc).__name__})")
 
@@ -91,7 +66,6 @@ def _delegate_from(model_config: str | None) -> str | None:
 
 
 def _effort(model_config: str | None) -> str | None:
-    """The worker's reasoning effort from model_config.reasoning_config; None when off, absent or unreadable."""
     try:
         cfg = json.loads(model_config) if model_config else None
     except (TypeError, ValueError):
@@ -104,14 +78,9 @@ def _effort(model_config: str | None) -> str | None:
 
 
 def _lineage(conn: sqlite3.Connection, session_id: str) -> list[str]:
-    """All ids of one conversation: compression ancestors, the session, and its continuations.
-
-    Delegation children name the session id that was live when they were spawned, which can be
-    any link of the compression chain, so every link is a valid parent key.
-    """
     ids = [session_id]
     current = session_id
-    for _ in range(MAX_CHAIN):  # walk up while the parent was closed by compression
+    for _ in range(MAX_CHAIN):
         row = conn.execute(
             "select p.id from sessions c join sessions p on p.id = c.parent_session_id "
             "where c.id = ? and p.end_reason = 'compression'",
@@ -122,7 +91,7 @@ def _lineage(conn: sqlite3.Connection, session_id: str) -> list[str]:
         current = row["id"]
         ids.insert(0, current)
     current = session_id
-    for _ in range(MAX_CHAIN):  # walk down through compression continuations
+    for _ in range(MAX_CHAIN):
         row = conn.execute(
             "select c.id from sessions c join sessions p on p.id = c.parent_session_id "
             "where p.id = ? and p.end_reason = 'compression' "
@@ -156,7 +125,6 @@ def _goal(conn: sqlite3.Connection, sid: str) -> str:
 
 
 def _last_seen(conn: sqlite3.Connection, row: sqlite3.Row) -> float:
-    """Freshest sign of life: the activity heartbeat, the newest message, else the start."""
     msg = conn.execute("select max(timestamp) t from messages where session_id = ?", (row["id"],)).fetchone()
     return max(v for v in (row["last_activity_at"], msg["t"] if msg else None, row["started_at"]) if v is not None)
 
@@ -164,9 +132,6 @@ def _last_seen(conn: sqlite3.Connection, row: sqlite3.Row) -> float:
 def _worker(conn: sqlite3.Connection, row: sqlite3.Row, now: float) -> dict:
     final = _final_text(conn, row["id"])
     ended = row["ended_at"]
-    # The session's end is the only end state: a worker that has not ended is running even when
-    # it has already written assistant text (an interim reply is not a final answer) — unless it has
-    # been silent for STALE_S: then the app died under it and it will never get an end.
     if ended is None and now - _last_seen(conn, row) > STALE_S:
         status = "stopped"
     elif ended is None:
@@ -174,7 +139,6 @@ def _worker(conn: sqlite3.Connection, row: sqlite3.Row, now: float) -> dict:
     elif final:
         status = "completed"
     else:
-        # Closed without an answer: the app or the parent went away mid-run.
         status = "stopped"
     duration = (ended - row["started_at"]) if (status == "completed" and ended) else None
     return {
@@ -215,7 +179,6 @@ def list_children(conn: sqlite3.Connection, session_id: str, now: float | None =
 
 
 def _owned_by(conn: sqlite3.Connection, parent: str, owners: set[str]) -> bool:
-    """True when a worker's delegating session is one of `owners`, directly or via nested workers."""
     seen: set[str] = set()
     for _ in range(MAX_CHAIN):
         if parent in owners:
@@ -243,24 +206,20 @@ def read_output(conn: sqlite3.Connection, session_id: str, child_id: str) -> dic
 
 
 def _pid_is_ours(pid, start) -> bool:
-    """Hermes' own liveness test (PID alive and not recycled), else psutil's bare existence test.
-
-    Fails closed: when neither can be asked the process reads stopped, never running forever.
-    """
     if not pid:
         return False
     try:
         from tools.process_registry import ProcessRegistry
 
         return bool(ProcessRegistry._host_pid_is_ours(pid, start))
-    except Exception as exc:  # noqa: BLE001 - a private core API; any change must not become a 500
+    except Exception as exc:
         log.warning("subagent-watch: PID liveness check unavailable (%s: %s); asking psutil",
                     type(exc).__name__, exc)
     try:
         import psutil
 
         return bool(psutil.pid_exists(pid))
-    except Exception as exc:  # noqa: BLE001 - no liveness source left; say so and read stopped
+    except Exception as exc:
         log.warning("subagent-watch: psutil liveness check failed (%s: %s); treating as stopped",
                     type(exc).__name__, exc)
         return False
@@ -278,11 +237,6 @@ def _read_running() -> list[dict]:
 
 
 def _read_results() -> tuple[list[tuple[dict, float]], int]:
-    """(record without its output, mtime) per readable receipt, plus how many could not be read.
-
-    A receipt never changes after Hermes writes it and can carry 200k chars of output, so each
-    one is parsed once and kept by (path, mtime, size); the panel polls this every few seconds.
-    """
     directory = _results_dir()
     if not directory.is_dir():
         return [], 0
@@ -301,7 +255,7 @@ def _read_results() -> tuple[list[tuple[dict, float]], int]:
                     record = {k: v for k, v in record.items() if k != "output"}
                 _RECEIPTS[key] = record
         except FileNotFoundError:
-            continue  # Hermes pruned it between the listing and the read.
+            continue
         except (OSError, ValueError):
             unreadable += 1
             continue
@@ -335,7 +289,6 @@ def list_processes(conn: sqlite3.Connection, session_id: str) -> dict:
         alive = entry.get("pid_scope", "host") != "host" or _pid_is_ours(entry.get("pid"), entry.get("host_start_time"))
         procs[pid_id] = {
             "id": pid_id, **_command(entry.get("command")), "cwd": entry.get("cwd"),
-            # Checkpointed but gone, with no receipt: the app closed under it.
             "status": "running" if alive else "stopped",
             "started_at": entry.get("started_at"), "ended_at": None, "duration_s": None,
             "exit_code": None, "reason": None,
@@ -345,8 +298,6 @@ def list_processes(conn: sqlite3.Connection, session_id: str) -> dict:
         if record.get("parent_session_id") not in owners:
             continue
         started = record.get("started_at")
-        # The receipt is written at the moment the process leaves the running set, so its mtime is
-        # the end time; Hermes records no separate field for it.
         duration = mtime - started if isinstance(started, (int, float)) and mtime >= started else None
         procs[record["id"]] = {
             "id": record["id"], **_command(record.get("command")), "cwd": record.get("cwd"),

@@ -355,6 +355,11 @@ def run_processes(conn) -> None:
     try:
         check(api._pid_is_ours(live_pid, None) is True, "a changed liveness API falls back to psutil: a live PID reads alive, never a 500")
         check(api._pid_is_ours(dead_pid, None) is False, "a changed liveness API never reads a dead PID as alive (no fail-open)")
+        sys.modules["tools.process_registry"] = None
+        check(api._pid_is_ours(live_pid, None) is True, "a disabled registry falls back to psutil without depending on another plugin")
+        sys.modules["tools.process_registry"] = types.ModuleType("tools.process_registry")
+        check(api._pid_is_ours(live_pid, None) is True, "a missing registry class falls back to psutil")
+        sys.modules["tools.process_registry"] = fake
         saved_psutil = sys.modules.get("psutil")
         sys.modules["psutil"] = None  # import psutil now raises ImportError
         try:

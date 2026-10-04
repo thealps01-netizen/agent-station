@@ -26,6 +26,8 @@ Rules
 from __future__ import annotations
 
 import ast
+import io
+import tokenize
 import re
 import sys
 from pathlib import Path
@@ -42,6 +44,101 @@ problems: list[str] = []
 
 def report(message: str) -> None:
     problems.append(message)
+
+
+def scan_js(src: str, collapse: bool = False) -> tuple[str, list[tuple[int, str]]]:
+    """Strip JavaScript to its CODE: comments removed, string/template bodies blanked (newlines kept).
+
+    The projection is what structural checks run on, so a rule that mentions `panes` or `#fff` inside
+    a string cannot trip the check that guards against it. Positions stay aligned with the source
+    unless *collapse* asks for the bodies to be dropped instead of blanked — which is what the line
+    length check wants (a long string is not a long line of code). Returns (code, comments by line).
+    """
+    out: list[str] = []
+    comments: list[tuple[int, str]] = []
+    line = 1
+    i, n = 0, len(src)
+
+    def blob(text: str) -> None:
+        for c in text:
+            out.append(c if c == "\n" else ("" if collapse else " "))
+
+    while i < n:
+        ch = src[i]
+        if ch in "'\"":
+            quote = ch
+            out.append(quote)
+            i += 1
+            start = i
+            while i < n:
+                c = src[i]
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == quote:
+                    break
+                if c == "\n":
+                    line += 1
+                i += 1
+            blob(src[start:i])
+            if i < n:
+                out.append(quote)
+                i += 1
+            continue
+        if ch == "`":
+            out.append("`")
+            i += 1
+            start = i
+            while i < n:
+                c = src[i]
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == "`":
+                    break
+                if c == "\n":
+                    line += 1
+                i += 1
+            blob(src[start:i])
+            if i < n:
+                out.append("`")
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and src[i + 1] == "/":
+            end = src.find("\n", i)
+            end = n if end < 0 else end
+            comments.append((line, src[i:end]))
+            out.append("" if collapse else " " * (end - i))
+            i = end
+            continue
+        if ch == "/" and i + 1 < n and src[i + 1] == "*":
+            end = src.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            comments.append((line, src[i:end]))
+            line += src.count("\n", i, end)
+            blob(src[i:end])
+            i = end
+            continue
+        if ch == "\n":
+            line += 1
+        out.append(ch)
+        i += 1
+    return "".join(out), comments
+
+
+
+def check_no_comments(js: str, source: str) -> None:
+    stylesheet = re.search(r"const CSS = `((?:\\.|[^`])*)`", js, re.S)
+    if stylesheet and re.search(r"/\*.*?\*/", stylesheet.group(1), re.S):
+        report("noComments: embedded CSS explanations belong in Docs/subagent-watch-notes.md")
+    for line, _body in scan_js(js)[1]:
+        report(f"noComments: plugin.js:{line}: move the explanation to Docs/subagent-watch-notes.md")
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            report(f"noComments: plugin_api.py:{token.start[0]}: move the explanation to Docs/subagent-watch-notes.md")
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and ast.get_docstring(node):
+            report(f"noComments: plugin_api.py:{node.body[0].lineno}: move the docstring to Docs/subagent-watch-notes.md")
 
 
 def _bundle(js: str) -> dict:
@@ -194,14 +291,28 @@ def check_backend(source: str) -> None:
                        f"{'everything' if '<bare>' in names else ', '.join(sorted(names))} without a trace")
 
 
+def check_attention(js: str) -> None:
+    for token, message in (
+        ("className: 'sw-inspector'", "selected inspector missing"),
+        ("entries.sort((a, b) => rank(b) - rank(a))", "failed work must lead the queue"),
+        ("className: 'sw-original-output'", "original worker answer missing"),
+        ("if (pending) { queued = true; return }", "reads must be single-flight"),
+    ):
+        missing = js.count(token) < 2 if token == "className: 'sw-original-output'" else token not in js
+        if missing:
+            report("attention: " + message)
+
+
 def main() -> int:
     js = JS.read_text(encoding="utf-8")
     release_gate.check(report)
+    check_no_comments(js, BACKEND.read_text(encoding="utf-8"))
     check_i18n(js)
     check_markup(js)
     check_colors(js)
     check_tone_ink(js)
     check_js_catches(js)
+    check_attention(js)
     check_backend(BACKEND.read_text(encoding="utf-8"))
     for problem in problems:
         print(f"PROBLEM  {problem}")
