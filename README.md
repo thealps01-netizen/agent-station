@@ -15,14 +15,23 @@ page comes from and why each status rule is what it is.
 
 ## Install
 
-Use **Capabilities → Plugins** in Hermes Desktop and install the unified package from
-`https://github.com/thealps01-netizen/subagent-watch`. Pin the verified 40-character source revision in the installer's advanced
-options, then enable the package's backend and desktop contribution. Keep existing enable decisions
-when updating. The package is independent of the other Attention Desk panels.
+`HERMES_HOME` is the install root: `%LOCALAPPDATA%\hermes` on Windows, `~/.hermes` otherwise.
 
-The host installer and materializer own the desktop copy. Do not edit or manually copy installed
-files. Python route updates require an application/backend restart; save active work first.
-Panel state is stored under the active Hermes home and is retained on reinstall.
+```bash
+git clone <this repository> "$HERMES_HOME/plugins/subagent-watch"
+hermes plugins enable subagent-watch
+```
+
+The **Desktop** page loads a *copy* of the panel, not the file in `plugins/`:
+
+```bash
+mkdir -p "$HERMES_HOME/desktop-plugins/subagent-watch"
+cp "$HERMES_HOME/plugins/subagent-watch/desktop/plugin.js" "$HERMES_HOME/desktop-plugins/subagent-watch/plugin.js"
+```
+
+Restart the desktop app (nav items and routes register at load). Every edit to `desktop/plugin.js`
+needs the copy step repeated — the release gate fails when the two drift apart.
+
 ## Backend
 
 `GET /children` · `GET /output` · `GET /processes` · `GET /process_output` — all read-only.
@@ -73,23 +82,10 @@ Actions → CI → "Run workflow" runs it by hand. `main` has no GitHub-enforced
 protection needs GitHub Pro on a private repo), so the rule lives in `AGENTS.md`: every change reaches
 `main` through a pull request whose CI is green.
 
-## Compatibility and rollback
-
-CI source contracts are pinned to `54718306e348dbf62ab18a256cb8299615cc0493` and
-`fd1a93d319044a6780e8aa95ec9ae1c0cf862ba0` on Windows and Ubuntu. The built runtime smoke target is the latter revision.
-Other host builds are unverified; this is not a version-wide compatibility guarantee.
-
-PID registry: missing/disabled/old API fixtures use optional psutil; with neither source available, log the failure and read stopped. No sibling plugin is required.
-
-Time/goal reconciliation is a fallback, not an exact durable worker-identity guarantee. If the host PID-identity API is absent, optional psutil can only test PID existence.
-
-Rollback uses the existing installer at `34b90b6190a19b68981fe2eb32c329dd71f6764b`. Do not delete panel state,
-change a shared engine, or replace the delivery classifier as part of a rollback.
-
 ## Versioning
 
 `plugin.yaml` is the source; `dashboard/manifest.json` and the top `CHANGELOG.md` heading must match.
-Release checklist: bump the three, run every gate, verify the host-materialized desktop copy, then tag.
+Release checklist: bump the three, run every gate, re-copy the desktop panel, then tag.
 
 ## License
 
