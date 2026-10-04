@@ -3,14 +3,6 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
-## 1.2.0
-
-- Final review regression fixes: Removed focused worker/process rows recover to a surviving queue item or the stable existing Refresh action. Unrelated controls keep focus. The source-format rule now lives in the existing static audit and mutation suite; explanation moved to this notes file without changing executable Python/JavaScript AST (docstrings and CSS comments excluded).
-- Issue-first worker queue, one original-output inspector, preserved live summaries and expandable batch/process context. Reconciliation and session-owned single-flight reads reject detached results and keep early-finished workers visible.
-- Compatibility: CI source-contract matrix at `54718306e348dbf62ab18a256cb8299615cc0493` and `fd1a93d319044a6780e8aa95ec9ae1c0cf862ba0`; runtime smoke verification targets the latter build. No untested host release is advertised as supported.
-- Limits: Time/goal reconciliation is a fallback, not an exact durable worker-identity guarantee. If the host PID-identity API is absent, optional psutil can only test PID existence.
-- Rollback: reinstall the prior source revision `34b90b6190a19b68981fe2eb32c329dd71f6764b` through the host installer; panel state is retained.
-
 ## 1.1.10 — 2026-09-28
 
 ### Fixes
