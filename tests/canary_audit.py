@@ -10,6 +10,9 @@ run against the copy:
   audit     tests/audit_static.py over the copied tree      (i18n, a11y, colours, silent catches)
 
 Run: python canary_audit.py        (exit 0 = every mutation caught, the repo untouched)
+
+Mutations run in parallel (`SW_CANARY_JOBS`, default 8): a render run mostly waits on poll timers,
+and one at a time the list outgrew the CI job's time limit.
 """
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -37,7 +41,7 @@ MUTATIONS = [
      "an errored worker is drawn as done"),
     ("render", JS, "const time = w.status === 'stopped' ? '—' : fmtDuration(w.duration_s, t)",
      "const time = fmtDuration(w.duration_s ?? 1, t)", "a stopped worker shows a duration"),
-    ("render", JS, "if (alive && fails.current >= MAX_POLL_FAILS) setError(String(err?.message || err))", "",
+    ("render", JS, "        if (fails.current >= MAX_POLL_FAILS) setError(String(err?.message || err))", "",
      "failed live polls are swallowed"),
     ("render", JS, "&worker_id=${encodeURIComponent(sid)}`", "&worker_id=c-b`",
      "copy reads another worker's output"),
@@ -91,11 +95,44 @@ MUTATIONS = [
      "a click on another page's tab moves the panel to the app's main chat"),
     ("render", JS, "    return ctxRef.setTimeout(() => {\n      if (!held.current)", "    return ((fn) => fn())(() => {\n      if (!held.current)",
      "the follow runs before the click is classified (the app's own listener fires first)"),
+    # ── render: 1.3.0 locks ──────────────────────────────────────────────────────────────────
+    ("render", JS, "            if (r.status === 'queued' && at - (r.queued_at ?? at) < QUEUE_GRACE_S) {", "            if (false) {",
+     "a queued worker Hermes has not listed yet reads stopped"),
+    ("render", JS, "const status = TERMINAL.has(had?.status) ? had.status : (STATUS_OF[r.status] || r.status)",
+     "const status = STATUS_OF[r.status] || r.status", "a stale subagent.list snapshot revives a finished worker"),
+    ("render", JS, "    return ctxRef.rest(`/children?session_id=", "    ctxRef.rest(`/children?session_id=",
+     "a finished batch leaves Now before history has it (the empty state flashes)"),
+    ("render", JS, "        if (!alive) return // a poll of the chat the page has left: its failure is not this chat's\n", "",
+     "a failed poll of the chat the page left counts against the new chat"),
+    ("render", JS, "  return jsxs('div', {\n    className: open ? 'sw-box sw-frame' : 'sw-cw', 'data-st': st,",
+     "  return jsxs(open ? 'section' : 'div', {\n    className: open ? 'sw-box sw-frame' : 'sw-cw', 'data-st': st,",
+     "toggling an Earlier batch remounts its header and drops focus"),
+    ("render", JS, "  return jsxs('div', {\n    className: open ? 'sw-box sw-frame' : 'sw-cw', 'data-st': p.status,",
+     "  return jsxs(open ? 'section' : 'div', {\n    className: open ? 'sw-box sw-frame' : 'sw-cw', 'data-st': p.status,",
+     "toggling a command row remounts it and drops focus"),
+    ("render", JS, "    header.focus()\n", "", "focus does not follow a finished batch to Earlier"),
+    ("render", JS, "      if (opened.length) addWorkers(opened)\n", "", "an open worker detail is lost when its batch finishes"),
+    ("render", JS, "const fetches = p.status !== 'running' && p.has_output !== false", "const fetches = p.status !== 'running'",
+     "a command with no receipt asks for output and shows a 404"),
+    ("render", JS, "    cut ? t('sw.proc.commandCut', command.length) : ''", "    ''", "a cut command does not say it is cut"),
+    ("render", JS, "  if (!text) return onToast(t('sw.nothingToCopy'), true)\n", "", "copying an empty output reads Copied"),
+    ("render", JS, "const headState = errors.length ? 'failed' : runningN || procsRunning ? 'running' : 'idle'",
+     "const headState = runningN || procsRunning ? 'running' : 'completed'", "the header reads green when every read failed"),
+    ("render", JS, "t('sw.running', runningN, procsRunning)", "t('sw.running', runningN, 0)", "the running pill ignores running commands"),
+    ("render", JS, "jsx('span', { className: 'sw-chatn', children: chatName }, 'n'),", "null,", "the header does not name the watched chat"),
+    ("render", JS, "watched.held ? jsx(Tip", "false ? jsx(Tip", "a held chat is not marked as held"),
+    ("render", JS, ".sw-acc[data-st=running]::after,.sw-acc[data-st=failed]::after{content", ".sw-acc::after{content",
+     "every card carries the status rail again"),
+    ("render", JS, "label: t('sw.retry')", "label: t('sw.refresh')", "the alert has no Try again button"),
+    ("render", JS, "p.status !== 'failed' && p.exit_code", "p.exit_code", "an opened failed command repeats its exit code"),
+    ("render", JS, " .sw-panel .sw-bl .sw-bc{margin-left:auto}", "", "below 420 px counts lose their right-hand column"),
+    ("render", JS, "className: 'sw-mk', 'data-st': 'failed', 'aria-hidden'", "className: 'sw-mk', 'data-st': 'stopped', 'aria-hidden'",
+     "unreadable records lose their failed mark"),
     # ── backend: plugin_api.py ──────────────────────────────────────────────────────────────
     ("backend", PY, "?mode=ro", "?mode=rw", "state.db is opened writable"),
-    ("backend", PY, "or entry.get(\"parent_session_id\") not in owners", "",
+    ("backend", PY, "or not _owned(entry, owners)", "",
      "another chat's running commands are listed"),
-    ("backend", PY, "if record.get(\"parent_session_id\") not in owners:\n            continue", "if False:\n            continue",
+    ("backend", PY, "if not _owned(record, owners):\n            continue", "if False:\n            continue",
      "another chat's finished commands are listed"),
     ("backend", PY, "if record.get(\"completion_reason\") == \"killed\":\n        return \"stopped\"", "",
      "a killed command reads as failed"),
@@ -131,6 +168,26 @@ MUTATIONS = [
      "a worker's reasoning effort is not reported"),
     ("backend", PY, "reasoning.get(\"enabled\") is False", "False",
      "a disabled reasoning config still reports an effort"),
+    # ── backend: 1.3.0 locks ─────────────────────────────────────────────────────────────────
+    ("backend", PY, "    if row[\"source\"] == \"tool\":\n        return True\n", "", "a tool child is taken as a compression continuation"),
+    ("backend", PY, "markers = [cfg.get(\"_branched_from\"), cfg.get(\"_delegate_from\")]", "markers = [cfg.get(\"_delegate_from\")]",
+     "a /branch is taken as its source chat's continuation"),
+    ("backend", PY, "        markers.append(cfg.get(\"_reset_from\"))", "        pass", "a reset fork is taken as a continuation"),
+    ("backend", PY, "        if _is_continuation(conn, row):\n            continue", "        if False:\n            continue",
+     "a worker compressed mid-run is listed twice"),
+    ("backend", PY, "    tip = _chain(conn, row)[-1][\"id\"]", "    tip = child_id", "a compressed worker's output is its interim note"),
+    ("backend", PY, "\"tool_calls\": sum(r[\"tool_call_count\"] or 0 for r in chain),", "\"tool_calls\": root[\"tool_call_count\"] or 0,",
+     "a compressed worker counts only its first half's tools"),
+    ("backend", PY, "    entries = [e for e in data if isinstance(e, dict)]", "    entries = data",
+     "a non-object checkpoint entry becomes a 500"),
+    ("backend", PY, "    return isinstance(parent, str) and parent in owners", "    return parent in owners",
+     "a list-valued owner becomes a 500"),
+    ("backend", PY, "\"started_at\": started, \"ended_at\": mtime,", "\"started_at\": record.get(\"started_at\"), \"ended_at\": mtime,",
+     "a text started_at is passed through (and breaks the sort)"),
+    ("backend", PY, "        if not isinstance(record, dict):\n            raise ValueError", "        if False:\n            raise ValueError",
+     "a receipt that is a JSON list becomes a 500 on /process_output"),
+    ("backend", PY, "\"has_output\": False,", "\"has_output\": True,", "a checkpoint-only row claims it has output"),
+    ("backend", PY, "\"title\": _title(conn, ids),", "\"title\": None,", "/children does not name the conversation"),
     # ── audit: the static rules ─────────────────────────────────────────────────────────────
     ("audit", JS, "t('sw.refresh')", "t('sw.refreshNow')", "i18n: a key missing from the bundle"),
     ("audit", JS, "t(busy ? 'sw.copying' : 'sw.copy')", "t(busy ? 'sw.copyingNow' : 'sw.copy')",
@@ -138,7 +195,7 @@ MUTATIONS = [
     ("audit", JS, "stopped: 'Stopped — closed before it finished'", "halted: 'Stopped'",
      "i18n: a template leaf the page can ask for"),
     ("audit", JS, "'aria-label': label, 'aria-busy'", "'aria-busy'", "iconLabel: an icon button without a name"),
-    ("audit", JS, "'data-st': p.status, 'aria-expanded': false,", "'data-st': p.status,",
+    ("audit", JS, "'data-st': p.status,\n        'aria-expanded': open,", "'data-st': p.status,",
      "expanded: an accordion row without aria-expanded"),
     ("audit", JS, "const GLYPH_INK = 'var(--dt-background)'", "const GLYPH_INK = '#fff'",
      "hexColor: a hard-coded colour"),
@@ -182,6 +239,7 @@ def _copy_panel(dest: Path) -> None:
 def _run(gate: str, tree: Path) -> tuple[int, str]:
     run_env = dict(os.environ)
     if gate == "render":
+        run_env["SW_RENDER_OUT"] = f"canary-{tree.name}"  # its own build folder, under tests/.out/
         cmd, cwd = ["node", "render_check.mjs", str(tree / JS).replace("\\", "/")], HERE
     elif gate == "backend":
         cmd, cwd = [sys.executable, str(tree / "tests" / "check_api.py")], tree / "tests"
@@ -205,24 +263,32 @@ def main() -> int:
             if code != 0:
                 print(f"the {gate} gate is not green on the unmutated copy (exit {code}):\n{out[-2000:]}")
                 return 1
-        for n, (gate, rel, old, new, what) in enumerate(MUTATIONS, 1):
+        def one(n: int, gate: str, rel: str, old: str, new: str, what: str) -> tuple[bool, str]:
             tree = Path(tmp) / f"m{n}"
             _copy_panel(tree)
             path = tree / rel
             text = path.read_text(encoding="utf-8")
             if old not in text:
-                print(f"FAIL  #{n:02d} {what}: anchor not found — the mutation could not be applied")
-                failures.append(what)
-                continue
+                return False, f"FAIL  #{n:02d} {what}: anchor not found — the mutation could not be applied"
             path.write_text(text.replace(old, new, 1), encoding="utf-8")
-            code, out = _run(gate, tree)
+            try:
+                code, out = _run(gate, tree)
+            finally:
+                shutil.rmtree(tree, ignore_errors=True)
+                shutil.rmtree(HERE / ".out" / f"canary-{tree.name}", ignore_errors=True)
             caught = code != 0
             fired = next((line.strip() for line in out.splitlines()
                           if line.startswith(("FAIL", "PROBLEM"))), f"exit {code}")
-            print(f"{'OK  ' if caught else 'FAIL'}  #{n:02d} [{gate}] {what}  ->  {fired[:110]}")
-            if not caught:
-                failures.append(what)
-            shutil.rmtree(tree, ignore_errors=True)
+            return caught, f"{'OK  ' if caught else 'FAIL'}  #{n:02d} [{gate}] {what}  ->  {fired[:110]}"
+
+        jobs = max(1, int(os.environ.get("SW_CANARY_JOBS", "8")))
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            runs = [pool.submit(one, n, *m) for n, m in enumerate(MUTATIONS, 1)]
+            for (*_, what), run in zip(MUTATIONS, runs):  # printed in list order
+                caught, line = run.result()
+                print(line, flush=True)
+                if not caught:
+                    failures.append(what)
     untouched = _sha_tree(ROOT) == before
     if not untouched:
         failures.append("the repo's own files changed during the run")

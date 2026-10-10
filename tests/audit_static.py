@@ -116,8 +116,9 @@ def check_markup(js: str) -> None:
             report(f"nativeTitle: line {line_no} puts `title:` on a DOM element — wrap it in Tip instead")
         if re.search(r"jsx\('button',", line) and "sw-ib" in line and "'aria-label'" not in line:
             report(f"iconLabel: line {line_no} draws an icon button without `aria-label`")
-    # An accordion row's props can span lines: read the whole props object after the class name.
-    for match in re.finditer(r"className:\s*[`'][^`']*\bsw-acc\b", js):
+    # An accordion row's props can span lines: read the whole props object after the class name. The
+    # class can sit in a ternary (`className: open ? 'sw-bh' : 'sw-card sw-acc'`), so match the line.
+    for match in re.finditer(r"className:[^\n]*?\bsw-acc\b", js):
         tail = js[match.end():match.end() + 300]
         props = tail.split("onClick")[0]
         if "'aria-expanded'" not in props:
@@ -125,7 +126,7 @@ def check_markup(js: str) -> None:
             report(f"expanded: line {line_no} is an accordion row without `aria-expanded`")
     for match in re.finditer(r"className:\s*'(sw-mk|sw-stat)'", js):
         props = js[match.end():match.end() + 200].split("children")[0]
-        if "'aria-label'" not in props:
+        if "'aria-label'" not in props and "'aria-hidden'" not in props:  # aria-hidden: decorative, text beside it
             line_no = js[:match.start()].count("\n") + 1
             report(f"markName: line {line_no} draws a `{match.group(1)}` without `aria-label` — "
                    "its meaning is only in a hover tooltip")

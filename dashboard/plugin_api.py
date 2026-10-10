@@ -82,12 +82,8 @@ def _unreadable(what: str, exc: Exception) -> HTTPException:
 
 
 def _delegate_from(model_config: str | None) -> str | None:
-    if not model_config:
-        return None
-    try:
-        return (json.loads(model_config) or {}).get("_delegate_from")
-    except (TypeError, ValueError):
-        return None
+    parent = _fork_markers(model_config).get("_delegate_from")
+    return parent if isinstance(parent, str) and parent else None
 
 
 def _effort(model_config: str | None) -> str | None:
@@ -103,38 +99,91 @@ def _effort(model_config: str | None) -> str | None:
     return effort if isinstance(effort, str) and effort else None
 
 
+def _fork_markers(model_config) -> dict:
+    try:
+        cfg = json.loads(model_config) if isinstance(model_config, str) else model_config
+    except (TypeError, ValueError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _is_fork_child(row, *, include_reset: bool = False) -> bool:
+    """Hermes' own test (SessionDB._is_explicit_fork_child_row): a branch, delegated worker or tool child
+    is its own conversation, never a compression continuation. A marker only counts when it names the
+    parent, because compression copies model_config — markers included — onto the continuation."""
+    if row["source"] == "tool":
+        return True
+    cfg = _fork_markers(row["model_config"])
+    markers = [cfg.get("_branched_from"), cfg.get("_delegate_from")]
+    if include_reset:
+        markers.append(cfg.get("_reset_from"))
+    parent = row["parent_session_id"]
+    return parent in markers if parent else any(m is not None for m in markers)
+
+
+_LINK_COLUMNS = "id, parent_session_id, end_reason, model_config, source, started_at"
+
+
+def _link(conn: sqlite3.Connection, session_id) -> sqlite3.Row | None:
+    return conn.execute(f"select {_LINK_COLUMNS} from sessions where id = ?", (session_id,)).fetchone()
+
+
+def _is_continuation(conn: sqlite3.Connection, row) -> bool:
+    """A compression continuation: a child of a compression-ended parent that is no kind of fork."""
+    if not row["parent_session_id"] or _is_fork_child(row, include_reset=True):
+        return False
+    parent = _link(conn, row["parent_session_id"])
+    return bool(parent and parent["end_reason"] == "compression")
+
+
 def _lineage(conn: sqlite3.Connection, session_id: str) -> list[str]:
     """All ids of one conversation: compression ancestors, the session, and its continuations.
 
     Delegation children name the session id that was live when they were spawned, which can be
-    any link of the compression chain, so every link is a valid parent key.
+    any link of the compression chain, so every link is a valid parent key. The walk is Hermes'
+    get_compression_lineage: a branch, reset fork, tool child or delegated worker is its own
+    conversation, so a branch of this chat never sees (or reads) this chat's workers.
     """
-    ids = [session_id]
-    current = session_id
-    for _ in range(MAX_CHAIN):  # walk up while the parent was closed by compression
-        row = conn.execute(
-            "select p.id from sessions c join sessions p on p.id = c.parent_session_id "
-            "where c.id = ? and p.end_reason = 'compression'",
-            (current,),
-        ).fetchone()
-        if not row or row["id"] in ids:
+    session = _link(conn, session_id)
+    if not session:
+        return [session_id]
+    root, seen = session, {session["id"]}
+    for _ in range(MAX_CHAIN):  # walk up while this link continues a compression-ended parent
+        if not _is_continuation(conn, root):
             break
-        current = row["id"]
-        ids.insert(0, current)
-    current = session_id
-    for _ in range(MAX_CHAIN):  # walk down through compression continuations
-        row = conn.execute(
-            "select c.id from sessions c join sessions p on p.id = c.parent_session_id "
-            "where p.id = ? and p.end_reason = 'compression' "
-            "and json_extract(c.model_config, '$._delegate_from') is null "
-            "order by c.started_at limit 1",
-            (current,),
-        ).fetchone()
-        if not row or row["id"] in ids:
+        parent = _link(conn, root["parent_session_id"])
+        if not parent or parent["id"] in seen:
             break
-        current = row["id"]
-        ids.append(current)
-    return ids
+        root = parent
+        seen.add(root["id"])
+    ids = [root["id"]]
+    ids += [c["id"] for c in _continuations(conn, root, set(ids))]
+    return ids if session_id in ids else [session_id]
+
+
+def _continuations(conn: sqlite3.Connection, current, seen: set[str], columns: str = _LINK_COLUMNS) -> list:
+    """The compression continuations after `current`, each the earliest real (non-fork) child."""
+    out = []
+    for _ in range(MAX_CHAIN):
+        if current["end_reason"] != "compression":
+            break
+        children = conn.execute(f"select {columns} from sessions where parent_session_id = ? "
+                                "order by started_at", (current["id"],)).fetchall()
+        nxt = next((c for c in children if _is_continuation(conn, c)), None)
+        if not nxt or nxt["id"] in seen:
+            break
+        seen.add(nxt["id"])
+        out.append(nxt)
+        current = nxt
+    return out
+
+
+def _title(conn: sqlite3.Connection, ids: list[str]) -> str | None:
+    """The conversation's name as the app shows it: the newest link that has a title."""
+    marks = ",".join("?" * len(ids))
+    rows = {r["id"]: r["title"] for r in conn.execute(
+        f"select id, title from sessions where id in ({marks})", ids).fetchall()}
+    return next((rows[i] for i in reversed(ids) if rows.get(i)), None)
 
 
 def _final_text(conn: sqlite3.Connection, sid: str) -> str:
@@ -161,7 +210,21 @@ def _last_seen(conn: sqlite3.Connection, row: sqlite3.Row) -> float:
     return max(v for v in (row["last_activity_at"], msg["t"] if msg else None, row["started_at"]) if v is not None)
 
 
-def _worker(conn: sqlite3.Connection, row: sqlite3.Row, now: float) -> dict:
+_WORKER_COLUMNS = ("id, model, model_config, parent_session_id, source, started_at, ended_at, end_reason, "
+                   "tool_call_count, input_tokens, output_tokens, last_activity_at")
+
+
+def _chain(conn: sqlite3.Connection, root: sqlite3.Row) -> list[sqlite3.Row]:
+    """A worker and its own compression continuations, oldest first (one worker, many sessions).
+
+    Hermes' lineage of a worker is the worker alone (it is a fork of its parent), so the walk
+    starts at the worker and only goes down."""
+    return [root, *_continuations(conn, root, {root["id"]}, _WORKER_COLUMNS)]
+
+
+def _worker(conn: sqlite3.Connection, root: sqlite3.Row, now: float) -> dict:
+    chain = _chain(conn, root)
+    row = chain[-1]  # a worker compressed mid-run lives on in its tip: status, end and answer come from there
     final = _final_text(conn, row["id"])
     ended = row["ended_at"]
     # The session's end is the only end state: a worker that has not ended is running even when
@@ -176,19 +239,19 @@ def _worker(conn: sqlite3.Connection, row: sqlite3.Row, now: float) -> dict:
     else:
         # Closed without an answer: the app or the parent went away mid-run.
         status = "stopped"
-    duration = (ended - row["started_at"]) if (status == "completed" and ended) else None
+    duration = (ended - root["started_at"]) if (status == "completed" and ended) else None
     return {
-        "session_id": row["id"],
-        "goal": _goal(conn, row["id"]),
+        "session_id": root["id"],
+        "goal": _goal(conn, root["id"]),
         "model": row["model"],
         "effort": _effort(row["model_config"]),
         "status": status,
         "end_reason": row["end_reason"],
-        "started_at": row["started_at"],
+        "started_at": root["started_at"],
         "ended_at": ended,
         "duration_s": duration,
-        "tool_calls": row["tool_call_count"] or 0,
-        "tokens": (row["input_tokens"] or 0) + (row["output_tokens"] or 0),
+        "tool_calls": sum(r["tool_call_count"] or 0 for r in chain),
+        "tokens": sum((r["input_tokens"] or 0) + (r["output_tokens"] or 0) for r in chain),
         "summary": final[:600],
         "summary_truncated": len(final) > 600,
     }
@@ -199,19 +262,20 @@ def list_children(conn: sqlite3.Connection, session_id: str, now: float | None =
     ids = _lineage(conn, session_id)
     marks = ",".join("?" * len(ids))
     rows = conn.execute(
-        "select id, model, model_config, started_at, ended_at, end_reason, tool_call_count, input_tokens, "
-        "output_tokens, last_activity_at from sessions "
+        f"select {_WORKER_COLUMNS} from sessions "
         f"where json_extract(model_config, '$._delegate_from') in ({marks}) order by started_at",
         ids,
     ).fetchall()
     batches: list[dict] = []
     for row in rows:
+        if _is_continuation(conn, row):
+            continue  # a compressed worker's later half: folded into the worker it continues
         worker = _worker(conn, row, now)
         if batches and row["started_at"] - batches[-1]["started_at"] < BATCH_GAP_S:
             batches[-1]["workers"].append(worker)
         else:
             batches.append({"started_at": row["started_at"], "workers": [worker]})
-    return {"session_id": session_id, "lineage": ids, "batches": batches}
+    return {"session_id": session_id, "lineage": ids, "title": _title(conn, ids), "batches": batches}
 
 
 def _owned_by(conn: sqlite3.Connection, parent: str, owners: set[str]) -> bool:
@@ -231,7 +295,7 @@ def _owned_by(conn: sqlite3.Connection, parent: str, owners: set[str]) -> bool:
 
 
 def read_output(conn: sqlite3.Connection, session_id: str, child_id: str) -> dict:
-    row = conn.execute("select model_config from sessions where id = ?", (child_id,)).fetchone()
+    row = conn.execute(f"select {_WORKER_COLUMNS} from sessions where id = ?", (child_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail=f"session not found: {child_id}")
     parent = _delegate_from(row["model_config"])
@@ -239,7 +303,9 @@ def read_output(conn: sqlite3.Connection, session_id: str, child_id: str) -> dic
         raise HTTPException(status_code=403, detail="not a delegated worker session")
     if not _owned_by(conn, parent, set(_lineage(conn, session_id))):
         raise HTTPException(status_code=403, detail="worker belongs to another conversation")
-    return {"session_id": child_id, "parent": parent, "text": _final_text(conn, child_id)}
+    # A worker compressed mid-run answers in its last continuation, not in the half it was listed by.
+    tip = _chain(conn, row)[-1]["id"]
+    return {"session_id": child_id, "parent": parent, "text": _final_text(conn, tip)}
 
 
 def _pid_is_ours(pid, start) -> bool:
@@ -266,15 +332,19 @@ def _pid_is_ours(pid, start) -> bool:
         return False
 
 
-def _read_running() -> list[dict]:
+def _read_running() -> tuple[list[dict], int]:
+    """Checkpoint entries that have the shape Hermes writes, plus how many did not."""
     path = _checkpoint_path()
     if not path.is_file():
-        return []
+        return [], 0
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError(f"top level is {type(data).__name__}, not a list")
     except (OSError, ValueError) as exc:
         raise _unreadable("processes.json", exc) from exc
-    return data if isinstance(data, list) else []
+    entries = [e for e in data if isinstance(e, dict)]
+    return entries, len(data) - len(entries)
 
 
 def _read_results() -> tuple[list[tuple[dict, float]], int]:
@@ -325,34 +395,47 @@ def _finished_status(record: dict) -> str:
     return "completed" if record.get("exit_code") == 0 else "failed"
 
 
+def _number(value) -> float | None:
+    """A timestamp as Hermes writes it (epoch seconds); anything else — text, a list, a bool — is unknown."""
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _owned(record: dict, owners: set[str]) -> bool:
+    parent = record.get("parent_session_id")
+    return isinstance(parent, str) and parent in owners
+
+
 def list_processes(conn: sqlite3.Connection, session_id: str) -> dict:
     owners = set(_lineage(conn, session_id))
     procs: dict[str, dict] = {}
-    for entry in _read_running():
+    entries, unreadable = _read_running()
+    for entry in entries:
         pid_id = str(entry.get("session_id") or "")
-        if not PROC_ID.fullmatch(pid_id) or entry.get("parent_session_id") not in owners:
+        if not PROC_ID.fullmatch(pid_id) or not _owned(entry, owners):
             continue
         alive = entry.get("pid_scope", "host") != "host" or _pid_is_ours(entry.get("pid"), entry.get("host_start_time"))
         procs[pid_id] = {
             "id": pid_id, **_command(entry.get("command")), "cwd": entry.get("cwd"),
             # Checkpointed but gone, with no receipt: the app closed under it.
             "status": "running" if alive else "stopped",
-            "started_at": entry.get("started_at"), "ended_at": None, "duration_s": None,
+            "started_at": _number(entry.get("started_at")), "ended_at": None, "duration_s": None,
             "exit_code": None, "reason": None,
+            "has_output": False,  # only a receipt carries output; the detail must not ask for one
         }
-    results, unreadable = _read_results()
+    results, bad = _read_results()
+    unreadable += bad
     for record, mtime in results:
-        if record.get("parent_session_id") not in owners:
+        if not _owned(record, owners):
             continue
-        started = record.get("started_at")
+        started = _number(record.get("started_at"))
         # The receipt is written at the moment the process leaves the running set, so its mtime is
         # the end time; Hermes records no separate field for it.
-        duration = mtime - started if isinstance(started, (int, float)) and mtime >= started else None
+        duration = mtime - started if started is not None and mtime >= started else None
         procs[record["id"]] = {
             "id": record["id"], **_command(record.get("command")), "cwd": record.get("cwd"),
             "status": _finished_status(record), "started_at": started, "ended_at": mtime,
             "duration_s": duration, "exit_code": record.get("exit_code"),
-            "reason": record.get("completion_reason"),
+            "reason": record.get("completion_reason"), "has_output": True,
         }
     rows = sorted(procs.values(), key=lambda p: p["started_at"] or 0)
     return {"session_id": session_id, "processes": rows, "unreadable": unreadable}
@@ -364,11 +447,13 @@ def read_process_output(conn: sqlite3.Connection, session_id: str, process_id: s
     path = _results_dir() / f"{process_id}.json"
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            raise ValueError(f"top level is {type(record).__name__}, not an object")
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"no finished record for {process_id}") from exc
     except (OSError, ValueError) as exc:
         raise _unreadable("process record", exc) from exc
-    if record.get("parent_session_id") not in set(_lineage(conn, session_id)):
+    if not _owned(record, set(_lineage(conn, session_id))):
         raise HTTPException(status_code=403, detail="process belongs to another conversation")
     text = str(record.get("output") or "")
     return {
