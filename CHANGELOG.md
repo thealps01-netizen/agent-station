@@ -3,6 +3,60 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.3.0 — 2026-10-10
+
+1.2.0 was the reverted Attention Desk release; this version skips its number so the two are never
+confused. Found by a design critique and an exploratory bug hunt; every fix has a check that fails on
+1.1.10 and a canary that breaks it (98 canaries).
+
+### Fixes
+
+- **A queued worker is no longer marked stopped before it starts.** Hermes announces a worker
+  (`spawn_requested`) before it registers it with `subagent.list`; the first poll in that window
+  marked it stopped, and a batch whose workers were all queued was hidden from Now for its whole run.
+  A queued worker the list does not show yet now waits up to 60 s.
+- **A finished worker stays finished.** The registry lists a worker as running until Hermes' cleanup
+  unregisters it; a poll in that window turned Done into running, then stopped.
+- **Another conversation's workers are no longer served to a branch.** The compression lineage took
+  a `/branch`, a reset fork, a tool child or a worker session for a continuation, so a branch listed
+  (and could read the full output of) its source chat's workers and commands, and the walk down could
+  follow a branch instead of the real continuation. It now uses Hermes' own fork rule.
+- **A worker compressed mid-run is one row**, with its final answer, not two rows with the interim
+  note as "Done".
+- **Wrong-shape records no longer become a 500.** A checkpoint entry or receipt that is valid JSON of
+  the wrong shape is counted as unreadable (the rest still list); a `processes.json` that is not a
+  list is a 503.
+- **A command with no receipt no longer shows a red 404.** It reads "No output was recorded." A
+  command cut at 4,000 characters says so in its detail.
+- **Toggling an Earlier batch or a command keeps keyboard focus** (it fell to the page body).
+- **A finished batch no longer flashes the empty state**: it stays in Now until history has it.
+- **A failed poll of the chat the page left no longer counts against the new chat.**
+- **Copying an empty output says so** instead of "Copied". Two stored batches with the same start no
+  longer share an open state.
+
+### Design
+
+- The header names the watched chat and marks it `held` when the page holds a chat the app no longer
+  has focused. Its tint is red when a read failed, yellow while anything runs, neutral otherwise (it
+  was green above an all-failed page). The running pill counts commands too.
+- Copy full output and Open session are labelled buttons; the alert box has a Try again button.
+- Cards are flat; only running and failed cards carry the status rail.
+- A finished batch moves to Earlier with its open worker detail and keyboard focus.
+- Below 420 px, Earlier counts and times keep their right-hand column. Opened cards no longer repeat
+  the row's duration or exit code; the command block shows only when the row cannot show it whole.
+- Unreadable records carry the failed mark.
+
+### Checks
+
+- `check_api.py`: lineage forks, compressed workers, conversation title, wrong-shape records.
+- `render_check.mjs`: 25 new checks (header, focus, live races, hand-off, commands).
+- `audit_static.py`: the `aria-expanded` rule reads class names inside a ternary (the open/closed
+  header made it skip both expandable rows).
+- `contract_core.py`: `sessions.source` and `sessions.title` are checked in the core.
+- `canary_audit.py` runs the mutations in parallel (`SW_CANARY_JOBS`, default 8); one at a time the
+  longer list outgrew the CI job's 25-minute limit. `render_check.mjs` takes `SW_RENDER_OUT` so
+  parallel runs keep separate build folders.
+
 ## 1.1.10 — 2026-09-28
 
 ### Fixes

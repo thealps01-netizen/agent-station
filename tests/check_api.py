@@ -60,20 +60,22 @@ def build_fixture() -> None:
         "create table sessions (id text primary key, model text, model_config text,"
         " parent_session_id text, started_at real not null, ended_at real, end_reason text,"
         " tool_call_count integer default 0, input_tokens integer default 0,"
-        " output_tokens integer default 0, last_activity_at real);"
+        " output_tokens integer default 0, last_activity_at real, source text not null default 'cli',"
+        " title text);"
         "create table messages (id integer primary key autoincrement, session_id text,"
         " role text, content text, timestamp real);"
     )
 
     def session(sid, started, ended=None, reason=None, parent=None, delegate_from=None, model="m", active=None,
-                reasoning=None):
+                reasoning=None, markers=None, source="cli", title=None):
         cfg = {"_delegate_from": delegate_from} if delegate_from else {}
         if reasoning is not None:
             cfg["reasoning_config"] = reasoning
+        cfg.update(markers or {})
         cfg = json.dumps(cfg)
         db.execute(
-            "insert into sessions values (?,?,?,?,?,?,?,?,?,?,?)",
-            (sid, model, cfg, parent, started, ended, reason, 3, 100, 20, active),
+            "insert into sessions values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (sid, model, cfg, parent, started, ended, reason, 3, 100, 20, active, source, title),
         )
 
     def message(sid, role, content, ts=0.0):
@@ -81,7 +83,7 @@ def build_fixture() -> None:
                    (sid, role, content, ts))
 
     session("P1", 900, 1500, "compression")
-    session("P2", 1500, parent="P1")
+    session("P2", 1500, parent="P1", title="Refactor fleet routing")
     session("Q", 900)
     session("W1", 1000, 1042, "completed", delegate_from="P1", model="claude-sonnet-5",
             reasoning={"enabled": True, "effort": "medium"})
@@ -109,6 +111,25 @@ def build_fixture() -> None:
     session("W8", 10, delegate_from="P1")
     message("W8", "user", "Talks often", ts=10)
     message("W8", "assistant", "still at it", ts=NOW - 20)
+    # Round 5 — a second conversation R1 -> R2 (compression) with every kind of child Hermes'
+    # get_compression_lineage refuses as a continuation: a /branch, a reset fork, a tool child and a
+    # delegated worker. The branch starts first, so a walk that takes "the earliest child" picks it.
+    session("R1", 3000, 3500, "compression")
+    session("RB", 3200, parent="R1", markers={"_branched_from": "R1"})
+    session("RR", 3300, parent="R1", markers={"_reset_from": "R1"})
+    session("RT", 3250, parent="R1", source="tool")
+    session("R2", 3500, parent="R1")
+    session("RW", 3100, 3150, "completed", parent="R1", delegate_from="R1")
+    message("RW", "user", "Secret task of R1")
+    message("RW", "assistant", "SECRET answer of R1")
+    # A worker of R2 that was itself compressed: Hermes copies model_config onto the continuation,
+    # so CW2 carries _delegate_from=R2 too, but its parent is CW. One worker, answer from the tip.
+    session("CW", 3600, 3700, "compression", parent="R2", delegate_from="R2")
+    message("CW", "user", "Audit the repo")
+    message("CW", "assistant", "interim note before compression")
+    session("CW2", 3700, 3800, "completed", parent="CW", delegate_from="R2")
+    message("CW2", "user", "[CONTEXT SUMMARY] earlier turn")
+    message("CW2", "assistant", "final audit answer")
     db.commit()
     db.close()
 
@@ -177,6 +198,31 @@ def run_fixture() -> None:
                 check(False, what)
             except HTTPException as exc:
                 check(exc.status_code == code and str(exc.detail).startswith(detail), f"{what} [{exc.detail}]")
+
+        check(data.get("title") == "Refactor fleet routing", f"/children names the conversation ({data.get('title')!r})")
+        check(api.list_children(conn, "P1").get("title") == "Refactor fleet routing",
+              "an untitled link takes the conversation's newest title")
+        # Hermes' lineage rule: branches, reset forks, tool children and workers are their own conversations.
+        check(api._lineage(conn, "R1") == ["R1", "R2"],
+              f"the walk down skips a branch, a reset fork and a tool child ({api._lineage(conn, 'R1')})")
+        for sid, what in (("RB", "a /branch"), ("RR", "a reset fork"), ("RT", "a tool child"), ("RW", "a worker session")):
+            got = api.list_children(conn, sid)
+            check(got["lineage"] == [sid] and got["batches"] == [],
+                  f"{what} of a compressed chat is its own conversation, with no inherited workers ({got['lineage']})")
+        try:
+            api.read_output(conn, "RB", "RW")
+            check(False, "a branch cannot read its source chat's worker output (403)")
+        except HTTPException as exc:
+            check(exc.status_code == 403, "a branch cannot read its source chat's worker output (403)")
+        compressed = [w for b in api.list_children(conn, "R2", now=NOW)["batches"] for w in b["workers"]]
+        check([w["session_id"] for w in compressed] == ["RW", "CW"],
+              f"a worker compressed mid-run is one row, not two ({[w['session_id'] for w in compressed]})")
+        cw = compressed[-1]
+        check(cw["status"] == "completed" and cw["duration_s"] == 200 and cw["goal"] == "Audit the repo",
+              f"its status and end come from the tip, start and goal from the root ({cw['status']}, {cw['duration_s']})")
+        check(cw["tool_calls"] == 6 and cw["tokens"] == 240, "its tool calls and tokens are summed over both halves")
+        check(cw["summary"] == "final audit answer" and api.read_output(conn, "R2", "CW")["text"] == "final audit answer",
+              "its answer is the tip's, not the interim note before compression")
 
         run_processes(conn)
     run_routes_close()
@@ -303,6 +349,7 @@ def run_processes(conn) -> None:
     receipt("proc_bad", "P2", 2000.0, 2005.5, 1, output="E" * (api.OUTPUT_TAIL + 50))
     receipt("proc_kill", "P2", 2100.0, 2200.0, -15, reason="killed")
     receipt("proc_foreign", "Q", 1000.0, 1001.0, 0, output="secret of another chat")
+    receipt("proc_r1", "R1", 3100.0, 3101.0, 0, output="R1's command")
     (PROC_RESULTS / "proc_broken.json").write_text("{not json", encoding="utf-8")
 
     data = api.list_processes(conn, "P2")
@@ -321,6 +368,11 @@ def run_processes(conn) -> None:
           "non-zero exit: failed, exit code kept")
     check(rows["proc_kill"]["status"] == "stopped", "killed: stopped, never completed")
     check(all("output" not in p for p in data["processes"]), "the list never carries output")
+    check(rows["proc_gone"].get("has_output") is False and rows["proc_ok"].get("has_output") is True,
+          "a checkpoint-only row says it has no output to ask for; a receipt row says it has")
+    check(any(p["id"] == "proc_r1" for p in api.list_processes(conn, "R2")["processes"]) and
+          api.list_processes(conn, "RB")["processes"] == [],
+          "a branch of a compressed chat does not list the source chat's commands")
 
     receipt("proc_run", "P2", 3000.0, 3010.0, 0)
     api._RECEIPTS.clear()
@@ -383,6 +435,63 @@ def run_processes(conn) -> None:
         check(False, "an unreadable processes.json is an error, not an empty list")
     except HTTPException as exc:
         check(exc.status_code == 503, "an unreadable processes.json is an error, not an empty list")
+    run_bad_shapes(conn)
+
+
+def run_bad_shapes(conn) -> None:
+    """Valid JSON in the wrong shape is a named unreadable record (or a 503), never a 500 that hides the rest."""
+    api._RECEIPTS.clear()
+    PROC_RESULTS.mkdir(parents=True, exist_ok=True)
+    write_json(PROC_HOME / "processes.json", {"proc_x": {}})
+    try:
+        api.list_processes(conn, "P2")
+        check(False, "processes.json with a dict top level is a 503")
+    except HTTPException as exc:
+        check(exc.status_code == 503, "processes.json with a dict top level is a 503")
+    except Exception as exc:  # noqa: BLE001
+        check(False, f"processes.json with a dict top level is a 503, not a 500 ({type(exc).__name__})")
+    write_json(PROC_HOME / "processes.json", [
+        None, "proc_abc", 7,
+        {"session_id": "proc_listparent", "command": "x", "pid": os.getpid(), "pid_scope": "host",
+         "started_at": 5.0, "parent_session_id": ["P2"]},
+        {"session_id": "proc_textstart", "command": "y", "pid": os.getpid(), "pid_scope": "host",
+         "started_at": "yesterday", "parent_session_id": "P2"},
+    ])
+    receipt("proc_good", "P2", 10.0, 11.0, 0, output="fine")
+    write_json(PROC_RESULTS / "proc_badparent.json", {"id": "proc_badparent", "parent_session_id": ["P2"],
+                                                       "started_at": 1.0, "exit_code": 0})
+    write_json(PROC_RESULTS / "proc_badstart.json", {"id": "proc_badstart", "parent_session_id": "P2",
+                                                      "started_at": "yesterday", "exit_code": 0, "command": "z"})
+    write_json(PROC_RESULTS / "proc_list.json", [1, 2, 3])
+    try:
+        data = api.list_processes(conn, "P2")
+    except Exception as exc:  # noqa: BLE001
+        check(False, f"wrong-shape entries and receipts never become a 500 ({type(exc).__name__}: {exc})")
+        return
+    ids = {p["id"] for p in data["processes"]}
+    check({"proc_good", "proc_badstart", "proc_textstart"} <= ids and "proc_listparent" not in ids and "proc_badparent" not in ids,
+          f"one bad record never hides the rest; a non-text owner is never ours ({sorted(ids)})")
+    bad = {p["id"]: p for p in data["processes"]}
+    check(bad["proc_badstart"]["started_at"] is None and bad["proc_badstart"]["duration_s"] is None,
+          "a text started_at reads as unknown, with no duration")
+    check(data["unreadable"] == 4, f"3 non-object checkpoint entries + 1 non-object receipt are counted ({data['unreadable']})")
+    for pid, what in (("proc_list", "a receipt that is a JSON list"),):
+        try:
+            api.read_process_output(conn, "P2", pid)
+            check(False, f"/process_output on {what} is a 503")
+        except HTTPException as exc:
+            check(exc.status_code == 503, f"/process_output on {what} is a 503 [{exc.detail}]")
+        except Exception as exc:  # noqa: BLE001
+            check(False, f"/process_output on {what} is a 503, not a 500 ({type(exc).__name__})")
+    try:
+        api.read_process_output(conn, "P2", "proc_badparent")
+        check(False, "/process_output refuses a receipt whose owner is not text (403)")
+    except HTTPException as exc:
+        check(exc.status_code == 403, "/process_output refuses a receipt whose owner is not text (403)")
+    except Exception as exc:  # noqa: BLE001
+        check(False, f"/process_output on a non-text owner is a 403, not a 500 ({type(exc).__name__})")
+    check(api._delegate_from("[1, 2]") is None and api._delegate_from('{"_delegate_from": ["P2"]}') is None,
+          "a model_config that is a list, or a non-text _delegate_from, is not a worker marker")
 
 
 def run_live() -> None:

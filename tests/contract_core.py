@@ -74,10 +74,17 @@ def _backend_columns() -> dict[str, set[str]]:
     tree = ast.parse(BACKEND.read_text(encoding="utf-8"))
     sql = " ".join(n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
                    and re.search(r"\b(select|where)\b", n.value))
-    sessions = {"id", "parent_session_id", "end_reason", "model_config", "started_at"}
+    sessions = {"id", "parent_session_id", "end_reason", "model_config", "started_at", "source", "title"}
     listed = re.search(r"select (id, model, .*?) from sessions", sql)
     if listed:
         sessions |= {c.strip() for c in listed.group(1).split(",")}
+    # Column lists kept in a module constant (`_WORKER_COLUMNS = "id, model, ..."`) and spliced into SQL.
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id.endswith("_COLUMNS") for t in node.targets):
+            value = node.value
+            text = value.value if isinstance(value, ast.Constant) else "".join(
+                p.value for p in ast.walk(value) if isinstance(p, ast.Constant) and isinstance(p.value, str))
+            sessions |= {c.strip() for c in text.split(",") if c.strip()}
     messages = {"session_id", "role", "content", "id"}
     return {"sessions": sessions, "messages": messages}
 

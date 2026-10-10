@@ -27,6 +27,13 @@ const HISTORY_PAGE = 8
 // A stored batch still reading "running" is the live tree only when it started around the same time:
 // one that started well before the live tree began is a crashed run and stays under Earlier.
 const LIVE_MATCH_S = 120
+// Hermes announces a worker (spawn_requested) while it is still being built and only registers it
+// with subagent.list when it starts running. A queued worker the list does not show yet is waiting,
+// not gone, until it has been unlisted this long.
+const QUEUE_GRACE_S = 60
+// A single-line command up to this length is read whole on its row in a 380 px dock; a longer or
+// multi-line one gets the full text in its opened detail.
+const ROW_COMMAND_CHARS = 28
 const SUBAGENT_EVENTS = [
   'subagent.spawn_requested', 'subagent.start', 'subagent.progress', 'subagent.tool', 'subagent.complete'
 ]
@@ -45,7 +52,17 @@ const BUNDLES = {
   en: {
     sw: {
       title: 'Subagents',
-      running: n => `${n} running`,
+      running: (workers, commands) => [
+        workers ? `${workers} worker${workers === 1 ? '' : 's'}` : '',
+        commands ? `${commands} command${commands === 1 ? '' : 's'}` : ''
+      ].filter(Boolean).join(' · ') + ' running',
+      chat: {
+        untitled: id => `Chat …${id}`,
+        held: 'held',
+        heldTip: 'Showing the chat you last used here. Click a chat to follow it.'
+      },
+      retry: 'Try again',
+      nothingToCopy: 'Nothing to copy — the output is empty',
       nBatches: n => `${n} batch${n === 1 ? '' : 'es'}`,
       nWorkers: n => `${n} worker${n === 1 ? '' : 's'}`,
       countFailed: 'Unknown — its source could not be read',
@@ -61,7 +78,7 @@ const BUNDLES = {
       batch: n => `${n} worker${n === 1 ? '' : 's'}`,
       modelTip: (model, effort) => (effort ? `${model} · reasoning effort ${effort}` : model),
       more: n => `+${n} more`,
-      meta: (d, tools, tokens) => [d, `${tools} tool${tools === 1 ? '' : 's'}`, tokens ? `${tokens} tokens` : ''].filter(Boolean).join(' · '),
+      meta: (tools, tokens) => [`${tools} tool${tools === 1 ? '' : 's'}`, tokens ? `${tokens} tokens` : ''].filter(Boolean).join(' · '),
       units: {
         hm: (h, m) => `${h}h ${m}m`,
         ms: (m, s) => `${m}m ${s}s`,
@@ -86,6 +103,7 @@ const BUNDLES = {
         copyCommand: 'Copy command',
         output: 'End of output',
         outputCut: n => `last ${n} characters`,
+        commandCut: n => `Only the first ${n} characters of this command are shown and copied.`,
         noOutput: 'No output was recorded.',
         whileRunning: 'The output is shown here when the command finishes.',
         notSubagent: 'Shell commands the agent started in the background (not subagents).',
@@ -100,7 +118,7 @@ const BUNDLES = {
         procs: 'Could not read background commands',
         procOutput: 'Could not read the command output',
         withDetail: (what, detail) => `${what}: ${detail}`,
-        hint: 'Nothing could be read. Press Refresh to try again.'
+        hint: 'Nothing could be read. Use Try again in the box above.'
       }
     }
   }
@@ -303,14 +321,13 @@ function Strip({ statuses }) {
   })
 }
 
-function IconButton({ label, icon, onClick, disabled, busy }) {
-  return jsx(Tip, {
-    label,
-    children: jsx('button', {
-      type: 'button', className: `sw-ib${busy ? ' is-busy' : ''}`, 'aria-label': label, 'aria-busy': busy ? 'true' : undefined,
-      disabled: disabled || busy, onClick, children: icon()
-    })
+// `text`: the label is also drawn beside the icon — the page's primary verbs are read, not hovered for.
+function IconButton({ label, icon, onClick, disabled, busy, text }) {
+  const button = jsx('button', {
+    type: 'button', className: `sw-ib${text ? ' is-text' : ''}${busy ? ' is-busy' : ''}`, 'aria-label': label, 'aria-busy': busy ? 'true' : undefined,
+    disabled: disabled || busy, onClick, children: text ? [jsx('span', { className: 'sw-ibi', children: icon() }, 'i'), jsx('span', { children: label }, 't')] : icon()
   })
+  return text ? button : jsx(Tip, { label, children: button })
 }
 
 // ── data hooks ───────────────────────────────────────────────────────────────
@@ -336,12 +353,16 @@ function useHistory(storedId) {
     const mine = ++gen.current
     // Another chat's data and error never ride along into this one.
     setState(prev => (prev.key === storedId ? { ...prev, loading: true } : { key: storedId, data: null, error: null, loading: true }))
-    ctxRef.rest(`/children?session_id=${encodeURIComponent(storedId)}`).then(
-      data => mine === gen.current && setState({ key: storedId, data, error: null, loading: false }),
-      err => mine === gen.current && setState(prev => ({ ...prev, error: String(err?.message || err), loading: false }))
+    // Returned so a caller can wait for the answer (a finished batch stays in Now until history has it).
+    return ctxRef.rest(`/children?session_id=${encodeURIComponent(storedId)}`).then(
+      data => {
+        if (mine === gen.current) setState({ key: storedId, data, error: null, loading: false })
+        return mine === gen.current ? data : null
+      },
+      err => { if (mine === gen.current) setState(prev => ({ ...prev, error: String(err?.message || err), loading: false })) }
     )
   }, [storedId])
-  useEffect(load, [load])
+  useEffect(() => { load() }, [load])
   return { ...state, reload: load }
 }
 
@@ -410,7 +431,7 @@ function useLive(runtimeId, onBatchEnded) {
         goal: p.goal, model: p.model, task_index: p.task_index, child_session_id: p.child_session_id,
         tool_count: p.tool_count
       }
-      if (type === 'subagent.spawn_requested') upsert({ ...base, status: 'queued' })
+      if (type === 'subagent.spawn_requested') upsert({ ...base, status: 'queued', queued_at: Date.now() / 1000 })
       else if (type === 'subagent.start') upsert({ ...base, status: 'running', started_at: Date.now() / 1000 })
       else if (type === 'subagent.tool') upsert({ ...base, last_tool: p.tool_name, tool_preview: p.tool_preview })
       else if (type === 'subagent.progress') upsert(base)
@@ -431,23 +452,35 @@ function useLive(runtimeId, onBatchEnded) {
         fails.current = 0
         setError(null)
         const seen = new Set()
+        const at = Date.now() / 1000
         setRecords(prev => {
           const next = { ...prev }
           for (const r of snap?.subagents || []) {
             if (gone.current.has(r.subagent_id)) continue
             seen.add(r.subagent_id)
-            next[r.subagent_id] = mergeRecord(prev[r.subagent_id] || {}, { ...r, status: STATUS_OF[r.status] || r.status })
+            const had = prev[r.subagent_id]
+            // A worker's end is final: the registry still lists it as running for a moment after its
+            // complete frame (Hermes unregisters it in cleanup), and that snapshot must not revive it.
+            const status = TERMINAL.has(had?.status) ? had.status : (STATUS_OF[r.status] || r.status)
+            next[r.subagent_id] = mergeRecord(had || {}, { ...r, status })
           }
-          // A worker the backend no longer tracks ended without a complete frame reaching us.
+          // A worker the backend no longer tracks ended without a complete frame reaching us — unless
+          // it is still queued: Hermes lists a worker only once it starts, so give it QUEUE_GRACE_S.
           for (const [id, r] of Object.entries(next)) {
-            if (!seen.has(id) && !TERMINAL.has(r.status)) next[id] = { ...r, status: 'stopped', ended_at: Date.now() / 1000 }
+            if (seen.has(id) || TERMINAL.has(r.status)) continue
+            if (r.status === 'queued' && at - (r.queued_at ?? at) < QUEUE_GRACE_S) {
+              if (r.queued_at == null) next[id] = { ...r, queued_at: at } // first unlisted poll starts its grace
+              continue
+            }
+            next[id] = { ...r, status: 'stopped', ended_at: at }
           }
           return next
         })
       } catch (err) {
+        if (!alive) return // a poll of the chat the page has left: its failure is not this chat's
         fails.current += 1
         console.warn(`[${ID}] subagent.list failed (${fails.current}/${MAX_POLL_FAILS})`, err)
-        if (alive && fails.current >= MAX_POLL_FAILS) setError(String(err?.message || err))
+        if (fails.current >= MAX_POLL_FAILS) setError(String(err?.message || err))
       }
     }
     pollRef.current = poll
@@ -461,14 +494,26 @@ function useLive(runtimeId, onBatchEnded) {
     }
   }, [runtimeId])
 
-  // A batch whose workers are all terminal moves to history: reload it, then drop it from "Now".
+  // A batch whose workers are all terminal moves to history: reload it, THEN drop it from "Now", so
+  // the page never shows an empty Now (or a stale running copy) while the reload is in flight. The
+  // page is told which session each worker had and whether focus was in the batch, so an open
+  // detail and keyboard focus follow the batch into Earlier.
   const batches = useMemo(() => liveBatches(Object.values(records)), [records])
   const finished = batches.filter(b => b.rows.every(r => TERMINAL.has(r.status))).map(b => b.id).join('|')
   useEffect(() => {
     if (!finished) return
     const ids = new Set(finished.split('|'))
-    for (const b of batches) if (ids.has(b.id)) for (const r of b.rows) gone.current.add(r.subagent_id)
-    Promise.resolve(endedRef.current?.()).finally(() => {
+    const sessions = new Map()
+    for (const b of batches) {
+      if (!ids.has(b.id)) continue
+      for (const r of b.rows) {
+        gone.current.add(r.subagent_id)
+        if (r.child_session_id) sessions.set(r.subagent_id, r.child_session_id)
+      }
+    }
+    const holder = document.activeElement?.closest?.('[data-batch]')
+    const focused = Boolean(holder && ids.has(holder.getAttribute('data-batch')))
+    Promise.resolve(endedRef.current?.({ sessions, focused })).finally(() => {
       setRecords(prev => {
         const next = { ...prev }
         for (const [k, r] of Object.entries(next)) if (ids.has(r.delegation_id || `solo:${k}`)) delete next[k]
@@ -484,13 +529,16 @@ function useLive(runtimeId, onBatchEnded) {
     void pollRef.current?.()
   }, [])
 
-  return { batches: batches.filter(b => !b.rows.every(r => TERMINAL.has(r.status))), error, retry }
+  // A finished batch stays listed (its merge node reads "results returned") until history has it.
+  return { batches, error, retry }
 }
 
 // ── pieces ───────────────────────────────────────────────────────────────────
 
 /** Clipboard write that never rejects out of a click handler: a refusal is a "Copy failed" toast. */
 async function writeClip(text, t, onToast) {
+  // An empty clipboard is not a copy: saying "Copied" would hide that there was nothing to paste.
+  if (!text) return onToast(t('sw.nothingToCopy'), true)
   let ok = false
   try {
     ok = await ctxRef.os.writeClipboard(text)
@@ -532,11 +580,12 @@ function Detail({ t, worker, onToast }) {
       jsxs('div', {
         className: 'sw-dta',
         children: [
-          jsx(IconButton, { label: t(busy ? 'sw.copying' : 'sw.copy'), icon: ICON.copy, onClick: copy, disabled: !sid, busy }, 'c'),
-          jsx(IconButton, { label: t('sw.open'), icon: ICON.open, onClick: open, disabled: !sid }, 'o'),
+          jsx(IconButton, { label: t(busy ? 'sw.copying' : 'sw.copy'), icon: ICON.copy, onClick: copy, disabled: !sid, busy, text: true }, 'c'),
+          jsx(IconButton, { label: t('sw.open'), icon: ICON.open, onClick: open, disabled: !sid, text: true }, 'o'),
+          // The duration is already on the worker's row; the detail adds only what the row lacks.
           jsx('span', {
             className: 'sw-dtm',
-            children: t('sw.meta', fmtDuration(worker.duration_s, t), worker.tool_calls ?? worker.tool_count ?? 0, fmtTokens(worker.tokens, t))
+            children: t('sw.meta', worker.tool_calls ?? worker.tool_count ?? 0, fmtTokens(worker.tokens, t))
           }, 'm')
         ]
       }, 'a')
@@ -572,15 +621,17 @@ function HistoryBatch({ t, batch, open, onToggle, openWorker, setOpenWorker, onT
     jsx('span', { className: 'sw-bt', children: times.length ? fmtDuration(Math.max(...times), t) : '' }, 't'),
     jsx('span', { className: 'sw-chev', children: ICON.chev(open) }, 'v')
   ]
-  if (!open) {
-    return jsx('button', { type: 'button', className: 'sw-bl sw-hb sw-card sw-acc', 'data-st': st, 'aria-expanded': false, onClick: onToggle, children: head })
-  }
-  return jsxs('section', {
-    className: 'sw-box sw-frame', 'data-st': st,
+  // One wrapper and one header button in both states: swapping a collapsed <button> for an open
+  // <section> remounted the header and dropped keyboard focus to <body> on every toggle.
+  return jsxs('div', {
+    className: open ? 'sw-box sw-frame' : 'sw-cw', 'data-st': st, 'data-batch': batchKey(batch),
     children: [
-      jsx('button', { type: 'button', className: 'sw-bl sw-hb sw-bh', 'aria-expanded': true, onClick: onToggle, children: head }, 'h'),
+      jsx('button', {
+        type: 'button', className: open ? 'sw-bl sw-hb sw-bh' : 'sw-bl sw-hb sw-card sw-acc', 'data-st': st,
+        'aria-expanded': open, onClick: onToggle, children: head
+      }, 'h'),
       // Same tree as the live batch: the header is the root, each worker hangs off one rail.
-      jsx('div', {
+      open ? jsx('div', {
         className: 'sw-bb sw-fw',
         children: batch.workers.map((w, i) => jsxs('div', {
           className: 'sw-nwrap',
@@ -592,9 +643,14 @@ function HistoryBatch({ t, batch, open, onToggle, openWorker, setOpenWorker, onT
             openWorker.has(w.session_id) ? jsx(Detail, { t, worker: w, onToast }, 'd') : null
           ]
         }, w.session_id))
-      }, 'b')
+      }, 'b') : null
     ]
   })
+}
+
+/** A stored batch's identity: its start alone can be shared by two batches; its first worker cannot. */
+function batchKey(b) {
+  return `${b.started_at}:${b.workers[0]?.session_id || ''}`
 }
 
 function Node({ t, r, name, now, kids, depth, openWorker, setOpenWorker, onToast }) {
@@ -636,7 +692,7 @@ function Flow({ t, batch, now, openWorker, setOpenWorker, onToast }) {
   const merge = st === 'running' || st === 'queued' ? 'waiting' : st === 'completed' ? 'done' : 'partial'
   const rootNames = distinctNames(batch.roots.map(r => r.goal))
   return jsxs('div', {
-    className: 'sw-fl sw-frame', 'data-st': st,
+    className: 'sw-fl sw-frame', 'data-st': st, 'data-batch': batch.id,
     children: [
       jsxs('div', {
         className: 'sw-fn sw-root',
@@ -680,17 +736,23 @@ function Branches({ children, onRail }) {
 }
 
 function ProcDetail({ t, p, storedId, onToast }) {
-  const [out, setOut] = useState({ loading: p.status !== 'running', data: null, error: null })
+  // Only a finished command's receipt has output; a checkpoint-only row (the app closed under it)
+  // has none, and asking for it was a guaranteed 404 shown as a read failure.
+  const fetches = p.status !== 'running' && p.has_output !== false
+  const [out, setOut] = useState({ loading: fetches, data: null, error: null })
   useEffect(() => {
-    if (p.status === 'running') return undefined
+    if (!fetches) return undefined
     let alive = true
     ctxRef.rest(`/process_output?session_id=${encodeURIComponent(storedId)}&process_id=${encodeURIComponent(p.id)}`).then(
       data => alive && setOut({ loading: false, data, error: null }),
       err => alive && setOut({ loading: false, data: null, error: String(err?.message || err) })
     )
     return () => { alive = false }
-  }, [p.id, p.status, storedId])
-  const copy = () => writeClip(out.data?.command || p.command || '', t, onToast)
+  }, [p.id, p.status, storedId, fetches])
+  // The receipt holds the whole command; the list row carries at most COMMAND_CHARS of it.
+  const command = out.data?.command || p.command || ''
+  const cut = !out.data?.command && p.command_truncated
+  const copy = () => writeClip(command, t, onToast)
   let body
   if (p.status === 'running') body = jsx('div', { className: 'sw-po-note', children: t('sw.proc.whileRunning') })
   else if (out.loading) body = jsx(Loader, { label: t('sw.proc.output') })
@@ -698,13 +760,18 @@ function ProcDetail({ t, p, storedId, onToast }) {
   else if (!out.data?.output) body = jsx('div', { className: 'sw-po-note', children: t('sw.proc.noOutput') })
   else body = jsx('pre', { className: 'sw-po', children: out.data.output })
   const meta = [
-    p.status === 'stopped' ? t('sw.proc.killed') : p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : '',
-    p.cwd ? t('sw.proc.cwd', p.cwd) : ''
+    p.status === 'stopped' ? t('sw.proc.killed')
+      // A failed row already shows its exit code; the detail does not repeat it.
+      : p.status !== 'failed' && p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : '',
+    p.cwd ? t('sw.proc.cwd', p.cwd) : '',
+    cut ? t('sw.proc.commandCut', command.length) : ''
   ].filter(Boolean).join(' · ')
+  // The row already reads a short one-line command in full; the block is for what it cannot show.
+  const showCommand = command !== commandLine(p.command) || command.length > ROW_COMMAND_CHARS || cut
   return jsx(Branches, {
     onRail: true,
     children: [
-      jsx('pre', { className: 'sw-pc', children: out.data?.command || p.command }, 'c'),
+      showCommand ? jsx('pre', { className: 'sw-pc', children: command }, 'c') : null,
       jsxs('div', {
         className: 'sw-dta',
         children: [
@@ -742,14 +809,14 @@ function ProcItem({ t, p, now, open, onToggle, storedId, onToast }) {
     jsx('span', { className: 'sw-wt', children: time }, 't'),
     jsx('span', { className: 'sw-chev', children: ICON.chev(open) }, 'v')
   ]
-  if (!open) {
-    return jsx('button', { type: 'button', className: 'sw-pr sw-bl sw-card sw-acc', 'data-st': p.status, 'aria-expanded': false, onClick: onToggle, children: head })
-  }
-  return jsxs('section', {
-    className: 'sw-box sw-frame', 'data-st': p.status,
+  return jsxs('div', {
+    className: open ? 'sw-box sw-frame' : 'sw-cw', 'data-st': p.status,
     children: [
-      jsx('button', { type: 'button', className: 'sw-pr sw-bl sw-bh is-open', 'data-st': p.status, 'aria-expanded': true, onClick: onToggle, children: head }, 'h'),
-      jsx(ProcDetail, { t, p, storedId, onToast }, `d-${p.status}`)
+      jsx('button', {
+        type: 'button', className: open ? 'sw-pr sw-bl sw-bh is-open' : 'sw-pr sw-bl sw-card sw-acc', 'data-st': p.status,
+        'aria-expanded': open, onClick: onToggle, children: head
+      }, 'h'),
+      open ? jsx(ProcDetail, { t, p, storedId, onToast }, `d-${p.status}`) : null
     ]
   })
 }
@@ -765,7 +832,8 @@ function ProcSection({ t, procs, now, storedId, openProc, toggleProc, onToast })
         className: 'sw-lab sw-plab', id: 'sw-procs-h',
         children: [
           jsx(Tip, { label: t('sw.proc.notSubagent'), children: jsxs('span', { className: 'sw-plt', tabIndex: 0, children: [jsx('span', { className: 'sw-pi', children: ICON.term() }, 'i'), t('sw.procs')] }) }, 'l'),
-          unreadable ? jsx('span', { className: 'sw-pu', children: t('sw.proc.unreadable', unreadable) }, 'u') : null
+          // Read failures carry the failed mark (the text keeps its reading colour for contrast).
+          unreadable ? jsxs('span', { className: 'sw-pu', children: [jsx('span', { className: 'sw-mk', 'data-st': 'failed', 'aria-hidden': 'true', children: MARKS.failed() }, 'm'), t('sw.proc.unreadable', unreadable)] }, 'u') : null
         ]
       }, 'h'),
       procs.loading
@@ -782,7 +850,7 @@ function ProcSection({ t, procs, now, storedId, openProc, toggleProc, onToast })
 
 // ── page ─────────────────────────────────────────────────────────────────────
 
-/** A set of open card keys: toggle(key) flips one card, clear() folds them all (on chat change). */
+/** A set of open card keys: toggle(key) flips one card, clear() folds them all (on chat change), add(keys) opens some. */
 function useOpenSet() {
   const [open, setOpen] = useState(() => new Set())
   const toggle = key => setOpen(prev => {
@@ -791,7 +859,8 @@ function useOpenSet() {
     else next.add(key)
     return next
   })
-  return [open, toggle, () => setOpen(new Set())]
+  const add = keys => setOpen(prev => new Set([...prev, ...keys]))
+  return [open, toggle, () => setOpen(new Set()), add]
 }
 
 // Zones whose click makes the app name its MAIN chat as focused although no chat was picked: this
@@ -842,20 +911,37 @@ function useWatchedChat(pageRef) {
     }, 0)
   }, [appRuntime, appStored])
 
-  return watched
+  // Held: the page shows another chat than the one the app has focused (see above) — said in the header.
+  return { ...watched, held: Boolean(watched.storedId) && watched.storedId !== appStored }
 }
 
 export function Page() {
   const t = usePluginI18n(ID)
   const pageRef = useRef(null)
-  const { runtimeId, storedId } = useWatchedChat(pageRef)
+  const watched = useWatchedChat(pageRef)
+  const { runtimeId, storedId } = watched
   const history = useHistory(storedId)
-  const live = useLive(runtimeId, history.reload)
-  const procs = useProcesses(storedId)
   // Each card opens and closes on its own: opening one never folds another.
-  const [openBatch, toggleBatch, clearBatches] = useOpenSet()
-  const [openWorker, setOpenWorker, clearWorkers] = useOpenSet()
+  const [openBatch, toggleBatch, clearBatches, addBatches] = useOpenSet()
+  const [openWorker, setOpenWorker, clearWorkers, addWorkers] = useOpenSet()
   const [openProc, toggleProc, clearProcs] = useOpenSet()
+  const [focusBatch, setFocusBatch] = useState(null)
+  // A finished batch moves from Now to Earlier with what the user had open: the batch stays open
+  // under Earlier if a worker detail was open or focus was inside it, each open worker detail stays
+  // open (Now keys it by subagent id, Earlier by session id), and focus lands on its new header.
+  const onBatchEnded = ({ sessions, focused }) => {
+    const opened = [...sessions].filter(([sub]) => openWorker.has(sub)).map(([, sid]) => sid)
+    return Promise.resolve(history.reload()).then(data => {
+      const sids = new Set(sessions.values())
+      const moved = (data?.batches || []).find(b => b.workers.some(w => sids.has(w.session_id)))
+      if (!moved) return
+      if (opened.length) addWorkers(opened)
+      if (opened.length || focused) addBatches([batchKey(moved)])
+      if (focused) setFocusBatch(batchKey(moved))
+    })
+  }
+  const live = useLive(runtimeId, onBatchEnded)
+  const procs = useProcesses(storedId)
   const [showAll, setShowAll] = useState(false)
   const [toast, setToast] = useState(null)
   const procRows = procs.data?.processes || []
@@ -867,7 +953,18 @@ export function Page() {
     clearWorkers()
     clearProcs()
     setShowAll(false)
+    setFocusBatch(null)
   }, [storedId])
+  // Runs after every render until the moved batch's header exists under Earlier (the live copy is
+  // dropped from Now one step after history has it), then hands it the focus once.
+  useEffect(() => {
+    if (!focusBatch) return
+    const header = [...(pageRef.current?.querySelectorAll('[data-batch]') || [])]
+      .find(el => el.getAttribute('data-batch') === focusBatch)?.querySelector('button.sw-hb')
+    if (!header) return
+    header.focus()
+    setFocusBatch(null)
+  })
   useEffect(() => {
     if (!toast) return undefined
     return ctxRef.setTimeout(() => setToast(null), 2400)
@@ -928,7 +1025,7 @@ export function Page() {
       ...nowBatches.map(b => jsx(Flow, { t, batch: b, now, openWorker, setOpenWorker, onToast }, b.id)),
       past.length ? jsx('h3', { className: 'sw-lab', children: t('sw.earlier') }, 'el') : null,
       ...shown.map(b => {
-        const key = String(b.started_at)
+        const key = batchKey(b)
         return jsx(HistoryBatch, {
           t, batch: b, open: openBatch.has(key), onToggle: () => toggleBatch(key),
           openWorker, setOpenWorker, onToast
@@ -946,6 +1043,11 @@ export function Page() {
     live.error ? t('sw.err.withDetail', t('sw.err.live'), live.error) : null,
     procs.error ? t('sw.err.withDetail', t('sw.err.procs'), procs.error) : null
   ].filter(Boolean)
+  const refreshAll = () => { history.reload(); procs.reload(); live.retry() }
+  // The header's tint tells one thing: a read failed (red), something runs (yellow), or neither.
+  // It used to fall back to green, so a page where nothing could be read looked all fine.
+  const headState = errors.length ? 'failed' : runningN || procsRunning ? 'running' : 'idle'
+  const chatName = storedId ? history.data?.title || t('sw.chat.untitled', String(storedId).slice(-6)) : ''
 
   return jsx(WatchedChat.Provider, { value: storedId, children: jsxs('div', {
     className: 'sw-page', ref: pageRef,
@@ -955,10 +1057,25 @@ export function Page() {
         className: 'sw-panel',
         children: [
           jsxs('header', {
-            className: 'sw-hd sw-frame', 'data-st': runningN || procsRunning ? 'running' : 'completed',
+            className: 'sw-hd sw-frame', 'data-st': headState,
             children: [
               jsx('span', { className: 'sw-hi', children: ICON.tree() }, 'i'),
-              jsx('h2', { className: 'sw-ht', children: t('sw.title') }, 't'),
+              // Which chat this is: the page can hold a chat the app no longer has focused.
+              jsxs('div', {
+                className: 'sw-htw',
+                children: [
+                  jsx('h2', { className: 'sw-ht', children: t('sw.title') }, 't'),
+                  chatName
+                    ? jsxs('p', {
+                      className: 'sw-chat',
+                      children: [
+                        jsx('span', { className: 'sw-chatn', children: chatName }, 'n'),
+                        watched.held ? jsx(Tip, { label: t('sw.chat.heldTip'), children: jsx('span', { className: 'sw-held', tabIndex: 0, children: t('sw.chat.held') }) }, 'h') : null
+                      ]
+                    }, 'c')
+                    : null
+                ]
+              }, 'tw'),
               // Counts and refresh are one group: on a narrow pane it drops under the title as a
               // whole instead of squeezing the title or wrapping a pill onto two lines.
               jsxs('div', {
@@ -968,16 +1085,24 @@ export function Page() {
                   jsx(Stat, { icon: ICON.stack, value: history.error ? '—' : totals.batches, label: history.error ? t('sw.countFailed') : t('sw.nBatches', totals.batches) }, 'sb'),
                   jsx(Stat, { icon: ICON.bot, value: history.error ? '—' : totals.workers, label: history.error ? t('sw.countFailed') : t('sw.nWorkers', totals.workers) }, 'sw'),
                   jsx(Stat, { icon: ICON.term, value: procs.error ? '—' : procRows.length, label: procs.error ? t('sw.countFailed') : t('sw.nProcs', procRows.length) }, 'sp'),
-                  runningN
-                    ? jsxs('span', { className: 'sw-pill', children: [MARKS.running(), t('sw.running', runningN)] }, 'p')
+                  // Everything that runs is counted: a running command tints the header too.
+                  runningN || procsRunning
+                    ? jsxs('span', { className: 'sw-pill', children: [MARKS.running(), t('sw.running', runningN, procsRunning)] }, 'p')
                     : null,
-                  jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: () => { history.reload(); procs.reload(); live.retry() }, disabled: !storedId }, 'r')
+                  jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: refreshAll, disabled: !storedId }, 'r')
                 ]
               }, 'hs')
             ]
           }, 'h'),
           errors.length
-            ? jsx('div', { className: 'sw-err', role: 'alert', children: errors.map(e => jsx(ErrorState, { title: e }, e)) }, 'e')
+            ? jsxs('div', {
+              className: 'sw-err', role: 'alert',
+              children: [
+                ...errors.map(e => jsx(ErrorState, { title: e }, e)),
+                // Recovery sits beside the failure, not only as an unlabeled icon in the header.
+                jsx('div', { className: 'sw-erra', children: jsx(IconButton, { label: t('sw.retry'), icon: ICON.refresh, onClick: refreshAll, disabled: !storedId, text: true }) }, 'retry')
+              ]
+            }, 'e')
             : null,
           jsx('div', { className: 'sw-bd', children: body }, 'b'),
           // The live region stays mounted so a screen reader is already listening when a toast lands.
@@ -996,7 +1121,9 @@ const CSS = `
 .sw-panel{position:relative;container-type:inline-size;
  --sw-mono:ui-monospace,"Cascadia Mono",Consolas,var(--dt-font-mono,monospace)}
 /* Docked beside the chat the worker name needs every pixel: a model chip cut to 'c…' says nothing. */
-@container (max-width:420px){.sw-panel .sw-model,.sw-panel .sw-strip{display:none}.sw-panel .sw-bl{gap:7px;padding:0 8px}.sw-panel .sw-now{max-width:72px}}
+@container (max-width:420px){.sw-panel .sw-model,.sw-panel .sw-strip{display:none}.sw-panel .sw-bl{gap:7px;padding:0 8px}.sw-panel .sw-now{max-width:72px}
+ /* The hidden strip carried the push to the right; without it counts and times lost their column. */
+ .sw-panel .sw-bl .sw-bc{margin-left:auto}}
 .sw-page svg{width:100%;height:100%;display:block}
 .sw-spin{animation:sw-rot 1.1s linear infinite;transform-origin:50% 50%}
 @keyframes sw-rot{to{transform:rotate(360deg)}}
@@ -1005,7 +1132,11 @@ const CSS = `
 .sw-hd{display:flex;align-items:center;flex-wrap:wrap;row-gap:8px;gap:10px;padding:10px 10px 10px 14px;margin:0 0 14px}
 .sw-hi{width:30px;height:30px;padding:6px;border-radius:8px;flex:none;color:var(--sw-tint);
  background:color-mix(in srgb,var(--sw-tint) 14%,transparent);border:1px solid color-mix(in srgb,var(--sw-tint) 30%,transparent)}
-.sw-ht{margin:0;font-size:14px;font-weight:600;flex:1 0 auto;white-space:nowrap}
+.sw-htw{flex:1 1 150px;min-width:0;display:flex;flex-direction:column;gap:1px}
+.sw-ht{margin:0;font-size:14px;font-weight:600;white-space:nowrap}
+.sw-chat{margin:0;display:flex;align-items:center;gap:6px;min-width:0;font-size:11.5px;line-height:16px;color:var(--ui-text-secondary)}
+.sw-chatn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-held{flex:none;padding:0 5px;border-radius:4px;border:1px solid var(--ui-stroke-tertiary);line-height:14px;cursor:default}
 .sw-hs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:auto}
 .sw-stat{display:inline-flex;align-items:center;gap:5px;flex:none;white-space:nowrap;height:22px;padding:0 8px 0 6px;border-radius:99px;font-size:11.5px;
  color:var(--ui-text-secondary);background:var(--ui-bg-tertiary);font-variant-numeric:tabular-nums}
@@ -1017,16 +1148,19 @@ const CSS = `
  border:1px solid var(--ui-stroke-tertiary);cursor:pointer;flex:none}
 .sw-ib:hover:not(:disabled){background:var(--ui-bg-tertiary);color:var(--ui-text-primary)}
 .sw-ib:disabled{opacity:.45;cursor:default}
+.sw-ib.is-text{width:auto;display:inline-flex;align-items:center;gap:6px;padding:0 9px 0 7px;font:inherit;font-size:12px;white-space:nowrap}
+.sw-ibi{width:14px;height:14px;flex:none}
 .sw-ib.is-busy{opacity:1;cursor:progress;background:var(--ui-bg-tertiary)}
 .sw-ib.is-busy svg{animation:sw-pulse 1s ease-in-out infinite}
 @keyframes sw-pulse{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){.sw-ib.is-busy svg{animation:none}}
 /* The app removes every focus ring; a keyboard user still has to see where focus is. */
 .sw-ib:focus-visible,.sw-bl:focus-visible,.sw-nd:focus-visible,.sw-more:focus-visible,.sw-dtg:focus-visible,.sw-plt:focus-visible,
-.sw-stat:focus-visible,.sw-mk:focus-visible{
+.sw-stat:focus-visible,.sw-mk:focus-visible,.sw-held:focus-visible{
  outline:2px solid var(--ui-stroke-primary);outline-offset:1px}
 .sw-hint{margin:12px 6px;font-size:12px;line-height:18px;color:var(--ui-text-secondary)}
 .sw-err{margin:8px 0;padding:8px 10px;border-radius:8px;border:1px solid color-mix(in srgb,var(--ui-red) 45%,transparent);font-size:12px}
+.sw-erra{display:flex;justify-content:flex-end;margin-top:6px}
 .sw-bd{padding-bottom:12px}
 .sw-lab{margin:0;font-size:11.5px;font-weight:400;color:var(--ui-text-secondary);padding:14px 6px 6px}
 .sw-more{font-size:11.5px;color:var(--ui-text-secondary);padding:8px 6px 0;background:none;border:0;cursor:pointer}
@@ -1043,19 +1177,20 @@ const CSS = `
  color:inherit;font:inherit;text-align:left;cursor:pointer}
 .sw-bl:hover{background:var(--ui-bg-secondary)}
 .sw-bh{border-radius:0;box-shadow:none}
-.sw-frame{position:relative;border:1px solid var(--ui-stroke-tertiary);border-radius:10px;
- background:linear-gradient(180deg,color-mix(in srgb,var(--sw-tint) 7%,var(--ui-bg-secondary)),var(--ui-bg-secondary) 70%);
- box-shadow:var(--shadow-sm);--sw-tint:var(--ui-green)}
-.sw-frame::after{content:"";position:absolute;left:-1px;top:12px;bottom:12px;width:3px;border-radius:0 3px 3px 0;background:var(--sw-tint)}
+.sw-frame{position:relative;border:1px solid var(--ui-stroke-tertiary);border-radius:10px;background:var(--ui-bg-secondary);
+ box-shadow:var(--shadow-sm);--sw-tint:var(--ui-text-tertiary)}
+/* The rail marks only what needs a look — running or failed. On every card it meant nothing. */
+.sw-frame[data-st=running]::after,.sw-frame[data-st=failed]::after{content:"";position:absolute;left:-1px;top:12px;bottom:12px;width:3px;
+ border-radius:0 3px 3px 0;background:var(--sw-tint)}
+.sw-frame[data-st=completed]{--sw-tint:var(--ui-green)}
 .sw-frame[data-st=failed]{--sw-tint:var(--ui-red)}
 .sw-frame[data-st=stopped],.sw-frame[data-st=interrupted],.sw-frame[data-st=queued]{--sw-tint:var(--ui-text-quaternary)}
 .sw-frame[data-st=running]{--sw-tint:var(--ui-yellow)}
 .sw-frame .sw-bh{background:transparent}
 .sw-frame .sw-bh:hover{background:color-mix(in srgb,var(--ui-bg-tertiary) 60%,transparent)}
 .sw-acc{position:relative;box-shadow:var(--shadow-xs);transition:background .12s,border-color .12s}
-.sw-acc::after{content:"";position:absolute;left:-1px;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--ui-green)}
+.sw-acc[data-st=running]::after,.sw-acc[data-st=failed]::after{content:"";position:absolute;left:-1px;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0}
 .sw-acc[data-st=failed]::after{background:var(--ui-red)}
-.sw-acc[data-st=stopped]::after,.sw-acc[data-st=interrupted]::after,.sw-acc[data-st=queued]::after{background:var(--ui-text-quaternary)}
 .sw-acc[data-st=running]::after{background:var(--ui-yellow)}
 /* Inside a framed box the frame already carries the tint: rows keep their mark, lose the rail and
    the lift, so a frame holds one accent instead of one per row. */
@@ -1082,8 +1217,8 @@ const CSS = `
 .sw-dtg{padding:8px 10px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
 .sw-dtg>span{font-size:12px;line-height:18px;color:var(--ui-text-secondary);display:-webkit-box;-webkit-line-clamp:3;
  -webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
-.sw-dta{display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
-.sw-dtm{flex:1;min-width:0;margin-left:4px;font-size:11.5px;line-height:16px;color:var(--ui-text-secondary);overflow-wrap:anywhere}
+.sw-dta{display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:4px 6px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
+.sw-dtm{flex:1 1 120px;min-width:0;margin-left:4px;font-size:11.5px;line-height:16px;color:var(--ui-text-secondary);overflow-wrap:anywhere}
 .sw-fl{display:flex;flex-direction:column;align-items:stretch;padding:10px 10px 12px;margin:0 0 4px}
 .sw-fn{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:8px;border:1px solid var(--ui-stroke-tertiary);
  background:var(--ui-bg-secondary);font-size:12.5px;white-space:nowrap}
@@ -1112,7 +1247,8 @@ const CSS = `
 .sw-plab{display:flex;align-items:center;gap:8px}
 .sw-plt{display:inline-flex;align-items:center;gap:6px;cursor:default}
 .sw-pi{width:13px;height:13px;flex:none}
-.sw-pu{margin-left:auto;color:var(--ui-text-secondary)}
+.sw-pu{margin-left:auto;display:inline-flex;align-items:center;gap:5px;color:var(--ui-text-secondary)}
+.sw-pu .sw-mk{width:13px;height:13px}
 .sw-plist{display:flex;flex-direction:column;gap:6px}
 .sw-pr::before{display:none}
 .sw-plist>.sw-box{margin:0}

@@ -34,6 +34,12 @@
  *      code on a failed row, "—" for a stopped one; a row opens the full command + output tail read
  *      for that chat; a running command asks for no output; unreadable records and a failed read
  *      are shown; a chat with no commands draws no section.
+ *  16. 1.3.0: the header names the watched chat (and says when it is held), its tint is failed /
+ *      running / idle and its pill counts workers and commands; a toggled card keeps focus; a
+ *      queued worker not yet listed stays queued; a stale snapshot never revives a finished worker;
+ *      a finished batch stays in Now until history has it, then keeps its open detail and focus
+ *      under Earlier; a checkpoint-only command asks for no output; a cut command says so; empty
+ *      output is not "Copied"; a dead chat's failed poll does not count against the new chat.
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -42,7 +48,9 @@ import { JSDOM } from 'jsdom'
 const HERE_URL = new URL('.', import.meta.url)
 const HERE = fileURLToPath(HERE_URL).replace(/\\/g, '/')
 const SRC = process.argv[2] || `${HERE}../desktop/plugin.js`
-const OUT = `${HERE}.out/`
+// SW_RENDER_OUT names a sub-folder so parallel runs (the canary) never share their build files.
+const OUT_REL = `.out/${process.env.SW_RENDER_OUT ? `${process.env.SW_RENDER_OUT}/` : ''}`
+const OUT = `${HERE}${OUT_REL}`
 mkdirSync(OUT, { recursive: true })
 
 writeFileSync(`${OUT}sdk-stub.mjs`, `
@@ -50,7 +58,7 @@ import { cloneElement, isValidElement, useSyncExternalStore } from 'react'
 import { jsx } from 'react/jsx-runtime'
 
 export const calls = { request: [], opened: [] }
-export const state = { listFails: false, list: {} }
+export const state = { listFails: false, list: {}, listHold: null }
 
 function atom(v) {
   const subs = new Set()
@@ -80,6 +88,7 @@ export const host = {
   state: atoms,
   request: async (method, params) => {
     calls.request.push([method, params])
+    if (state.listHold) await state.listHold
     if (state.listFails) throw new Error('gateway down')
     return { subagents: state.list[params.session_id] || [] }
   },
@@ -88,7 +97,7 @@ export const host = {
 export default { host }
 `)
 
-const src = readFileSync(SRC, 'utf8').replace("'@hermes/plugin-sdk'", `'${HERE_URL.href}.out/sdk-stub.mjs'`)
+const src = readFileSync(SRC, 'utf8').replace("'@hermes/plugin-sdk'", `'${HERE_URL.href}${OUT_REL}sdk-stub.mjs'`)
 writeFileSync(`${OUT}plugin-under-test.mjs`, src)
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true })
@@ -97,8 +106,8 @@ global.document = dom.window.document
 Object.defineProperty(global, 'navigator', { value: dom.window.navigator, configurable: true })
 global.IS_REACT_ACT_ENVIRONMENT = true
 
-const stub = await import(`${HERE_URL.href}.out/sdk-stub.mjs`)
-const mod = await import(`${HERE_URL.href}.out/plugin-under-test.mjs`)
+const stub = await import(`${HERE_URL.href}${OUT_REL}sdk-stub.mjs`)
+const mod = await import(`${HERE_URL.href}${OUT_REL}plugin-under-test.mjs`)
 const React = (await import('react')).default
 const { createRoot } = await import('react-dom/client')
 const { act } = React
@@ -131,11 +140,14 @@ const PROCS = {
     { id: 'proc_kill', command: 'sleep 999', cwd: '/w', status: 'stopped', started_at: 960, duration_s: 100, exit_code: -15 },
     { id: 'proc_run', command: 'npm run dev', cwd: '/w', status: 'running', started_at: Date.now() / 1000 - 65, duration_s: null, exit_code: null }
   ],
-  'st-2': []
+  'st-2': [],
+  // The app closed under this one: checkpointed, no receipt, so there is no output to ask for.
+  'st-4': [{ id: 'proc_gone', command: 'x'.repeat(4000), command_truncated: true, cwd: '/w', status: 'stopped', started_at: 10, duration_s: null, exit_code: null, has_output: false }]
 }
 const deepFreeze = o => { Object.values(o).forEach(v => v && typeof v === 'object' && deepFreeze(v)); return Object.freeze(o) }
 const HISTORY = {
   session_id: 'st-1',
+  title: 'Refactor fleet routing',
   batches: [
     {
       started_at: 1000,
@@ -173,7 +185,7 @@ const ctx = {
     if (path.startsWith('/output')) {
       if (holds.output) await holds.output
       const q = new URLSearchParams(path.split('?')[1])
-      return { text: `FULL OUTPUT of ${q.get('worker_id')} for ${q.get('session_id')}` }
+      return { text: q.get('worker_id') === 'kq-empty' ? '' : `FULL OUTPUT of ${q.get('worker_id')} for ${q.get('session_id')}` }
     }
     if (path.startsWith('/processes')) {
       if (holds.processes) await holds.processes
@@ -242,6 +254,21 @@ await tick(10)
 const q = s => host.querySelector(s)
 const qa = s => [...host.querySelectorAll(s)]
 
+// 16. the header says which chat it watches and what its tint means
+check(q('.sw-chatn')?.textContent === 'Refactor fleet routing' && !q('.sw-held'), `the header names the watched chat (${q('.sw-chat')?.textContent})`)
+check(q('.sw-hd')?.dataset.st === 'running' && q('.sw-pill')?.textContent === '1 command running',
+  `a running command tints the header and is counted in its pill (${q('.sw-hd')?.dataset.st}, ${q('.sw-pill')?.textContent})`)
+check(q('.sw-pu .sw-mk[data-st=failed]') !== null, 'unreadable records carry the failed mark')
+{
+  const cssNow = q('style')?.textContent || ''
+  const frame = cssNow.match(/\.sw-frame\{[^}]*\}/)?.[0] || ''
+  check(!/gradient/.test(frame) && !/\.sw-frame::after/.test(cssNow) && !/\.sw-acc::after\{content/.test(cssNow)
+    && /\.sw-frame\[data-st=running\]::after,\.sw-frame\[data-st=failed\]::after\{content/.test(cssNow)
+    && /\.sw-acc\[data-st=running\]::after,\.sw-acc\[data-st=failed\]::after\{content/.test(cssNow),
+  'cards are flat and only running or failed ones carry the status rail')
+  check(/@container \(max-width:420px\)\{[\s\S]*?\.sw-bl \.sw-bc\{margin-left:auto\}/.test(cssNow), 'below 420 px the counts keep their right-hand column')
+}
+
 // 5. history
 const bls = qa('.sw-hb')
 check(bls.length === 2, `two history batches drawn (${bls.length})`)
@@ -271,7 +298,11 @@ check(q('.sw-live[role=status]') !== null && !q('.sw-live').textContent, 'the to
 check(stub.calls.request.some(([m, p]) => m === 'subagent.list' && p.session_id === 'rt-1'), 'subagent.list asked with the focused runtime id')
 check(qa('.sw-hd .sw-stat').every(e => e.getAttribute('aria-label') && e.getAttribute('aria-label') === e.dataset.tip),
   `header counts carry an aria-label equal to their tooltip (${qa('.sw-hd .sw-stat').map(e => e.getAttribute('aria-label'))})`)
+bls[1].focus()
 await act(async () => { bls[1].click() })
+check(bls[1].isConnected && document.activeElement === bls[1] && bls[1].getAttribute('aria-expanded') === 'true',
+  `opening an Earlier batch keeps focus on its header (${document.activeElement?.tagName}.${document.activeElement?.className})`)
+document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true })) // focus inside the page holds its chat; let it go
 const rows = qa('.sw-wr')
 check(rows.length === 2, 'batch opens to its two workers')
 check(rows[1].textContent.includes('—') && !/\d+[smh]/.test(rows[1].querySelector('.sw-wt').textContent), 'stopped worker shows — and no duration')
@@ -290,6 +321,8 @@ check(/flex:0 0 auto/.test(modelRule) && !/text-overflow:ellipsis/.test(modelRul
 check(/@container \(max-width:420px\)\{[^}]*\.sw-model/.test(css), 'the chip is still hidden below 420 px')
 await act(async () => { rows[0].click() })
 check(q('.sw-dt') && !q('.sw-dt p') && /tokens/.test(q('.sw-dtm')?.textContent || ''), 'worker detail is actions + stats only, no answer text')
+check(q('.sw-dtm')?.textContent === '40 tools · 120k tokens', `the detail does not repeat the row's duration (${q('.sw-dtm')?.textContent})`)
+check(qa('.sw-dt .sw-ib.is-text').map(b => b.textContent).join('|') === 'Copy full output|Open session', 'the detail actions are labelled buttons, not bare icons')
 check(q('.sw-dtg')?.textContent === "Polish 'alpha-panel' visuals" && q('.sw-dt').firstElementChild?.querySelector('.sw-dtg') !== null, 'worker detail shows its goal above the actions')
 check([...q('.sw-dt').children].every(c => c.classList.contains('sw-br')), 'every piece of an opened detail hangs on its own tree branch, no outer frame')
 check(!rows[0].querySelector('.sw-goal'), 'history row has no goal line')
@@ -300,7 +333,7 @@ const prs = qa('.sw-pr')
 check(prs.length === 4, `four background commands drawn (${prs.length})`)
 check(prs[0].dataset.st === 'running' && prs.map(p => p.dataset.st).join(',') === 'running,stopped,failed,completed', `newest command first (${prs.map(p => p.dataset.st)})`)
 check(prs.map(p => p.querySelector('.sw-mk').dataset.st).join(',') === 'running,stopped,failed,completed', 'each command draws its own status mark')
-check(qa('.sw-mk').length > 0 && qa('.sw-mk').every(m => m.getAttribute('role') === 'img' && m.getAttribute('aria-label') && m.getAttribute('aria-label') === m.dataset.tip),
+check(qa('.sw-mk').length > 0 && qa('.sw-mk').filter(m => m.getAttribute('aria-hidden') !== 'true').every(m => m.getAttribute('role') === 'img' && m.getAttribute('aria-label') && m.getAttribute('aria-label') === m.dataset.tip),
   'every status mark has an accessible name equal to its tooltip')
 check(prs[3].querySelector('.sw-pn').textContent === 'npm test' && prs[3].querySelector('.sw-pn').dataset.tip === 'npm test\n--watch=false', 'row shows the first line, tooltip the whole command')
 check(prs[2].querySelector('.sw-px')?.textContent === 'exit 1', 'failed command shows its exit code')
@@ -313,8 +346,13 @@ check(q('.sw-pu')?.textContent === '1 record could not be read', 'unreadable rec
 check(q('.sw-plt')?.dataset.tip?.includes('not subagents'), 'section says these are not subagents')
 // An opened command is re-drawn as a framed box, so each click finds the row afresh.
 const pr = i => qa('.sw-pr')[i]
+const bad = pr(2)
+bad.focus()
 await act(async () => { pr(2).click() })
 await tick(5)
+check(bad.isConnected && document.activeElement === bad, 'opening a command keeps focus on its row')
+document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true })) // focus inside the page holds its chat; let it go
+check(!/exit 1/.test(q('.sw-plist .sw-box .sw-dtm')?.textContent || 'exit 1'), `an opened failed command does not repeat its exit code (${q('.sw-plist .sw-box .sw-dtm')?.textContent})`)
 check(rest.includes('/process_output?session_id=st-1&process_id=proc_bad'), 'opening a command reads its output for THIS chat')
 check(q('.sw-po')?.textContent === 'tail of proc_bad in st-1' && q('.sw-pc')?.textContent === 'FULL proc_bad', 'detail shows the full command and the output tail')
 check(q('.sw-pol')?.textContent.includes('last'), 'a cut output says it is the end only')
@@ -429,7 +467,7 @@ check(byName('three')?.querySelector('.sw-mk').dataset.st === 'queued' && byName
 check(byName('two')?.querySelector('.sw-mk').dataset.st === 'failed', 'failed is red, not done')
 check(byName('one')?.querySelector('.sw-now')?.textContent === 'terminal', 'running node shows its current tool')
 check(q('.sw-merge')?.textContent.includes('waiting for workers'), 'merge node waits')
-check(q('.sw-pill')?.textContent.includes('2 running'), 'header counts running workers')
+check(q('.sw-pill')?.textContent === '2 workers · 1 command running', `header counts running workers AND commands (${q('.sw-pill')?.textContent})`)
 
 // 8. finishing the batch moves it out of "Now" and reloads history
 const before = rest.filter(p => p.startsWith('/children')).length
@@ -480,7 +518,9 @@ check(q('[role=alert]')?.textContent.includes('Live updates stopped'), 'three fa
 const stats = qa('.sw-hd .sw-stat')
 check(stats.map(e => e.textContent).join(',') === '—,—,—' && stats.every(e => /could not be read/.test(e.getAttribute('aria-label') || '')),
   `counts whose source failed read — , not 0 (${stats.map(e => e.textContent)})`)
-check(/Refresh/.test(q('.sw-bd')?.textContent || ''), `the all-failed view says what to do, not a blank body (${q('.sw-bd')?.textContent})`)
+check(q('[role=alert] .sw-ib.is-text')?.textContent === 'Try again' && q('.sw-hd')?.dataset.st === 'failed',
+  `the alert carries a Try again button and the header turns red (${q('.sw-hd')?.dataset.st})`)
+check(/Try again/.test(q('.sw-bd')?.textContent || ''), `the all-failed view says what to do, not a blank body (${q('.sw-bd')?.textContent})`)
 
 // 10. Refresh restarts live polling that gave up
 stub.state.listFails = false
@@ -524,6 +564,7 @@ await act(async () => {
 await tick(10)
 check(!rest.slice(mark).some(p => p.includes('session_id=st-2')) && qa('.sw-pr').length === 4,
   `a click inside the panel keeps the watched chat (${rest.slice(mark).join(' ')})`)
+check(q('.sw-held')?.textContent === 'held' && /Click a chat/.test(q('.sw-held')?.dataset.tip || ''), 'a held chat is marked as held in the header')
 // A click on a chat tab is a real switch: the page follows the app's focused chat.
 mark = rest.length
 await act(async () => { pointer(chatTab('session-tile:st-2')) })
@@ -543,6 +584,7 @@ check(!rest.slice(mark).some(p => p.includes('session_id=st-1')) && !qa('.sw-pr'
 await act(async () => { pointer(document.body) })
 await tick(10)
 check(qa('.sw-pr').length === 4, 'a click outside the panel follows the focused chat again')
+check(!q('.sw-held'), 'following the app again drops the held marker')
 await act(async () => {
   pointer(chatTab('sessions'))
   stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2')
@@ -551,6 +593,87 @@ await tick(10)
 check(!qa('.sw-pr').length, 'a chat picked in the Sessions sidebar is followed')
 await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
 await tick(10)
+
+// 16b. a checkpoint-only command (the app closed under it) and a cut command
+await act(async () => { stub.atoms.focusedSessionId.set('rt-4'); stub.atoms.focusedStoredSessionId.set('st-4') })
+await tick(10)
+mark = rest.length
+await act(async () => { qa('.sw-pr')[0].click() })
+await tick(5)
+check(!rest.slice(mark).some(p => p.startsWith('/process_output')) && q('.sw-po-note')?.textContent === 'No output was recorded.' && !q('.sw-plist [data-slot=error-state]'),
+  `a command with no receipt asks for no output and reads "No output was recorded." (${rest.slice(mark).join(' ')})`)
+check(/first 4000 characters/.test(q('.sw-plist .sw-box .sw-dtm')?.textContent || ''), `a cut command says it is cut (${q('.sw-plist .sw-box .sw-dtm')?.textContent})`)
+
+// 16c. live races: a queued worker before Hermes lists it, a stale snapshot after a complete, and
+// the hand-off of a finished batch to Earlier. Refresh polls subagent.list at once, so the checks do
+// not wait out the 3 s interval.
+const pollNow = async () => { await act(async () => { q('.sw-hd .sw-ib').click() }); await tick(5) }
+stub.state.list['rt-4'] = []
+// Hermes sends spawn_requested before it stamps the delegation id or registers the worker.
+await emit('subagent.spawn_requested', 'rt-4', { subagent_id: 'q1', goal: "Queue 'qa-one'", task_index: 0 })
+await emit('subagent.spawn_requested', 'rt-4', { subagent_id: 'q2', goal: "Queue 'qa-two'", task_index: 1 })
+await pollNow()
+const liveMarks = () => qa('.sw-fl .sw-nd').map(n => `${n.querySelector('.sw-wn').textContent}=${n.dataset.st}`).sort().join(',')
+check(liveMarks() === 'qa-one=queued,qa-two=queued', `a queued worker subagent.list does not show yet stays queued (${liveMarks()})`)
+await emit('subagent.start', 'rt-4', { subagent_id: 'q1', delegation_id: 'dq', goal: "Queue 'qa-one'", child_session_id: 'kq1' })
+await emit('subagent.start', 'rt-4', { subagent_id: 'q2', delegation_id: 'dq', goal: "Queue 'qa-two'", child_session_id: 'kq-empty' })
+stub.state.list['rt-4'] = [['q1', "Queue 'qa-one'"], ['q2', "Queue 'qa-two'"]].map(([id, goal]) => ({ subagent_id: id, delegation_id: 'dq', status: 'running', goal }))
+await pollNow()
+check(liveMarks() === 'qa-one=running,qa-two=running', `once started both run in the live tree (${liveMarks()})`)
+await emit('subagent.complete', 'rt-4', { subagent_id: 'q1', status: 'completed', duration_seconds: 4 })
+await pollNow() // the registry still lists q1 as running until Hermes' cleanup unregisters it
+check(liveMarks() === 'qa-one=completed,qa-two=running', `a stale snapshot never revives a finished worker (${liveMarks()})`)
+stub.state.list['rt-4'] = [{ subagent_id: 'q2', delegation_id: 'dq', status: 'running', goal: "Queue 'qa-two'" }]
+await pollNow()
+check(liveMarks() === 'qa-one=completed,qa-two=running', `a finished worker the list drops stays done, not stopped (${liveMarks()})`)
+// Open q2's detail, keep focus in the batch, then finish it while the history read is pending.
+const q2 = () => qa('.sw-fl .sw-nd').find(n => n.textContent.includes('qa-two'))
+await act(async () => { q2().click() })
+q2().focus()
+extraBatches = [{ started_at: 5000, workers: [
+  { session_id: 'kq1', goal: "Queue 'qa-one'", status: 'completed', duration_s: 4, tool_calls: 1, tokens: 0, summary: 'a' },
+  { session_id: 'kq-empty', goal: "Queue 'qa-two'", status: 'completed', duration_s: 6, tool_calls: 1, tokens: 0, summary: '' }
+] }]
+const releaseHand = hold('children')
+stub.state.list['rt-4'] = []
+await emit('subagent.complete', 'rt-4', { subagent_id: 'q2', status: 'completed', duration_seconds: 6 })
+await tick(10)
+check(!!q('.sw-fl') && !q('[data-slot=panel-empty]'), 'a finished batch stays in Now while history is still loading (no empty flash)')
+await act(async () => { releaseHand() })
+await tick(20)
+const moved = qa('[data-batch]').find(el => el.textContent.includes('qa-one') && !el.classList.contains('sw-fl'))
+check(!q('.sw-fl') && moved?.querySelector('button.sw-hb')?.getAttribute('aria-expanded') === 'true', 'the finished batch moves to Earlier, opened')
+check(moved?.querySelectorAll('.sw-dt').length === 1, 'the worker detail that was open stays open under Earlier')
+check(!!moved && document.activeElement === moved.querySelector('button.sw-hb'), `focus follows the batch to its Earlier header (${document.activeElement?.className})`)
+// Copying an empty output says so instead of "Copied".
+const clipBefore = clip.length
+if (moved?.querySelector('.sw-dt .sw-ib')) await act(async () => { moved.querySelector('.sw-dt .sw-ib').click() })
+await tick(5)
+check(clip.length === clipBefore && (q('.sw-toast.is-bad')?.textContent || '').startsWith('Nothing to copy'), `empty output is not "Copied" (${q('.sw-toast')?.textContent})`)
+extraBatches = []
+
+// 16d. a failed poll of the chat the page has left does not count against the new chat
+document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true })) // focus inside the page holds its chat; let it go
+stub.state.list['rt-5'] = []
+let releaseList
+stub.state.listHold = new Promise(r => { releaseList = r })
+stub.state.listFails = true
+await act(async () => { stub.atoms.focusedSessionId.set('rt-5'); stub.atoms.focusedStoredSessionId.set('st-2') })
+await tick(10) // rt-5's first poll is now pending
+await act(async () => { stub.atoms.focusedSessionId.set('rt-6'); stub.atoms.focusedStoredSessionId.set('st-2') })
+await tick(10)
+stub.state.listHold = null
+const warn0 = console.warn
+console.warn = () => {}
+await act(async () => { releaseList() })
+await tick(10)
+await tick(3100) // the new chat's own failures: the first poll at mount + this one = 2 of 3
+const afterTwo = (q('[role=alert]')?.textContent || '').includes('Live updates stopped')
+await tick(3100)
+console.warn = warn0
+check(!afterTwo && (q('[role=alert]')?.textContent || '').includes('Live updates stopped'),
+  `the new chat gets its own three tries (stopped after two: ${afterTwo})`)
+stub.state.listFails = false
 
 // empty chat
 historyFails = false
