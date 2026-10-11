@@ -3,6 +3,34 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.6.0 — 2026-10-11
+
+A redesign: the page read as a plain admin list, every part the same weight, and nothing said which
+agent touched which file. It is now a command deck — the running batch at a glance, each agent and its
+files tied together by one letter and colour.
+
+### Changed
+
+- **The command deck replaces the live tree.** One big score (agents finished / all), one status cell
+  per agent, the cost so far, and one unit per agent: its letter in an orb whose ring is its status
+  (spinning yellow working, green done, red failed, dashed waiting), its name, model and time, and
+  what it does right now ("editing desktop/plugin.js", from `subagent.tool`) — once ended, what it
+  changed. A nested worker sits right after its parent and names it ("from F"). With nothing running
+  the last batch is the deck (from state.db) and Earlier lists the rest; a finished batch keeps its
+  open details and focus when it lands there.
+- **Files are tiles in the colour of the agent that touched them,** with the badges of everyone who
+  did (the chat's own as "Chat"); a file touched more glows brighter, the one being touched now has a
+  band of light sweeping over it. `GET /files` now names who touched each file (`who`, the worker's
+  first session id, its compressed later halves folded in) and who changed it (`editors`), replacing
+  the `by_worker` count.
+- Earlier rows carry the same letters.
+
+### Added
+
+- **Live log:** the last six things the chat's agents did while the page was open (started, each
+  tool and its target, finished / failed), newest first, each with its agent's badge. Events only,
+  nothing stored.
+
 ## 1.5.0 — 2026-10-11
 
 Adds what a comparison with File Tree (a Claude Code mod that makes a file shimmer in a tree while

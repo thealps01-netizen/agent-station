@@ -1,10 +1,14 @@
 /**
  * Subagent Watch — read-only page for delegate_task workers of the focused chat.
  *
- *   Now      the running batch as a tree: batch root -> workers (nested by parent_id) -> merge node.
- *            Fed by gateway `subagent.*` events for the focused runtime session, reconciled by a
- *            `subagent.list` poll (the RPC is session-scoped, so other chats never leak in).
- *   Earlier  finished batches as a collapsed list, from this plugin's backend
+ *   Deck     the running batch (with none running, the last one) as a command deck: one big score
+ *            (agents finished / all), a status cell per agent, the cost so far, and one unit per
+ *            agent — its letter in an orb whose ring is its status, and what it does right now.
+ *            Each agent keeps that letter and colour on its files and in the live log. Fed by gateway
+ *            `subagent.*` events for the focused runtime session, reconciled by a `subagent.list`
+ *            poll (the RPC is session-scoped, so other chats never leak in).
+ *   Live log what the agents did while the page was open, newest first (events only, never stored).
+ *   Earlier  the other finished batches as a collapsed list, from this plugin's backend
  *            (dashboard/plugin_api.py, state.db opened read-only). A worker row opens a detail with
  *            its answer, "copy full output" and "open session".
  *   Background commands
@@ -91,11 +95,39 @@ const BUNDLES = {
       nBatches: n => `${n} batch${n === 1 ? '' : 'es'}`,
       nWorkers: n => `${n} worker${n === 1 ? '' : 's'}`,
       countFailed: 'Unknown — its source could not be read',
-      now: 'Now',
       earlier: 'Earlier',
       older: n => `${n} older`,
       waiting: 'waiting',
-      merge: { waiting: 'waiting for workers', done: 'results returned', partial: 'partial results' },
+      deck: {
+        finished: 'agents finished',
+        lastRun: 'finished in the last run',
+        label: (done, total) => `${done} of ${total} agents finished`,
+        spent: 'spent so far',
+        legend: { running: 'working', failed: 'failed or stopped', queued: 'waiting' }
+      },
+      unit: {
+        st: { running: 'working', completed: 'done', failed: 'failed', stopped: 'stopped', queued: 'waiting' },
+        thinking: 'thinking…',
+        queued: 'in the queue',
+        completed: 'finished',
+        failed: 'ended with an error',
+        stopped: 'closed before it finished',
+        touched: (edited, opened) => [
+          edited ? `edited ${edited} file${edited === 1 ? '' : 's'}` : '',
+          opened ? `opened ${opened}` : ''
+        ].filter(Boolean).join(' · '),
+        from: letter => `from ${letter}`
+      },
+      verb: {
+        read: 'reading', write: 'writing', edit: 'editing', search: 'searching', run: 'running a command',
+        code: 'running code', delegate: 'starting agents', web: 'on the web', other: name => `using ${name}`
+      },
+      id: { chat: 'Chat', chatName: 'this chat (the main agent)', other: 'an agent not on this page', otherLetter: '·' },
+      log: {
+        title: 'Live log',
+        tip: 'What the agents of this chat did while this page was open, newest first.',
+        now: 'now', start: 'started', completed: 'finished', failed: 'failed', stopped: 'stopped'
+      },
       status: {
         completed: 'Done', failed: 'Failed', running: 'Running', queued: 'Queued',
         stopped: 'Stopped — closed before it finished'
@@ -157,7 +189,10 @@ const BUNDLES = {
       },
       files: {
         title: 'Files',
-        tip: 'Files this chat and its workers read or wrote with the file tools. Click a file to copy its path.',
+        tip: 'Files this chat and its agents read or wrote with the file tools. The badge says who; a brighter tile was touched more. Click a file to copy its path.',
+        touched: n => `${n} touched`,
+        now: 'now',
+        by: names => `by ${names}`,
         blind: 'File tools only: edits made by terminal commands or code runs are not listed. Review › Last turn shows every change.',
         op: {
           active: 'Being worked on now', write: 'Edited', delete: 'Deleted', read: 'Read only', failed: 'Last change failed'
@@ -168,8 +203,6 @@ const BUNDLES = {
           deletes > 1 ? `deleted ${deletes}×` : deletes ? 'deleted' : '',
           failed ? `${failed} failed` : ''
         ].filter(Boolean).join(' · '),
-        worker: 'worker',
-        byWorker: n => `${n} of these calls came from a worker (subagent)`,
         here: 'chat folder',
         copied: 'Path copied',
         more: n => `${n} more file${n === 1 ? '' : 's'}`,
@@ -414,14 +447,13 @@ function Stat({ label, icon, value }) {
 }
 
 /** A batch's spend with its breakdown as the tooltip; nothing when no worker was priced. */
-// `focusable`: outside a button the chip is its own tab stop, so its breakdown is reachable by keyboard.
-function CostChip({ t, workers, focusable }) {
+function CostChip({ t, workers }) {
   const sum = sumCost(workers)
   const text = fmtCost(sum.usd, sum.status, t)
   if (!text) return null
   return jsx(Tip, {
     label: t('sw.cost.tip', sum.priced, sum.included, sum.unknown),
-    children: jsx('span', { className: 'sw-bcost', tabIndex: focusable ? 0 : undefined, children: text })
+    children: jsx('span', { className: 'sw-bcost', children: text })
   })
 }
 
@@ -803,19 +835,20 @@ function Detail({ t, worker, onToast }) {
   })
 }
 
-function WorkerRow({ t, w, name, open, onToggle }) {
+function WorkerRow({ t, w, name, id, open, onToggle }) {
   const time = w.status === 'stopped' ? '—' : fmtDuration(w.duration_s, t)
   return jsxs('button', {
     type: 'button', className: `sw-wr sw-nd sw-acc${open ? ' is-open' : ''}`, 'data-st': w.status, 'aria-expanded': open, onClick: onToggle,
     children: [
       jsx(Mark, { t, status: w.status }, 'm'),
+      id ? jsx(Sig, { id }, 's') : null,
       jsx(NameBlock, { t, goal: w.goal, model: w.model, effort: w.effort, name }, 'n'),
       jsx('span', { className: 'sw-wt', children: time }, 't')
     ]
   })
 }
 
-function HistoryBatch({ t, batch, open, onToggle, openWorker, setOpenWorker, onToast }) {
+function HistoryBatch({ t, batch, ids, open, onToggle, openWorker, setOpenWorker, onToast }) {
   const statuses = batch.workers.map(w => w.status)
   const st = batchState(statuses)
   const done = statuses.filter(s => s === 'completed').length
@@ -848,7 +881,7 @@ function HistoryBatch({ t, batch, open, onToggle, openWorker, setOpenWorker, onT
           className: 'sw-nwrap',
           children: [
             jsx(WorkerRow, {
-              t, w, name: names[i], open: openWorker.has(w.session_id),
+              t, w, name: names[i], id: ids?.get(w.session_id), open: openWorker.has(w.session_id),
               onToggle: () => setOpenWorker(w.session_id)
             }, 'r'),
             openWorker.has(w.session_id) ? jsx(Detail, { t, worker: w, onToast }, 'd') : null
@@ -864,65 +897,286 @@ function batchKey(b) {
   return `${b.started_at}:${b.workers[0]?.session_id || ''}`
 }
 
-function Node({ t, r, name, now, kids, depth, openWorker, setOpenWorker, onToast }) {
-  const key = r.subagent_id
-  const running = r.status === 'running'
-  const time = r.status === 'queued' ? t('sw.waiting')
-    : r.status === 'stopped' ? '—'
-      : fmtDuration(r.duration_s ?? (r.started_at ? now - r.started_at : null), t)
-  const children = kids.get(key) || []
-  const childNames = distinctNames(children.map(c => c.goal))
-  return jsxs('div', {
-    className: 'sw-nwrap',
+// ── command deck ─────────────────────────────────────────────────────────────
+
+// Each agent's colour on the deck, on its files and in the log. Status keeps yellow / green / red,
+// so the agent colours stay clear of them; past four, the letter tells two agents apart.
+const HUES = ['var(--ui-blue)', 'var(--ui-purple)', 'var(--ui-cyan)', 'var(--ui-orange)']
+const CHAT_HUE = 'var(--ui-text-tertiary)'
+// Live log rows kept, newest first.
+const LOG_ROWS = 6
+// A log row younger than this reads "now".
+const LOG_NOW_S = 3
+// What a worker's current tool reads as under its orb (and in the log).
+const VERB = {
+  read_file: 'read', write_file: 'write', patch: 'edit', search_files: 'search', terminal: 'run', process: 'run',
+  execute_code: 'code', delegate_task: 'delegate', web_search: 'web', web_extract: 'web', browser_exec: 'web'
+}
+
+/** The letter each name of one batch starts with, past the words every name of the batch opens with
+ * ("Review alpha", "Review beta" -> A, B), so a batch of look-alike goals still gets telling letters. */
+export function baseLetters(names) {
+  const words = names.map(n => String(n || '').split(/\s+/).filter(Boolean))
+  let skip = 0
+  if (names.length > 1) {
+    while (words.every(w => w.length > skip + 1 && w[skip].toLowerCase() === words[0][skip].toLowerCase())) skip++
+  }
+  return words.map(w => (w.slice(skip).join(' ').match(/[a-z0-9]/i)?.[0] || '?').toUpperCase())
+}
+
+/** One letter per agent; a letter already taken on the page gets a number (F, F2), so no two agents
+ * share a badge. `groups` are the page's batches in order, each a list of names. */
+export function agentLetters(groups) {
+  const seen = new Map()
+  return groups.map(names => baseLetters(names).map(ch => {
+    const k = (seen.get(ch) || 0) + 1
+    seen.set(ch, k)
+    return k === 1 ? ch : `${ch}${k}`
+  }))
+}
+
+/** The page's batches, each a list of agents ({ name, keys }) -> a lookup by any of their keys
+ * (subagent id, session id): letter, hue, name. Hues run on across batches. */
+export function agentIds(groups) {
+  const letters = agentLetters(groups.map(g => g.map(a => a.name)))
+  const ids = new Map()
+  let n = 0
+  groups.forEach((g, gi) => g.forEach((a, i) => {
+    const id = { letter: letters[gi][i], hue: HUES[n++ % HUES.length], name: a.name }
+    for (const k of a.keys) if (k && !ids.has(k)) ids.set(k, id)
+  }))
+  return ids
+}
+
+/** Per agent (worker session id, '' for the chat): how many files it changed and how many it only opened. */
+export function touchedBy(files) {
+  const by = new Map()
+  for (const f of files || []) {
+    for (const w of f.who || []) {
+      const c = by.get(w) || { edited: 0, opened: 0 }
+      if ((f.editors || []).includes(w)) c.edited++
+      else c.opened++
+      by.set(w, c)
+    }
+  }
+  return by
+}
+
+/** A tool's preview as a short target: a path keeps its last two parts, anything else its first line. */
+export function shortTarget(text) {
+  const line = String(text || '').trim().split('\n', 1)[0]
+  if (!/[\\/]/.test(line) || /\s/.test(line)) return line
+  return line.split(/[\\/]+/).filter(Boolean).slice(-2).join('/')
+}
+
+/** The line under an agent's orb: what it does now while it runs, what it did once it ended. */
+export function unitAction(u, touched, t = enT) {
+  if (u.status === 'running') {
+    const tool = u.rec.last_tool
+    if (!tool) return { verb: t('sw.unit.thinking') }
+    return { verb: t(`sw.verb.${VERB[tool] || 'other'}`, tool), target: shortTarget(u.rec.tool_preview), full: u.rec.tool_preview }
+  }
+  if (u.status === 'queued') return { verb: t('sw.unit.queued') }
+  const did = touched && (touched.edited || touched.opened) ? t('sw.unit.touched', touched.edited, touched.opened) : ''
+  return { verb: t(`sw.unit.${TERMINAL.has(u.status) ? u.status : 'stopped'}`), target: did }
+}
+
+/** A live batch as deck units: each root, then the workers it started (marked with its letter). */
+export function liveUnits(batch, now) {
+  const out = []
+  const walk = (rows, parent) => {
+    rows.forEach(r => {
+      out.push({
+        key: r.subagent_id, sid: r.child_session_id || r.session_id || null, rec: r, parent,
+        status: r.status, duration: r.duration_s ?? (r.started_at ? now - r.started_at : null)
+      })
+      walk(batch.kids.get(r.subagent_id) || [], r.subagent_id)
+    })
+  }
+  walk(batch.roots, null)
+  // Named across the whole deck: a nested worker sits beside its parent's siblings, not under them.
+  const names = distinctNames(out.map(u => u.rec.goal))
+  return out.map((u, i) => ({ ...u, name: names[i] }))
+}
+
+/** A stored batch as deck units, keyed by session id like the Earlier list. */
+export function storedUnits(batch) {
+  const names = distinctNames(batch.workers.map(w => w.goal))
+  return batch.workers.map((w, i) => ({
+    key: w.session_id, sid: w.session_id, rec: w, name: names[i], parent: null, status: w.status, duration: w.duration_s
+  }))
+}
+
+function Sig({ id }) {
+  return jsx('span', { className: 'sw-sig', style: { '--u': id.hue }, 'aria-hidden': 'true', children: id.letter })
+}
+
+function Unit({ t, u, id, parentId, open, onToggle, touched }) {
+  const time = u.status === 'queued' ? '' : u.status === 'stopped' ? '' : fmtDuration(u.duration, t)
+  const act = unitAction(u, touched, t)
+  const chip = modelChip(u.rec.model, u.rec.effort)
+  const state = t(`sw.unit.st.${MARKS[u.status] ? u.status : 'stopped'}`)
+  return jsxs('button', {
+    type: 'button', className: `sw-unit sw-nd${open ? ' is-open' : ''}`, 'data-st': u.status, style: { '--u': id.hue },
+    'aria-expanded': open, onClick: onToggle,
     children: [
-      jsxs('button', {
-        type: 'button', className: `sw-nd sw-acc${openWorker.has(key) ? ' is-open' : ''}`, 'data-st': r.status,
-        'aria-expanded': openWorker.has(key), onClick: () => setOpenWorker(key),
+      parentId ? jsx('span', { className: 'sw-from', children: t('sw.unit.from', parentId.letter) }, 'f') : null,
+      jsxs('span', {
+        className: 'sw-orb', 'data-st': u.status,
+        children: [jsx('span', { className: 'sw-orbl', 'aria-hidden': 'true', children: id.letter }, 'l'), jsx(Mark, { t, status: u.status }, 'm')]
+      }, 'o'),
+      jsx(Tip, { label: String(u.rec.goal || '').trim(), children: jsx('span', { className: 'sw-wn', children: u.name }) }, 'n'),
+      jsx('span', { className: 'sw-us', children: [state, time].filter(Boolean).join(' · ') }, 's'),
+      chip ? jsx(Tip, { label: t('sw.modelTip', String(u.rec.model), u.rec.effort), children: jsx('span', { className: 'sw-model', children: chip }) }, 'c') : null,
+      jsxs('span', {
+        className: 'sw-ua',
         children: [
-          jsx(Mark, { t, status: r.status }, 'm'),
-          jsx(NameBlock, { t, goal: r.goal, model: r.model, effort: r.effort, name }, 'n'),
-          running && r.last_tool ? jsx('span', { className: 'sw-now', children: r.last_tool }, 'l') : null,
-          jsx('span', { className: 'sw-wt', children: time }, 't')
+          jsx('span', { className: 'sw-uv', children: act.verb }, 'v'),
+          act.target
+            ? (act.full
+              ? jsx(Tip, { label: String(act.full), children: jsx('span', { className: 'sw-ut sw-now', children: act.target }) }, 't')
+              : jsx('span', { className: 'sw-ut', children: act.target }, 't'))
+            : null
         ]
-      }, 'n'),
-      openWorker.has(key) ? jsx(Detail, { t, worker: r, onToast }, 'd') : null,
-      children.length
+      }, 'a')
+    ]
+  })
+}
+
+function Deck({ t, deck, now, ids, touched, openWorker, setOpenWorker, onToast }) {
+  const { units, live } = deck
+  const statuses = units.map(u => u.status)
+  const st = batchState(statuses)
+  const done = statuses.filter(s => s === 'completed').length
+  const n = s => statuses.filter(x => s.includes(x)).length
+  const starts = units.map(u => u.rec.started_at).filter(Number.isFinite)
+  const elapsed = live
+    ? (starts.length ? now - Math.min(...starts) : null)
+    : Math.max(0, ...units.map(u => u.duration ?? 0))
+  const sum = sumCost(units.map(u => u.rec))
+  const cost = fmtCost(sum.usd, sum.status, t)
+  const legend = [['running', n(['running'])], ['failed', n(['failed', 'stopped'])], ['queued', n(['queued'])]].filter(([, c]) => c)
+  const byKey = new Map(units.map(u => [u.key, u]))
+  const opened = units.filter(u => openWorker.has(u.key))
+  const idOf = u => ids.get(u.key) || ids.get(u.sid) || { letter: '?', hue: CHAT_HUE, name: u.name }
+  return jsxs('section', {
+    className: live ? 'sw-deck sw-fl' : 'sw-deck', 'data-st': st, 'data-batch': deck.id, 'aria-label': t('sw.deck.label', done, units.length),
+    children: [
+      jsx('span', { className: 'sw-scan', 'aria-hidden': 'true' }, 'scan'),
+      jsxs('div', {
+        className: 'sw-score',
+        children: [
+          jsxs('div', {
+            className: 'sw-big', role: 'img', 'aria-label': t('sw.deck.label', done, units.length),
+            children: [
+              jsxs('span', { className: 'sw-bign', children: [String(done), jsx('small', { children: `/${units.length}` }, 's')] }, 'n'),
+              jsx('span', { className: 'sw-bigl', children: t(live ? 'sw.deck.finished' : 'sw.deck.lastRun') }, 'l')
+            ]
+          }, 'b'),
+          jsxs('div', {
+            className: 'sw-energy',
+            children: [
+              jsx('span', { className: 'sw-cells', 'aria-hidden': 'true', children: statuses.map((s, i) => jsx('i', { 'data-st': s }, i)) }, 'c'),
+              jsxs('span', {
+                className: 'sw-legend',
+                children: [
+                  ...legend.map(([s, c]) => jsxs('span', { children: [jsx('b', { children: c }, 'n'), ` ${t(`sw.deck.legend.${s}`)}`] }, s)),
+                  elapsed !== null && elapsed > 0 ? jsx('span', { className: 'sw-el', children: fmtDuration(elapsed, t) }, 'e') : null
+                ]
+              }, 'l')
+            ]
+          }, 'e'),
+          cost
+            ? jsx(Tip, {
+              label: t('sw.cost.tip', sum.priced, sum.included, sum.unknown),
+              children: jsxs('span', {
+                className: 'sw-money', tabIndex: 0,
+                children: [jsx('span', { className: 'sw-bcost', children: cost }, 'n'), jsx('span', { className: 'sw-moneyl', children: t('sw.deck.spent') }, 'l')]
+              })
+            }, '$')
+            : null
+        ]
+      }, 's'),
+      jsx('div', {
+        className: 'sw-party',
+        children: units.map(u => jsx(Unit, {
+          t, u, id: idOf(u), parentId: u.parent && byKey.has(u.parent) ? idOf(byKey.get(u.parent)) : null,
+          open: openWorker.has(u.key), onToggle: () => setOpenWorker(u.key), touched: touched.get(u.sid)
+        }, u.key))
+      }, 'p'),
+      opened.length
         ? jsx('div', {
-          className: 'sw-fw sw-sub',
-          children: children.map((c, i) => jsx(Node, { t, r: c, name: childNames[i], now, kids, depth: depth + 1, openWorker, setOpenWorker, onToast }, c.subagent_id))
-        }, 'k')
+          className: 'sw-unitds',
+          children: opened.map(u => jsxs('div', {
+            className: 'sw-unitd',
+            children: [
+              jsxs('div', { className: 'sw-unitdh', children: [jsx(Sig, { id: idOf(u) }, 's'), jsx('span', { children: u.name }, 'n')] }, 'h'),
+              jsx(Detail, { t, worker: u.rec, onToast }, 'd')
+            ]
+          }, u.key))
+        }, 'd')
         : null
     ]
   })
 }
 
-function Flow({ t, batch, now, openWorker, setOpenWorker, onToast }) {
-  const statuses = batch.rows.map(r => r.status)
-  const st = batchState(statuses)
-  const done = statuses.filter(s => s === 'completed').length
-  const merge = st === 'running' || st === 'queued' ? 'waiting' : st === 'completed' ? 'done' : 'partial'
-  const rootNames = distinctNames(batch.roots.map(r => r.goal))
-  return jsxs('div', {
-    className: 'sw-fl sw-frame', 'data-st': st, 'data-batch': batch.id,
+/** What happened in this chat while the page was open: workers starting, their tools, their ends. */
+function useLog(runtimeId) {
+  const [log, setLog] = useState([])
+  useEffect(() => {
+    setLog([])
+    if (!runtimeId) return undefined
+    let seq = 0
+    const push = e => setLog(prev => [{ ...e, id: ++seq, at: Date.now() / 1000 }, ...prev].slice(0, LOG_ROWS))
+    const on = (type, fn) => ctxRef.onEvent(type, event => {
+      if (event?.session_id !== runtimeId) return
+      fn(event.payload || {})
+    })
+    const offs = [
+      on('subagent.start', p => { if (p.subagent_id) push({ who: p.subagent_id, kind: 'start' }) }),
+      on('subagent.tool', p => { if (p.subagent_id && p.tool_name) push({ who: p.subagent_id, kind: 'tool', tool: p.tool_name, target: p.tool_preview || '' }) }),
+      on('subagent.complete', p => {
+        const kind = STATUS_OF[p.status] || 'completed'
+        if (p.subagent_id) push({ who: p.subagent_id, kind: TERMINAL.has(kind) ? kind : 'stopped' })
+      }),
+      on('tool.start', p => {
+        const targets = fileTargets(p.name, p.args)
+        if (targets.length) push({ who: '', kind: 'tool', tool: p.name, target: targets[0].path })
+      })
+    ]
+    return () => offs.forEach(off => off())
+  }, [runtimeId])
+  return log
+}
+
+function LogSection({ t, log, ids, chatId, now }) {
+  return jsxs('section', {
+    className: 'sw-logs', 'aria-labelledby': 'sw-log-h',
     children: [
-      jsxs('div', {
-        className: 'sw-fn sw-root',
-        children: [
-          jsx(Mark, { t, status: st, focusable: true }, 'd'),
-          jsx('span', { className: 'sw-wn', children: t('sw.batch', batch.rows.length) }, 'n'),
-          jsx(Strip, { statuses }, 's'),
-          jsx(CostChip, { t, workers: batch.rows, focusable: true }, '$'),
-          jsx('span', { className: 'sw-wt', children: `${done}/${statuses.length}` }, 'c')
-        ]
-      }, 'r'),
-      jsx('div', {
-        className: 'sw-fw',
-        children: batch.roots.map((r, i) => jsx(Node, { t, r, name: rootNames[i], now, kids: batch.kids, depth: 0, openWorker, setOpenWorker, onToast }, r.subagent_id))
-      }, 'w'),
-      jsxs('div', {
-        className: 'sw-fn sw-merge', 'data-st': st,
-        children: [jsx(Mark, { t, status: st, focusable: true }, 'm'), t(`sw.merge.${merge}`)]
-      }, 'm')
+      jsx('h3', {
+        className: 'sw-lab sw-plab', id: 'sw-log-h',
+        children: jsx(Tip, { label: t('sw.log.tip'), children: jsx('span', { className: 'sw-plt', tabIndex: 0, children: t('sw.log.title') }) })
+      }, 'h'),
+      jsx('ol', {
+        className: 'sw-log',
+        children: log.map(e => {
+          const id = e.who ? ids.get(e.who) || { letter: t('sw.id.otherLetter'), hue: CHAT_HUE, name: t('sw.id.other') } : chatId
+          const age = now - e.at
+          const verb = e.kind === 'tool' ? t(`sw.verb.${VERB[e.tool] || 'other'}`, e.tool) : t(`sw.log.${e.kind}`)
+          const st = e.kind === 'tool' || e.kind === 'start' ? 'running' : e.kind
+          return jsxs('li', {
+            className: 'sw-ev', 'data-st': st,
+            children: [
+              jsx('span', { className: 'sw-evt', children: age < LOG_NOW_S ? t('sw.log.now') : fmtDuration(age, t) }, 't'),
+              jsx(Tip, { label: id.name, children: jsx('span', { className: 'sw-evw', tabIndex: 0, children: jsx(Sig, { id }) }) }, 'w'),
+              jsxs('span', {
+                className: 'sw-evx',
+                children: [verb, e.target ? jsx(Tip, { label: e.target, children: jsx('code', { children: ` ${shortTarget(e.target)}` }) }, 'c') : null]
+              }, 'x')
+            ]
+          }, e.id)
+        })
+      }, 'l')
     ]
   })
 }
@@ -1009,7 +1263,7 @@ export function fileGroups(files, touching) {
   const now = []
   for (const [key, tc] of touching) {
     now.push(byKey.get(key) || {
-      key, path: tc.path, reads: 0, writes: 0, deletes: 0, failed: 0, by_worker: 0, last_op: tc.op, last_failed: false
+      key, path: tc.path, reads: 0, writes: 0, deletes: 0, failed: 0, who: [], editors: [], last_op: tc.op, last_failed: false
     })
   }
   const nowKeys = new Set(now.map(f => f.key))
@@ -1167,32 +1421,47 @@ const FILE_MARK = {
   read: () => svg(jsx('circle', { cx: 8, cy: 8, r: 3.75, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6 }))
 }
 
-function FileRow({ t, f, onToast }) {
+function FileTile({ t, f, who, heat, onToast }) {
   const label = t(`sw.files.op.${f.state}`)
   const counts = t('sw.files.counts', f.reads, f.writes, f.deletes, f.failed)
   const copy = () => writeClip(f.path, t, onToast, t('sw.files.copied'))
+  const names = who.map(i => i.name).join(', ')
   return jsx(Tip, {
-    label: `${f.path}\n${label}${counts ? ` · ${counts}` : ''}`,
+    label: `${f.path}\n${label}${counts ? ` · ${counts}` : ''}${names ? `\n${t('sw.files.by', names)}` : ''}`,
     children: jsxs('button', {
       type: 'button', className: 'sw-fir', 'data-op': f.state, onClick: copy,
-      'aria-label': `${f.name}: ${label}${counts ? `, ${counts}` : ''}`,
+      style: { '--u': who[0]?.hue || CHAT_HUE, '--heat': `${heat}%` },
+      'aria-label': `${f.name}: ${label}${counts ? `, ${counts}` : ''}${names ? `, ${t('sw.files.by', names)}` : ''}`,
       children: [
+        who.length ? jsx('span', { className: 'sw-sigs', children: who.slice(0, 2).map(i => jsx(Sig, { id: i }, i.letter)) }, 's') : null,
         jsx('span', { className: 'sw-fim', 'aria-hidden': 'true', children: FILE_MARK[f.state]() }, 'm'),
         jsx('span', { className: 'sw-fin', children: f.name }, 'n'),
-        f.by_worker ? jsx(Tip, { label: t('sw.files.byWorker', f.by_worker), children: jsx('span', { className: 'sw-fiw', children: t('sw.files.worker') }) }, 'w') : null,
-        jsx('span', { className: 'sw-fic', children: counts }, 'c')
+        jsx('span', { className: 'sw-fic', children: f.state === 'active' ? t('sw.files.now') : counts || label }, 'c')
       ]
     })
   })
 }
 
-function FilesSection({ t, files, touching, onToast }) {
+/** Who touched a file, as badges: its agents by the page's letters, the chat itself last. */
+export function fileWho(f, ids, chatId, other) {
+  const who = f.who && f.who.length ? f.who : f.state === 'active' ? [''] : []
+  const out = []
+  for (const w of who) {
+    const id = w ? ids.get(w) || other : chatId
+    if (!out.includes(id)) out.push(id)
+  }
+  return out
+}
+
+function FilesSection({ t, files, touching, ids, chatId, onToast }) {
   const [showAll, setShowAll] = useState(false)
   const data = files.data
   const rows = fileGroups(data?.files, touching)
   const unreadable = data?.unreadable || 0
   if (!rows.length && !unreadable && !files.loading) return null
   const shown = showAll ? rows : rows.slice(0, FILES_PAGE)
+  const other = { letter: t('sw.id.otherLetter'), hue: CHAT_HUE, name: t('sw.id.other') }
+  const most = Math.max(1, ...rows.map(f => f.reads + f.writes + f.deletes + f.failed))
   return jsxs('section', {
     className: 'sw-files', 'aria-labelledby': 'sw-files-h',
     children: [
@@ -1200,10 +1469,10 @@ function FilesSection({ t, files, touching, onToast }) {
         className: 'sw-lab sw-plab', id: 'sw-files-h',
         children: [
           jsx(Tip, { label: t('sw.files.tip'), children: jsxs('span', { className: 'sw-plt', tabIndex: 0, children: [jsx('span', { className: 'sw-pi', children: ICON.file() }, 'i'), t('sw.files.title')] }) }, 'l'),
+          rows.length ? jsx('span', { className: 'sw-labn', children: t('sw.files.touched', rows.length + (data?.more || 0)) }, 'n') : null,
           unreadable ? jsxs('span', { className: 'sw-pu', children: [jsx('span', { className: 'sw-mk', 'data-st': 'failed', 'aria-hidden': 'true', children: MARKS.failed() }, 'm'), t('sw.files.unreadable', unreadable)] }, 'u') : null
         ]
       }, 'h'),
-      jsx('p', { className: 'sw-fio', children: t('sw.files.blind') }, 'b'),
       files.loading && !rows.length
         ? jsx(Loader, { label: t('sw.files.title') }, 'w')
         : jsx('div', {
@@ -1212,14 +1481,21 @@ function FilesSection({ t, files, touching, onToast }) {
             className: 'sw-fig',
             children: [
               jsx(Tip, { label: g.dir, children: jsx('div', { className: 'sw-fid', tabIndex: 0, children: dirLabel(g.dir, data?.cwd, t) }) }, 'd'),
-              ...g.rows.map(f => jsx(FileRow, { t, f, onToast }, f.key))
+              jsx('div', {
+                className: 'sw-tiles',
+                children: g.rows.map(f => jsx(FileTile, {
+                  t, f, who: fileWho(f, ids, chatId, other), onToast,
+                  heat: Math.round(6 + 26 * ((f.reads + f.writes + f.deletes + f.failed) / most))
+                }, f.key))
+              }, 't')
             ]
           }, g.dir))
         }, 'l'),
       !showAll && rows.length > FILES_PAGE
         ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setShowAll(true), children: t('sw.files.more', rows.length - FILES_PAGE) }, 'more')
         : null,
-      data?.more ? jsx('p', { className: 'sw-fio', children: t('sw.files.notListed', data.more) }, 'nl') : null
+      data?.more ? jsx('p', { className: 'sw-fio', children: t('sw.files.notListed', data.more) }, 'nl') : null,
+      jsx('p', { className: 'sw-fio', children: t('sw.files.blind') }, 'b')
     ]
   })
 }
@@ -1302,9 +1578,9 @@ export function Page() {
   const [openWorker, setOpenWorker, clearWorkers, addWorkers] = useOpenSet()
   const [openProc, toggleProc, clearProcs] = useOpenSet()
   const [focusBatch, setFocusBatch] = useState(null)
-  // A finished batch moves from Now to Earlier with what the user had open: the batch stays open
-  // under Earlier if a worker detail was open or focus was inside it, each open worker detail stays
-  // open (Now keys it by subagent id, Earlier by session id), and focus lands on its new header.
+  // A finished batch leaves the live deck for its stored copy (the deck while nothing runs, else
+  // Earlier) with what the user had open: each open worker detail stays open (live keys it by
+  // subagent id, stored by session id), its Earlier card opens, and focus moves along with it.
   const onBatchEnded = ({ sessions, focused }) => {
     const opened = [...sessions].filter(([sub]) => openWorker.has(sub)).map(([, sid]) => sid)
     return Promise.resolve(history.reload()).then(data => {
@@ -1320,6 +1596,7 @@ export function Page() {
   const procs = useProcesses(storedId)
   const files = useFiles(storedId)
   const touching = useTouching(runtimeId, files.data?.cwd, files.reload)
+  const log = useLog(runtimeId)
   const [showAll, setShowAll] = useState(false)
   const [toast, setToast] = useState(null)
   const procRows = procs.data?.processes || []
@@ -1333,12 +1610,13 @@ export function Page() {
     setShowAll(false)
     setFocusBatch(null)
   }, [storedId])
-  // Runs after every render until the moved batch's header exists under Earlier (the live copy is
-  // dropped from Now one step after history has it), then hands it the focus once.
+  // Runs after every render until the moved batch's stored copy is drawn (the live copy is dropped
+  // one step after history has it), then hands the focus once to its Earlier header, else to its
+  // open agent on the deck, else to its first agent.
   useEffect(() => {
     if (!focusBatch) return
-    const header = [...(pageRef.current?.querySelectorAll('[data-batch]') || [])]
-      .find(el => el.getAttribute('data-batch') === focusBatch)?.querySelector('button.sw-hb')
+    const el = [...(pageRef.current?.querySelectorAll('[data-batch]') || [])].find(e => e.getAttribute('data-batch') === focusBatch)
+    const header = el?.querySelector('button.sw-hb') || el?.querySelector('button.sw-unit.is-open') || el?.querySelector('button.sw-unit')
     if (!header) return
     header.focus()
     setFocusBatch(null)
@@ -1375,18 +1653,36 @@ export function Page() {
     .map(b => ({ ...b, workers: b.workers.filter(w => !liveSessions.has(w.session_id)) }))
     .filter(b => b.workers.length)
     .reverse()
-  const shown = showAll ? past : past.slice(0, HISTORY_PAGE)
+  // The deck shows the batch that runs now; with none running, the last one. Earlier lists the rest.
+  const decks = nowBatches.length
+    ? nowBatches.map(b => ({ id: b.id, live: true, units: liveUnits(b, now) }))
+    : past.length ? [{ id: batchKey(past[0]), live: false, units: storedUnits(past[0]) }] : []
+  const earlier = nowBatches.length ? past : past.slice(1)
+  const shown = showAll ? earlier : earlier.slice(0, HISTORY_PAGE)
   const totals = {
     batches: nowBatches.length + past.length,
     workers: nowBatches.reduce((n, b) => n + b.rows.length, 0) + past.reduce((n, b) => n + b.workers.length, 0)
   }
+  // One letter and colour per agent across the page: the deck first, then Earlier, newest first.
+  const ids = agentIds([
+    ...decks.map(d => d.units.map(u => ({ name: u.name, keys: [u.key, u.sid] }))),
+    ...earlier.map(b => b.workers.map(w => ({ name: workerName(w.goal), keys: [w.session_id] })))
+  ])
+  const chatId = { letter: t('sw.id.chat'), hue: CHAT_HUE, name: t('sw.id.chatName') }
+  const touched = touchedBy(files.data?.files)
   const runningN = live.batches.reduce((n, b) => n + b.rows.filter(r => r.status === 'running').length, 0)
   const procSection = storedId
     ? jsx(ProcSection, { t, procs, now, storedId, openProc, toggleProc, onToast }, 'procs')
     : null
   // Keyed by chat: its "show all" folds again when the watched chat changes.
   const filesSection = storedId
-    ? jsx(FilesSection, { t, files, touching, onToast }, `files-${storedId}`)
+    ? jsx(FilesSection, { t, files, touching, ids, chatId, onToast }, `files-${storedId}`)
+    : null
+  const lower = filesSection || log.length
+    ? jsxs('div', {
+      className: `sw-lower${log.length ? ' has-log' : ''}`,
+      children: [filesSection, log.length ? jsx(LogSection, { t, log, ids, chatId, now }, 'log') : null]
+    }, 'lower')
     : null
 
   let body
@@ -1399,25 +1695,24 @@ export function Page() {
   } else if (!live.batches.length && !past.length && !history.error) {
     body = [
       jsx(PanelEmpty, { icon: 'type-hierarchy-sub', title: t('sw.empty.title'), description: t('sw.empty.body') }, 'empty'),
-      filesSection,
+      lower,
       procSection
     ]
   } else {
     body = [
-      live.batches.length ? jsx('h3', { className: 'sw-lab', children: t('sw.now') }, 'nl') : null,
-      ...nowBatches.map(b => jsx(Flow, { t, batch: b, now, openWorker, setOpenWorker, onToast }, b.id)),
-      past.length ? jsx('h3', { className: 'sw-lab', children: t('sw.earlier') }, 'el') : null,
+      ...decks.map(d => jsx(Deck, { t, deck: d, now, ids, touched, openWorker, setOpenWorker, onToast }, d.id)),
+      lower,
+      earlier.length ? jsx('h3', { className: 'sw-lab', children: t('sw.earlier') }, 'el') : null,
       ...shown.map(b => {
         const key = batchKey(b)
         return jsx(HistoryBatch, {
-          t, batch: b, open: openBatch.has(key), onToggle: () => toggleBatch(key),
+          t, batch: b, ids, open: openBatch.has(key), onToggle: () => toggleBatch(key),
           openWorker, setOpenWorker, onToast
         }, key)
       }),
-      !showAll && past.length > HISTORY_PAGE
-        ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setShowAll(true), children: t('sw.older', past.length - HISTORY_PAGE) }, 'more')
+      !showAll && earlier.length > HISTORY_PAGE
+        ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setShowAll(true), children: t('sw.older', earlier.length - HISTORY_PAGE) }, 'more')
         : null,
-      filesSection,
       procSection
     ]
   }
@@ -1821,12 +2116,6 @@ const CSS = `
  -webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
 .sw-dta{display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:4px 6px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
 .sw-dtm{flex:1 1 120px;min-width:0;margin-left:4px;font-size:11.5px;line-height:16px;color:var(--ui-text-secondary);overflow-wrap:anywhere}
-.sw-fl{display:flex;flex-direction:column;align-items:stretch;padding:10px 10px 12px;margin:0 0 4px}
-.sw-fn{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:8px;border:1px solid var(--ui-stroke-tertiary);
- background:var(--ui-bg-secondary);font-size:12.5px;white-space:nowrap}
-.sw-root{font-weight:600}
-.sw-merge{color:var(--ui-text-tertiary);border-style:dashed;background:transparent;align-self:center;height:30px;margin-top:14px;position:relative}
-.sw-merge::before{content:"";position:absolute;left:50%;top:-15px;height:14px;border-left:1px solid var(--ui-stroke-secondary)}
 .sw-fw{position:relative;display:flex;flex-direction:column;gap:6px;margin:14px 0 0 22px;padding-left:18px}
 .sw-fw>.sw-nwrap::before{content:"";position:absolute;left:-18px;top:-6px;bottom:0;border-left:1px solid var(--ui-stroke-secondary)}
 .sw-fw>.sw-nwrap:first-child::before{top:-14px}
@@ -1867,31 +2156,127 @@ const CSS = `
 .sw-pob .sw-po{padding:0;border:0;border-radius:0;background:transparent;max-height:180px}
 .sw-pol{font-size:11.5px;color:var(--ui-text-secondary)}
 .sw-po-note{font-size:12px;line-height:18px;color:var(--ui-text-secondary)}
-.sw-files{margin-top:6px}
 .sw-fio{margin:0 6px 8px;font-size:11.5px;line-height:16px;color:var(--ui-text-secondary)}
-.sw-fil{display:flex;flex-direction:column;gap:8px}
-.sw-fig{display:flex;flex-direction:column;gap:1px}
 .sw-fid{font:11.5px/18px var(--sw-mono);color:var(--ui-text-secondary);padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
  border-radius:4px;cursor:default}
-/* Each file hangs off its folder: an indent and a rail, the tree the video's mod draws. */
-.sw-fir{position:relative;width:100%;height:28px;display:flex;align-items:center;gap:8px;padding:0 10px 0 22px;border-radius:6px;border:0;
- background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;overflow:hidden;--sw-ft:var(--ui-text-quaternary)}
-.sw-fir::before{content:"";position:absolute;left:11px;top:0;bottom:0;border-left:1px solid var(--ui-stroke-tertiary)}
-.sw-fir:hover{background:var(--ui-bg-secondary)}
+/* ── command deck: the batch as a party — one big score, a unit per agent, a live log ── */
+.sw-lab{font-size:11.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.sw-labn{font-size:12px;font-weight:600;letter-spacing:0;text-transform:none;color:var(--ui-text-primary)}
+.sw-deck{position:relative;overflow:hidden;margin:0 0 18px;padding:18px 20px 20px;border-radius:14px;
+ background:radial-gradient(120% 90% at 18% 0%,color-mix(in srgb,var(--ui-blue) 13%,transparent),transparent 62%),
+  radial-gradient(90% 80% at 100% 100%,color-mix(in srgb,var(--ui-yellow) 6%,transparent),transparent 60%),var(--ui-bg-secondary);
+ box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ui-blue) 26%,var(--ui-stroke-tertiary)),var(--shadow-sm)}
+.sw-deck::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.6;
+ background:linear-gradient(color-mix(in srgb,var(--ui-blue) 9%,transparent) 1px,transparent 1px) 0 0/100% 28px,
+  linear-gradient(90deg,color-mix(in srgb,var(--ui-blue) 9%,transparent) 1px,transparent 1px) 0 0/28px 100%;
+ -webkit-mask-image:radial-gradient(80% 70% at 35% 25%,currentColor,transparent);mask-image:radial-gradient(80% 70% at 35% 25%,currentColor,transparent)}
+.sw-scan{position:absolute;left:0;right:0;top:-110px;height:110px;pointer-events:none;
+ background:linear-gradient(transparent,color-mix(in srgb,var(--ui-blue) 8%,transparent),transparent)}
+.sw-deck[data-st=running] .sw-scan{animation:sw-scan 6s linear infinite}
+@keyframes sw-scan{to{top:100%}}
+.sw-score{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:12px 22px}
+.sw-big{display:flex;align-items:center;gap:10px;flex:none}
+.sw-bign{font-size:46px;font-weight:800;line-height:1;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.sw-deck[data-st=running] .sw-bign{text-shadow:0 0 22px color-mix(in srgb,var(--ui-yellow) 35%,transparent)}
+.sw-bign small{font-size:26px;font-weight:700;color:var(--ui-text-secondary)}
+.sw-bigl{font-size:13px;line-height:1.25;color:var(--ui-text-secondary);max-width:96px}
+.sw-energy{flex:1 1 180px;min-width:0;display:flex;flex-direction:column;gap:8px}
+.sw-cells{display:flex;gap:5px;height:14px}
+.sw-cells i{flex:1;max-width:120px;border-radius:4px;background:var(--t);box-shadow:0 0 12px color-mix(in srgb,var(--t) 50%,transparent);--t:var(--ui-text-quaternary)}
+.sw-cells i[data-st=completed]{--t:var(--ui-green)}
+.sw-cells i[data-st=failed]{--t:var(--ui-red)}
+.sw-cells i[data-st=running]{--t:var(--ui-yellow);background:linear-gradient(90deg,color-mix(in srgb,var(--ui-yellow) 30%,transparent),var(--ui-yellow),color-mix(in srgb,var(--ui-yellow) 30%,transparent));
+ background-size:200% 100%;animation:sw-flow 1.3s linear infinite}
+.sw-cells i[data-st=queued]{background:transparent;box-shadow:inset 0 0 0 1.5px var(--ui-stroke-secondary)}
+@keyframes sw-flow{to{background-position:-200% 0}}
+.sw-legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums}
+.sw-legend b{color:var(--ui-text-primary);font-weight:700}
+.sw-money{display:flex;flex-direction:column;align-items:flex-end;margin-left:auto;flex:none;border-radius:6px}
+.sw-money .sw-bcost{font-size:24px;font-weight:800;color:var(--ui-text-primary)}
+.sw-moneyl{font-size:12px;color:var(--ui-text-secondary)}
+.sw-party{position:relative;display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:12px;margin-top:20px}
+.sw-party .sw-unit{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:2px;height:auto;min-height:188px;min-width:0;
+ padding:16px 10px 12px;border-radius:12px;text-align:center;border:1px solid color-mix(in srgb,var(--u) 30%,transparent);
+ background:linear-gradient(180deg,color-mix(in srgb,var(--u) 15%,transparent),transparent 78%)}
+.sw-party .sw-unit::before{display:none}
+.sw-party .sw-unit:hover,.sw-party .sw-unit.is-open{border-color:color-mix(in srgb,var(--u) 65%,transparent);
+ background:linear-gradient(180deg,color-mix(in srgb,var(--u) 24%,transparent),transparent 82%)}
+.sw-party .sw-unit.is-open{box-shadow:0 0 0 1px color-mix(in srgb,var(--u) 60%,transparent),0 0 18px color-mix(in srgb,var(--u) 25%,transparent)}
+.sw-party .sw-unit[data-st=queued]{border-style:dashed}
+.sw-from{position:absolute;top:7px;left:9px;font-size:11.5px;color:var(--ui-text-secondary)}
+.sw-orb{--o:var(--ui-text-quaternary);position:relative;width:62px;height:62px;flex:none;border-radius:50%;display:grid;place-items:center;margin-bottom:10px;
+ background:radial-gradient(circle,color-mix(in srgb,var(--u) 36%,transparent),transparent 72%)}
+.sw-orb[data-st=running]{--o:var(--ui-yellow)}
+.sw-orb[data-st=completed]{--o:var(--ui-green)}
+.sw-orb[data-st=failed]{--o:var(--ui-red)}
+.sw-orb::before{content:"";position:absolute;inset:0;border-radius:50%;border:3px solid color-mix(in srgb,var(--o) 30%,transparent)}
+.sw-orb[data-st=completed]::before,.sw-orb[data-st=failed]::before{border-color:var(--o);box-shadow:0 0 16px color-mix(in srgb,var(--o) 55%,transparent)}
+.sw-orb[data-st=queued]::before{border-style:dashed;border-color:var(--ui-stroke-secondary)}
+.sw-orb[data-st=running]::after{content:"";position:absolute;inset:0;border-radius:50%;border:3px solid transparent;border-top-color:var(--o);
+ border-right-color:var(--o);filter:drop-shadow(0 0 5px var(--o));animation:sw-rot 1.4s linear infinite}
+.sw-unit[data-st=failed] .sw-orb{animation:sw-glitch 2.6s steps(1) infinite}
+@keyframes sw-glitch{0%,92%{transform:none}94%{transform:translateX(-2px)}96%{transform:translateX(2px)}98%{transform:none}}
+.sw-orbl{font-size:21px;font-weight:800;line-height:1;text-shadow:0 0 12px var(--u)}
+.sw-orb .sw-mk{position:absolute;right:-3px;bottom:-3px;width:20px;height:20px;padding:2px;border-radius:50%;background:var(--ui-bg-secondary)}
+.sw-party .sw-unit .sw-wn{flex:none;max-width:100%;font-size:14px;font-weight:700;line-height:19px;white-space:normal;overflow-wrap:anywhere;
+ display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.sw-us{font-size:12px;line-height:16px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sw-party .sw-unit .sw-model{margin-top:4px;max-width:100%;height:auto;white-space:normal;overflow-wrap:anywhere;text-align:center}
+.sw-ua{margin-top:8px;display:flex;flex-direction:column;align-items:center;gap:1px;max-width:100%;min-width:0;font-size:12.5px;line-height:17px}
+.sw-uv{color:var(--ui-text-secondary)}
+.sw-ut{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text-primary)}
+.sw-party .sw-ut.sw-now{font:12px/17px var(--sw-mono);background:none;padding:0;border-radius:0;max-width:100%}
+.sw-unit[data-st=running] .sw-ut.sw-now::after{content:"";display:inline-block;width:6px;height:12px;margin-left:2px;vertical-align:-2px;
+ background:var(--ui-yellow);animation:sw-blink 1s steps(1) infinite}
+@keyframes sw-blink{50%{opacity:0}}
+.sw-unitds{position:relative;display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.sw-unitd{padding:10px 12px;border-radius:10px;background:color-mix(in srgb,var(--ui-bg-primary) 55%,transparent);border:1px solid var(--ui-stroke-tertiary)}
+.sw-unitdh{display:flex;align-items:center;gap:8px;min-width:0;font-size:12.5px;font-weight:600}
+.sw-unitdh>span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-unitd .sw-dt{margin:6px 0 0 4px}
+.sw-sig{display:inline-grid;place-items:center;min-width:20px;height:20px;padding:0 4px;flex:none;border-radius:6px;font-size:11.5px;font-weight:800;line-height:1;
+ color:var(--ui-text-primary);background:color-mix(in srgb,var(--u) 26%,var(--ui-surface-background));
+ box-shadow:0 0 0 1px color-mix(in srgb,var(--u) 65%,transparent),0 0 10px color-mix(in srgb,var(--u) 30%,transparent)}
+.sw-lower{display:grid;grid-template-columns:minmax(0,1fr);gap:4px 24px}
+@container (min-width:640px){.sw-panel .sw-lower.has-log{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr)}}
+.sw-log{list-style:none;margin:0;padding:0 6px;display:flex;flex-direction:column;gap:2px}
+.sw-ev{display:grid;grid-template-columns:38px auto minmax(0,1fr);align-items:center;gap:8px;min-height:30px;font-size:12.5px}
+.sw-ev:first-child{animation:sw-pop .5s ease-out}
+@keyframes sw-pop{from{transform:translateY(-6px);opacity:0}}
+.sw-evt{font-size:11.5px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sw-evw{display:inline-flex;border-radius:6px}
+.sw-evx{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-evx code{font:12px var(--sw-mono)}
+.sw-ev[data-st=completed] .sw-evx::before,.sw-ev[data-st=failed] .sw-evx::before,.sw-ev[data-st=stopped] .sw-evx::before{content:"";display:inline-block;width:8px;height:8px;
+ margin-right:7px;border-radius:50%;vertical-align:0;background:var(--ui-green);box-shadow:0 0 8px var(--ui-green)}
+.sw-ev[data-st=failed] .sw-evx::before{background:var(--ui-red);box-shadow:0 0 8px var(--ui-red)}
+.sw-ev[data-st=stopped] .sw-evx::before{background:var(--ui-text-quaternary);box-shadow:none}
+.sw-files{margin-top:0;min-width:0}
+.sw-fil{display:flex;flex-direction:column;gap:10px}
+.sw-fig{display:flex;flex-direction:column;gap:6px}
+.sw-tiles{display:flex;flex-wrap:wrap;gap:8px}
+/* A file is a tile in the colour of the agent that touched it first; a brighter tile was touched more. */
+.sw-fir{position:relative;display:inline-flex;align-items:center;gap:8px;max-width:100%;min-width:0;height:38px;padding:0 12px 0 8px;border-radius:10px;border:0;
+ background:color-mix(in srgb,var(--u) var(--heat),var(--ui-bg-secondary));box-shadow:0 0 0 1px color-mix(in srgb,var(--u) 40%,var(--ui-stroke-tertiary));
+ color:inherit;font:inherit;text-align:left;cursor:pointer;overflow:hidden;--sw-ft:var(--ui-text-tertiary)}
+.sw-fir:hover{box-shadow:0 0 0 1.5px color-mix(in srgb,var(--u) 75%,transparent)}
 .sw-fir[data-op=write]{--sw-ft:var(--ui-orange)}
 .sw-fir[data-op=delete],.sw-fir[data-op=failed]{--sw-ft:var(--ui-red)}
-.sw-fir[data-op=active]{--sw-ft:var(--ui-yellow);background:color-mix(in srgb,var(--ui-yellow) 9%,transparent)}
-/* The file being touched now: a band of light sweeps across its row. */
+.sw-fir[data-op=failed]{box-shadow:0 0 0 1.5px var(--ui-red),0 0 14px color-mix(in srgb,var(--ui-red) 30%,transparent)}
+.sw-fir[data-op=delete] .sw-fin{text-decoration:line-through;text-decoration-color:var(--ui-red)}
+.sw-fir[data-op=active]{--sw-ft:var(--ui-yellow);box-shadow:0 0 0 1.5px var(--ui-yellow),0 0 22px color-mix(in srgb,var(--ui-yellow) 40%,transparent)}
+/* The file being touched now: a band of light sweeps across its tile. */
 .sw-fir[data-op=active]::after{content:"";position:absolute;inset:0;pointer-events:none;transform:translateX(-100%);
- background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--ui-yellow) 24%,transparent),transparent);animation:sw-shim 1.3s ease-in-out infinite}
+ background:linear-gradient(100deg,transparent 20%,color-mix(in srgb,var(--ui-yellow) 32%,transparent) 50%,transparent 80%);animation:sw-shim 1.4s ease-in-out infinite}
 @keyframes sw-shim{to{transform:translateX(100%)}}
-@media (prefers-reduced-motion:reduce){.sw-fir[data-op=active]::after{animation:none;display:none}}
+.sw-sigs{display:inline-flex;gap:3px;flex:none}
 .sw-fim{width:12px;height:12px;flex:none;color:var(--sw-ft)}
-.sw-fin{font:12px var(--sw-mono);min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sw-fiw{flex:none;font-size:11.5px;line-height:15px;padding:0 5px;border-radius:4px;border:1px solid var(--ui-stroke-tertiary);color:var(--ui-text-secondary)}
-.sw-fic{margin-left:auto;padding-left:6px;flex:none;font-size:11.5px;color:var(--ui-text-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
-@container (max-width:420px){.sw-panel .sw-fic{display:none}}
-.sw-fir:focus-visible,.sw-fid:focus-visible{outline:2px solid var(--ui-stroke-primary);outline-offset:-2px}
+.sw-fin{font:600 12.5px var(--sw-mono);min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-fic{flex:none;font-size:11.5px;color:var(--ui-text-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
+@container (max-width:420px){.sw-panel .sw-fic{display:none}.sw-panel .sw-party{grid-template-columns:repeat(2,minmax(0,1fr))}.sw-panel .sw-bign{font-size:38px}}
+.sw-fir:focus-visible,.sw-fid:focus-visible,.sw-money:focus-visible,.sw-evw:focus-visible{outline:2px solid var(--ui-stroke-primary);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){.sw-scan,.sw-cells i,.sw-orb,.sw-orb::after,.sw-unit .sw-orb,.sw-ut::after,.sw-ev,.sw-fir[data-op=active]::after{animation:none!important}
+ .sw-fir[data-op=active]::after{display:none}}
 `
 
 function navLabel() {

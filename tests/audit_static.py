@@ -96,7 +96,11 @@ def check_i18n(js: str) -> None:
     templates = {
         "sw.status": statuses,
         "sw.proc.status": {"running", "completed", "failed", "stopped"},
-        "sw.merge": {"waiting", "done", "partial"},
+        "sw.unit": {"completed", "failed", "stopped"},
+        "sw.unit.st": statuses,
+        "sw.verb": {"read", "write", "edit", "search", "run", "code", "delegate", "web", "other"},
+        "sw.deck.legend": {"running", "failed", "queued"},
+        "sw.log": {"start", "completed", "failed", "stopped"},
         "sw.files.op": {"active", "write", "delete", "read", "failed"},
     }
     for prefix, values in templates.items():
