@@ -61,21 +61,21 @@ def build_fixture() -> None:
         " parent_session_id text, started_at real not null, ended_at real, end_reason text,"
         " tool_call_count integer default 0, input_tokens integer default 0,"
         " output_tokens integer default 0, last_activity_at real, source text not null default 'cli',"
-        " title text);"
+        " title text, estimated_cost_usd real, actual_cost_usd real, cost_status text);"
         "create table messages (id integer primary key autoincrement, session_id text,"
         " role text, content text, timestamp real);"
     )
 
     def session(sid, started, ended=None, reason=None, parent=None, delegate_from=None, model="m", active=None,
-                reasoning=None, markers=None, source="cli", title=None):
+                reasoning=None, markers=None, source="cli", title=None, cost=(None, None, None)):
         cfg = {"_delegate_from": delegate_from} if delegate_from else {}
         if reasoning is not None:
             cfg["reasoning_config"] = reasoning
         cfg.update(markers or {})
         cfg = json.dumps(cfg)
         db.execute(
-            "insert into sessions values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (sid, model, cfg, parent, started, ended, reason, 3, 100, 20, active, source, title),
+            "insert into sessions values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (sid, model, cfg, parent, started, ended, reason, 3, 100, 20, active, source, title, *cost),
         )
 
     def message(sid, role, content, ts=0.0):
@@ -86,17 +86,18 @@ def build_fixture() -> None:
     session("P2", 1500, parent="P1", title="Refactor fleet routing")
     session("Q", 900)
     session("W1", 1000, 1042, "completed", delegate_from="P1", model="claude-sonnet-5",
-            reasoning={"enabled": True, "effort": "medium"})
+            reasoning={"enabled": True, "effort": "medium"}, cost=(1.25, None, "estimated"))
     message("W1", "user", "Read the notes\nsecond line is not part of the goal")
     message("W1", "assistant", LONG_ANSWER)
-    session("W2", 1000.5, 1300, "closed", delegate_from="P1")
+    session("W2", 1000.5, 1300, "closed", delegate_from="P1", cost=(0.0, None, "included"))
     message("W2", "user", "Count files")
     session("W3", 2000, delegate_from="P2", reasoning={"enabled": False, "effort": "high"})
     message("W3", "user", "Wait")
     session("W4", 1000.2, 1010, "completed", delegate_from="Q")
     message("W4", "assistant", "other conversation")
     # Still working, but it has already said something: an answer so far is not an end state.
-    session("W5", 2000.5, delegate_from="P2")
+    # Hermes could not price it, yet an amount is stored: an unknown status is never a price.
+    session("W5", 2000.5, delegate_from="P2", cost=(0.7, None, "unknown"))
     message("W5", "user", "Keep going")
     message("W5", "assistant", "halfway there")
     # Delegated by a worker of this chat (nested): its output belongs to the chat too.
@@ -119,17 +120,23 @@ def build_fixture() -> None:
     session("RR", 3300, parent="R1", markers={"_reset_from": "R1"})
     session("RT", 3250, parent="R1", source="tool")
     session("R2", 3500, parent="R1")
-    session("RW", 3100, 3150, "completed", parent="R1", delegate_from="R1")
+    session("RW", 3100, 3150, "completed", parent="R1", delegate_from="R1", cost=(0.4, 0.38, "actual"))
     message("RW", "user", "Secret task of R1")
     message("RW", "assistant", "SECRET answer of R1")
     # A worker of R2 that was itself compressed: Hermes copies model_config onto the continuation,
     # so CW2 carries _delegate_from=R2 too, but its parent is CW. One worker, answer from the tip.
-    session("CW", 3600, 3700, "compression", parent="R2", delegate_from="R2")
+    session("CW", 3600, 3700, "compression", parent="R2", delegate_from="R2", cost=(0.5, None, "estimated"))
     message("CW", "user", "Audit the repo")
     message("CW", "assistant", "interim note before compression")
-    session("CW2", 3700, 3800, "completed", parent="CW", delegate_from="R2")
+    session("CW2", 3700, 3800, "completed", parent="CW", delegate_from="R2", cost=(0.3, 0.25, "actual"))
     message("CW2", "user", "[CONTEXT SUMMARY] earlier turn")
     message("CW2", "assistant", "final audit answer")
+    # A worker compressed mid-run whose first half Hermes could not price: only the priced half counts.
+    session("U", 5000)
+    session("UW", 5001, 5100, "compression", delegate_from="U", cost=(0.7, None, "unknown"))
+    message("UW", "user", "Half priced")
+    session("UW2", 5100, 5200, "completed", parent="UW", delegate_from="U", cost=(0.5, None, "estimated"))
+    message("UW2", "assistant", "done")
     db.commit()
     db.close()
 
@@ -176,6 +183,11 @@ def run_fixture() -> None:
         check(w5["status"] == "running" and w5["duration_s"] is None,
               f"open worker that already wrote text: still running ({w5['status']})")
         check(w1["tokens"] == 120 and w1["tool_calls"] == 3, "tokens and tool calls summed from the session")
+        # Cost: Hermes' own record, never a guess and never a fake $0.
+        check((w1["cost_usd"], w1["cost_status"]) == (1.25, "estimated"), f"an estimated worker reports its estimate ({w1['cost_usd']}, {w1['cost_status']})")
+        check((w2["cost_usd"], w2["cost_status"]) == (0.0, "included"), f"a subscription worker reads included, not unpriced ({w2['cost_usd']}, {w2['cost_status']})")
+        check((w3["cost_usd"], w3["cost_status"]) == (None, "unknown"), f"no cost record reads unknown, not $0 ({w3['cost_usd']}, {w3['cost_status']})")
+        check((w5["cost_usd"], w5["cost_status"]) == (None, "unknown"), f"an unknown status is not priced, whatever amount is stored ({w5['cost_usd']}, {w5['cost_status']})")
         w6, w7, w8 = workers["W6"], workers["W7"], workers["W8"]
         check(w6["status"] == "stopped" and w6["duration_s"] is None,
               f"a worker never ended and silent past STALE_S reads stopped, not running forever ({w6['status']})")
@@ -221,6 +233,13 @@ def run_fixture() -> None:
         check(cw["status"] == "completed" and cw["duration_s"] == 200 and cw["goal"] == "Audit the repo",
               f"its status and end come from the tip, start and goal from the root ({cw['status']}, {cw['duration_s']})")
         check(cw["tool_calls"] == 6 and cw["tokens"] == 240, "its tool calls and tokens are summed over both halves")
+        check((cw["cost_usd"], cw["cost_status"]) == (0.75, "estimated"),
+              f"its cost sums both halves, the billed half at its actual amount; one estimate makes it estimated ({cw['cost_usd']}, {cw['cost_status']})")
+        uw = [w for b in api.list_children(conn, "U", now=NOW)["batches"] for w in b["workers"]]
+        check([(w["cost_usd"], w["cost_status"]) for w in uw] == [(0.5, "estimated")],
+              f"an unpriced half adds nothing to a compressed worker's cost ({[(w['cost_usd'], w['cost_status']) for w in uw]})")
+        rw = compressed[0]
+        check((rw["cost_usd"], rw["cost_status"]) == (0.38, "actual"), f"a billed worker reports the actual amount ({rw['cost_usd']}, {rw['cost_status']})")
         check(cw["summary"] == "final audit answer" and api.read_output(conn, "R2", "CW")["text"] == "final audit answer",
               "its answer is the tip's, not the interim note before compression")
 

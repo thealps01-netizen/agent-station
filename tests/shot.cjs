@@ -234,7 +234,7 @@ app.whenReady().then(async () => {
       + ` (${row.klass}) ink ${row.ink} a${row.inkAlpha} on ${row.fill}`)
   }
   if (!ct.rows.length) red.push('no text node was measured')
-  if (measured.frames !== 5) red.push(`expected 5 preview frames, found ${measured.frames}`)
+  if (measured.frames !== 6) red.push(`expected 6 preview frames, found ${measured.frames}`)
   for (const c of measured.chips.filter(c => c.cut)) red.push(`model chip cut: [${c.text}]`)
   if (!measured.chips.some(c => c.docked && / · medium$/.test(c.text))) {
     red.push(`no uncut model chip with its effort at 480 px (${measured.chips.filter(c => c.docked).map(c => c.text).join(' | ') || 'none'})`)

@@ -15,7 +15,8 @@ receipt (tools/process_registry_results.py::_owns_result).
 
 Routes (mounted at /api/plugins/subagent-watch/):
   GET /children?session_id=<id>  -> workers delegated from that conversation, grouped into
-                                    batches (children started within BATCH_GAP_S of each other)
+                                    batches (children started within BATCH_GAP_S of each other);
+                                    each worker carries Hermes' own cost record (see _cost)
   GET /output?session_id=<id>&worker_id=<child> -> the child's final answer, full length; 403 when
                                     the child was not delegated from that conversation
   GET /processes?session_id=<id> -> that conversation's background processes, running and finished
@@ -211,7 +212,8 @@ def _last_seen(conn: sqlite3.Connection, row: sqlite3.Row) -> float:
 
 
 _WORKER_COLUMNS = ("id, model, model_config, parent_session_id, source, started_at, ended_at, end_reason, "
-                   "tool_call_count, input_tokens, output_tokens, last_activity_at")
+                   "tool_call_count, input_tokens, output_tokens, last_activity_at, "
+                   "estimated_cost_usd, actual_cost_usd, cost_status")
 
 
 def _chain(conn: sqlite3.Connection, root: sqlite3.Row) -> list[sqlite3.Row]:
@@ -220,6 +222,37 @@ def _chain(conn: sqlite3.Connection, root: sqlite3.Row) -> list[sqlite3.Row]:
     Hermes' lineage of a worker is the worker alone (it is a fork of its parent), so the walk
     starts at the worker and only goes down."""
     return [root, *_continuations(conn, root, {root["id"]}, _WORKER_COLUMNS)]
+
+
+# Hermes' CostStatus (agent/usage_pricing.py): what each link's cost columns mean.
+_PRICED = ("actual", "estimated")
+
+
+def _cost(chain: list[sqlite3.Row]) -> tuple[float | None, str]:
+    """A worker's spend from Hermes' own per-session record, summed over its compression chain.
+
+    Never a guess: a link whose status is "included" (a subscription) costs nothing and says so,
+    a link Hermes could not price ("unknown", or no amount) is not counted as $0. Returns
+    (usd, status) where status is "actual" when every priced link was billed, "estimated" when any
+    was estimated, "included" when every link was a subscription, "unknown" when nothing was priced.
+    """
+    total, kinds = 0.0, []
+    for r in chain:
+        status = r["cost_status"] if isinstance(r["cost_status"], str) else "unknown"
+        if status == "included":
+            kinds.append("included")
+            continue
+        actual, estimate = r["actual_cost_usd"], r["estimated_cost_usd"]
+        amount = actual if isinstance(actual, (int, float)) and status == "actual" else estimate
+        if status not in _PRICED or not isinstance(amount, (int, float)):
+            kinds.append("unknown")
+            continue
+        total += amount
+        kinds.append(status)
+    priced = [k for k in kinds if k in _PRICED]
+    if not priced:
+        return (0.0, "included") if kinds and all(k == "included" for k in kinds) else (None, "unknown")
+    return round(total, 6), "actual" if all(k == "actual" for k in priced) else "estimated"
 
 
 def _worker(conn: sqlite3.Connection, root: sqlite3.Row, now: float) -> dict:
@@ -240,6 +273,7 @@ def _worker(conn: sqlite3.Connection, root: sqlite3.Row, now: float) -> dict:
         # Closed without an answer: the app or the parent went away mid-run.
         status = "stopped"
     duration = (ended - root["started_at"]) if (status == "completed" and ended) else None
+    cost_usd, cost_status = _cost(chain)
     return {
         "session_id": root["id"],
         "goal": _goal(conn, root["id"]),
@@ -252,6 +286,8 @@ def _worker(conn: sqlite3.Connection, root: sqlite3.Row, now: float) -> dict:
         "duration_s": duration,
         "tool_calls": sum(r["tool_call_count"] or 0 for r in chain),
         "tokens": sum((r["input_tokens"] or 0) + (r["output_tokens"] or 0) for r in chain),
+        "cost_usd": cost_usd,
+        "cost_status": cost_status,
         "summary": final[:600],
         "summary_truncated": len(final) > 600,
     }

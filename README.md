@@ -1,8 +1,10 @@
 # Subagent Watch
 
 A Hermes **Desktop** plugin. A read-only page for the `delegate_task` workers of the focused chat —
-the running batch as a live tree, earlier batches as a list, each worker's full output on demand —
-plus the chat's background shell commands (`terminal(background=true)`), running and finished.
+the running batch as a live tree, earlier batches as a list, each worker's full output and recorded
+cost on demand — plus the chat's background shell commands (`terminal(background=true)`), running and
+finished. A status-bar chip (and, with a pet on screen, a line in its bubble) shows the running
+batch's progress and cost while the page is closed.
 
 Plugin id `subagent-watch` · label **Subagents** · route `/subagent-watch` · MIT.
 
@@ -51,8 +53,8 @@ node render_check.mjs               # jsdom + real React, driven like a user
 python audit_static.py              # i18n, a11y, colours, silent catches, read-only backend, release
 python contract_core.py             # everything read from the core still exists (--selftest)
 python release_gate.py              # version / changelog / installed copy rules each fire
-python canary_audit.py              # 63 mutations, each must turn its gate red
-node preview.mjs && <electron> shot.cjs preview.html preview.png   # 5 frames (380 px, 480 px) + WCAG / overflow / overlap gate
+python canary_audit.py              # every mutation must turn its gate red
+node preview.mjs && <electron> shot.cjs preview.html preview.png   # 6 frames (380 px, 480 px, status-bar chip) + WCAG / overflow / overlap gate
 ```
 
 A rule that has never failed is not evidence: `canary_audit.py`, `release_gate.py` and

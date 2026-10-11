@@ -1,9 +1,10 @@
 name: subagent-watch
 label: Subagent Watch
-version: 1.3.0
+version: 1.4.0
 description: >-
   Subagent Watch — read-only desktop page for delegate_task workers: live batch tree,
-  batch history per conversation, full worker output; plus the chat's background shell
-  commands (running and finished, with exit code and output tail).
+  batch history per conversation, full worker output, each worker's cost as Hermes recorded
+  it; a status-bar progress chip (and pet line) for the running batch; plus the chat's
+  background shell commands (running and finished, with exit code and output tail).
 author: Muhammed Enes Alpler
 kind: standalone

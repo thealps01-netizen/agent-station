@@ -30,6 +30,27 @@ Sidebar entry "Subagents" → route `/subagent-watch`.
 - Copying an empty output toasts "Nothing to copy — the output is empty", never "Copied".
 - Cards open and close independently: opening a batch or worker never folds another one. All
   cards fold when the focused chat changes.
+- **Cost** — Hermes' own record, never computed here. The backend reads `estimated_cost_usd`,
+  `actual_cost_usd` and `cost_status` of every link of a worker's compression chain: `included`
+  (a subscription) costs nothing and is named `subscription`; `unknown` or a missing amount is not
+  priced and is never shown as $0; a billed link counts its actual amount, others the estimate; one
+  estimated link makes the worker `~` (estimate). A worker's detail adds the cost after tools · tokens;
+  every batch header (Earlier and Now) shows the sum, its tooltip counts priced / subscription /
+  not priced workers. A live worker's cost is the `cost_usd` of its complete frame, taken only when
+  positive — the frame has no status, and 0 is what a subscription or an unpriced model reports.
+- **Progress chip** (status bar, right) — the focused chat's running batch: status mark,
+  finished/total, a bar, the cost so far; tooltip = accessible name; click opens the page. It reads
+  a module-level tracker fed by the same `subagent.*` events for every chat (keyed by the runtime
+  session id the event carries), so it works with the page closed. On focus it asks `subagent.list`
+  once (a batch already running when the app loaded), then every 3 s while the batch runs; a worker
+  the list drops without a complete frame is stopped (a queued one gets 60 s); three failed polls turn
+  the chip red with the error. A finished batch lingers 8 s. Why the status bar and not
+  `composer.top`: a composer slot is given no session, so in a split layout every composer would show
+  the focused chat's batch.
+- **Pet line** — with a Hermes pet on screen, the chip's numbers go to the pet's bubble through
+  `ctx.pet.say` (id `progress`; tone `wait` while running, `error`/`info` at the end). Only a changed
+  line is sent (the pet is rate-limited). No pet shown → nothing is said; the plugin draws no mascot of
+  its own.
 - **Background commands** — below the batches (or below the empty state). Shell commands the agent
   started with `terminal(background=true)`: these are NOT subagents, and the section title's tooltip
   says so. Newest first, one row each: status mark (running yellow, exit 0 green, non-zero red,

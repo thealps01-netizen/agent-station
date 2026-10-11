@@ -12,10 +12,16 @@
  *            from the backend's /processes (Hermes' own processes.json + process-results receipts).
  *            A row opens the full command, its exit code and the end of its output.
  *
+ *   Progress the focused chat's running batch as a status-bar chip (finished/total, a bar, the cost
+ *            so far) and, when a pet is on screen, as a line in the pet's speech bubble. Fed by the
+ *            same events through a small tracker of its own, so it shows while the page is closed.
+ *   Cost     each worker's spend as Hermes recorded it in state.db (estimated / billed / in a
+ *            subscription / not priced) — shown, never computed or guessed here.
+ *
  * Nothing here writes: no interrupt, no steer (the composer status stack already owns those).
  * Every failed read is shown in the page; nothing is swallowed.
  */
-import { ErrorState, host, Loader, PanelEmpty, Tip, usePluginI18n, useValue } from '@hermes/plugin-sdk'
+import { ErrorState, host, Loader, PanelEmpty, STATUSBAR_AREAS, Tip, usePluginI18n, useValue } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -43,6 +49,13 @@ const STATUS_OF = {
   failed: 'failed', error: 'failed', timeout: 'failed', interrupted: 'stopped', stopped: 'stopped'
 }
 const TERMINAL = new Set(['completed', 'failed', 'stopped'])
+// Hermes' CostStatus values that carry an amount (agent/usage_pricing.py); 'included' is a
+// subscription, 'unknown' could not be priced — neither is ever shown as $0.
+const PRICED = new Set(['actual', 'estimated'])
+// A finished batch stays on the status-bar chip (and in the pet's bubble) this long, then goes.
+const PROGRESS_LINGER_MS = 8000
+// The pet clamps a line's life to 30 s; a running batch's line is refreshed on every change.
+const PET_LINE_MS = 30000
 
 let ctxRef = null
 // The stored id of the chat the page watches (see useWatchedChat), for reads deep in the tree.
@@ -78,7 +91,28 @@ const BUNDLES = {
       batch: n => `${n} worker${n === 1 ? '' : 's'}`,
       modelTip: (model, effort) => (effort ? `${model} · reasoning effort ${effort}` : model),
       more: n => `+${n} more`,
-      meta: (tools, tokens) => [`${tools} tool${tools === 1 ? '' : 's'}`, tokens ? `${tokens} tokens` : ''].filter(Boolean).join(' · '),
+      meta: (tools, tokens, cost) => [`${tools} tool${tools === 1 ? '' : 's'}`, tokens ? `${tokens} tokens` : '', cost || ''].filter(Boolean).join(' · '),
+      cost: {
+        est: amount => `~${amount}`,
+        under: '<$0.01',
+        included: 'subscription',
+        tip: (priced, included, unknown) => [
+          'Cost as Hermes recorded it (~ is an estimate)',
+          priced ? `${priced} priced` : '',
+          included ? `${included} in a subscription` : '',
+          unknown ? `${unknown} not priced (yet)` : ''
+        ].filter(Boolean).join(' · ')
+      },
+      progress: {
+        tip: (finished, total, failed, running, cost) => [
+          `Subagents in this chat: ${finished} of ${total} finished`,
+          failed ? `${failed} failed or stopped` : '',
+          running ? `${running} running` : '',
+          cost ? `cost ${cost}` : ''
+        ].filter(Boolean).join(' · ') + '. Click to open the Subagents page.',
+        pet: (finished, total, cost) => [`Subagents ${finished}/${total} done`, cost].filter(Boolean).join(' · '),
+        stalled: detail => `Subagent progress stopped updating: ${detail}`
+      },
       units: {
         hm: (h, m) => `${h}h ${m}m`,
         ms: (m, s) => `${m}m ${s}s`,
@@ -144,6 +178,34 @@ export function fmtDuration(s, t = enT) {
 export function fmtTokens(n, t = enT) {
   if (!n) return ''
   return n >= 1000 ? t('sw.units.k', Math.round(n / 1000)) : String(n)
+}
+
+/** Hermes' cost record as text: '~$1.25' estimated, '$0.38' billed, 'subscription', '' unpriced. */
+export function fmtCost(usd, status, t = enT) {
+  if (status === 'included') return t('sw.cost.included')
+  if (!PRICED.has(status) || typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) return ''
+  if (usd > 0 && usd < 0.005) return t('sw.cost.under')
+  const amount = `$${usd.toFixed(2)}`
+  return status === 'estimated' ? t('sw.cost.est', amount) : amount
+}
+
+/** A set of workers' spend: priced ones summed; subscription and unpriced ones counted, never as $0. */
+export function sumCost(workers) {
+  let usd = 0
+  let priced = 0
+  let included = 0
+  let unknown = 0
+  let estimated = false
+  for (const w of workers) {
+    if (w.cost_status === 'included') included++
+    else if (PRICED.has(w.cost_status) && typeof w.cost_usd === 'number' && Number.isFinite(w.cost_usd)) {
+      usd += w.cost_usd
+      priced++
+      estimated = estimated || w.cost_status === 'estimated'
+    } else unknown++
+  }
+  const status = priced ? (estimated ? 'estimated' : 'actual') : included && !unknown ? 'included' : 'unknown'
+  return { usd: priced ? usd : null, status, priced, included, unknown }
 }
 
 /** One line a person can read: the goal's first line, a quoted slug when there is one. */
@@ -314,6 +376,18 @@ function Stat({ label, icon, value }) {
   return jsx(Tip, { label, children: jsxs('span', { className: 'sw-stat', role: 'img', 'aria-label': label, tabIndex: 0, children: [icon(), value] }) })
 }
 
+/** A batch's spend with its breakdown as the tooltip; nothing when no worker was priced. */
+// `focusable`: outside a button the chip is its own tab stop, so its breakdown is reachable by keyboard.
+function CostChip({ t, workers, focusable }) {
+  const sum = sumCost(workers)
+  const text = fmtCost(sum.usd, sum.status, t)
+  if (!text) return null
+  return jsx(Tip, {
+    label: t('sw.cost.tip', sum.priced, sum.included, sum.unknown),
+    children: jsx('span', { className: 'sw-bcost', tabIndex: focusable ? 0 : undefined, children: text })
+  })
+}
+
 function Strip({ statuses }) {
   return jsx('span', {
     className: 'sw-strip',
@@ -396,6 +470,16 @@ function useProcesses(storedId) {
   return { ...own, loading: Boolean(storedId) && !own.data && !own.error, reload: load }
 }
 
+/**
+ * A complete frame's `cost_usd` is Hermes' session estimate. The frame carries no cost status, so a
+ * 0 can be a subscription or an unpriced model: only a positive amount is taken (as an estimate).
+ */
+function eventCost(p) {
+  return typeof p.cost_usd === 'number' && Number.isFinite(p.cost_usd) && p.cost_usd > 0
+    ? { cost_usd: p.cost_usd, cost_status: 'estimated' }
+    : {}
+}
+
 function mergeRecord(prev, patch) {
   const next = { ...prev }
   for (const [k, v] of Object.entries(patch)) if (v !== undefined && v !== null) next[k] = v
@@ -438,7 +522,8 @@ function useLive(runtimeId, onBatchEnded) {
       else if (type === 'subagent.complete') {
         upsert({
           ...base, status: STATUS_OF[p.status] || 'completed', summary: p.summary, duration_s: p.duration_seconds,
-          tokens: (p.input_tokens || 0) + (p.output_tokens || 0), ended_at: Date.now() / 1000
+          tokens: (p.input_tokens || 0) + (p.output_tokens || 0), ended_at: Date.now() / 1000,
+          ...eventCost(p)
         })
       }
     }))
@@ -585,7 +670,7 @@ function Detail({ t, worker, onToast }) {
           // The duration is already on the worker's row; the detail adds only what the row lacks.
           jsx('span', {
             className: 'sw-dtm',
-            children: t('sw.meta', worker.tool_calls ?? worker.tool_count ?? 0, fmtTokens(worker.tokens, t))
+            children: t('sw.meta', worker.tool_calls ?? worker.tool_count ?? 0, fmtTokens(worker.tokens, t), fmtCost(worker.cost_usd, worker.cost_status, t))
           }, 'm')
         ]
       }, 'a')
@@ -617,6 +702,7 @@ function HistoryBatch({ t, batch, open, onToggle, openWorker, setOpenWorker, onT
     jsx('span', { className: 'sw-bn', children: workerName(batch.workers[0]?.goal) }, 'n'),
     statuses.length > 1 ? jsx('span', { className: 'sw-bmore', children: t('sw.more', statuses.length - 1) }, 'x') : null,
     jsx(Strip, { statuses }, 's'),
+    jsx(CostChip, { t, workers: batch.workers }, '$'),
     jsx('span', { className: 'sw-bc', children: `${done}/${statuses.length}` }, 'c'),
     jsx('span', { className: 'sw-bt', children: times.length ? fmtDuration(Math.max(...times), t) : '' }, 't'),
     jsx('span', { className: 'sw-chev', children: ICON.chev(open) }, 'v')
@@ -700,6 +786,7 @@ function Flow({ t, batch, now, openWorker, setOpenWorker, onToast }) {
           jsx(Mark, { t, status: st, focusable: true }, 'd'),
           jsx('span', { className: 'sw-wn', children: t('sw.batch', batch.rows.length) }, 'n'),
           jsx(Strip, { statuses }, 's'),
+          jsx(CostChip, { t, workers: batch.rows, focusable: true }, '$'),
           jsx('span', { className: 'sw-wt', children: `${done}/${statuses.length}` }, 'c')
         ]
       }, 'r'),
@@ -1116,6 +1203,220 @@ export function Page() {
   }) })
 }
 
+// ── progress: status-bar chip + pet line ─────────────────────────────────────
+//
+// The page's live tree exists only while the page is open; the progress has to show while the user
+// is in the chat. A small tracker follows the same subagent.* events for every chat (keyed by the
+// runtime session id the events carry) and the chip reads the focused chat's entry. A status-bar
+// chip, not a composer banner: a composer slot is told no session, so in a split layout every
+// composer would show the focused chat's batch; the status bar is one strip for the focused chat.
+
+const tracks = new Map() // runtime session id -> { workers: Map<subagent_id, { status, queued_at, cost_usd, cost_status }>, endedAt }
+const trackSubs = new Set()
+
+function settle(track) {
+  const all = [...track.workers.values()]
+  track.endedAt = all.length && all.every(w => TERMINAL.has(w.status)) ? (track.endedAt ?? Date.now()) : null
+}
+
+function changed() {
+  trackSubs.forEach(fn => fn())
+  petUpdate()
+}
+
+/** A new batch starts when a worker the finished batch never had shows up. */
+function trackFor(sid, newcomer) {
+  const track = tracks.get(sid)
+  if (track && !(track.endedAt && newcomer)) return track
+  const fresh = { workers: new Map(), endedAt: null }
+  tracks.set(sid, fresh)
+  return fresh
+}
+
+/** One subagent.* event into its chat's tracker. A worker's end is final. */
+export function trackEvent(type, event) {
+  const sid = event?.session_id
+  const p = event?.payload || {}
+  if (!sid || !p.subagent_id) return
+  const known = tracks.get(sid)?.workers.has(p.subagent_id)
+  if (type === 'subagent.complete' && !tracks.get(sid)) return // the end of a worker never seen: nothing to count against
+  const track = trackFor(sid, !known && type !== 'subagent.complete')
+  const had = track.workers.get(p.subagent_id)
+  if (TERMINAL.has(had?.status)) return
+  let next
+  if (type === 'subagent.spawn_requested') next = { status: 'queued', queued_at: Date.now() / 1000 }
+  else if (type === 'subagent.start') next = { status: 'running' }
+  else if (type === 'subagent.complete') next = { status: STATUS_OF[p.status] || 'completed', ...eventCost(p) }
+  else if (!had) next = { status: 'running' } // progress of a worker whose spawn we missed
+  else return
+  track.workers.set(p.subagent_id, { ...had, ...next })
+  settle(track)
+  changed()
+}
+
+/**
+ * A subagent.list snapshot into the chat's tracker: picks up a batch that was already running when
+ * the app loaded, and ends a worker whose complete frame never arrived (the registry no longer
+ * lists it). A queued worker is listed only once it starts, so it gets QUEUE_GRACE_S.
+ */
+export function trackSnapshot(sid, rows, at = Date.now() / 1000) {
+  const listed = (rows || []).filter(r => r?.subagent_id)
+  const live = listed.filter(r => !TERMINAL.has(STATUS_OF[r.status] || r.status))
+  const prev = tracks.get(sid)
+  if (!prev && !live.length) return
+  const track = trackFor(sid, live.some(r => !prev?.workers.has(r.subagent_id)))
+  const seen = new Set()
+  for (const r of listed) {
+    seen.add(r.subagent_id)
+    const had = track.workers.get(r.subagent_id)
+    const status = STATUS_OF[r.status] || r.status
+    if (TERMINAL.has(had?.status) || (!had && TERMINAL.has(status))) continue
+    track.workers.set(r.subagent_id, { ...had, status })
+  }
+  for (const [id, w] of track.workers) {
+    if (seen.has(id) || TERMINAL.has(w.status)) continue
+    if (w.status === 'queued' && at - (w.queued_at ?? at) < QUEUE_GRACE_S) continue
+    track.workers.set(id, { ...w, status: 'stopped' })
+  }
+  settle(track)
+  changed()
+}
+
+/** What the chip and the pet show for one chat's batch. */
+export function progressOf(track) {
+  const workers = [...(track?.workers.values() || [])]
+  const count = st => workers.filter(w => w.status === st).length
+  const finished = workers.filter(w => TERMINAL.has(w.status)).length
+  const failed = count('failed') + count('stopped')
+  const state = batchState(workers.map(w => w.status))
+  return { total: workers.length, finished, failed, running: count('running'), state, ended: Boolean(track?.endedAt), cost: sumCost(workers) }
+}
+
+let petLine = ''
+/** The focused chat's progress as a line in the pet's bubble; nothing when no pet is on screen. */
+function petUpdate() {
+  const pet = ctxRef?.pet
+  if (!pet?.visible?.get?.()) return
+  const track = tracks.get(host.state.focusedSessionId.get())
+  const shown = track?.workers.size && !(track.endedAt && Date.now() - track.endedAt > PROGRESS_LINGER_MS)
+  if (!shown) {
+    if (petLine) pet.clear('progress')
+    petLine = ''
+    return
+  }
+  const pr = progressOf(track)
+  const text = enT('sw.progress.pet', pr.finished, pr.total, fmtCost(pr.cost.usd, pr.cost.status))
+  if (text === petLine) return
+  petLine = text
+  pet.say(text, {
+    id: 'progress',
+    tone: pr.ended ? (pr.failed ? 'error' : 'info') : 'wait',
+    ttlMs: pr.ended ? PROGRESS_LINGER_MS : PET_LINE_MS
+  })
+}
+
+function useTracks() {
+  const [, bump] = useState(0)
+  useEffect(() => {
+    const fn = () => bump(n => n + 1)
+    trackSubs.add(fn)
+    return () => { trackSubs.delete(fn) }
+  }, [])
+}
+
+/** The focused chat's batch: finished/total, a bar, the cost so far. Opens the page on click. */
+function ProgressChip() {
+  const t = usePluginI18n(ID)
+  const runtimeId = useValue(host.state.focusedSessionId)
+  useTracks()
+  const track = runtimeId ? tracks.get(runtimeId) : null
+  const live = Boolean(track && track.workers.size && !track.endedAt)
+  const [stalled, setStalled] = useState(null)
+  // Reconcile with subagent.list: once when a chat gets focus (a batch may already be running),
+  // then every POLL_MS while its batch runs. Three failures in a row stop the poll and say so.
+  useEffect(() => {
+    setStalled(null)
+    if (!runtimeId) return undefined
+    let alive = true
+    let fails = 0
+    const poll = async () => {
+      if (!alive || fails >= MAX_POLL_FAILS) return
+      try {
+        const snap = await host.request('subagent.list', { session_id: runtimeId })
+        if (!alive) return
+        fails = 0
+        setStalled(null)
+        trackSnapshot(runtimeId, snap?.subagents)
+      } catch (err) {
+        if (!alive) return
+        fails += 1
+        console.warn(`[${ID}] progress: subagent.list failed (${fails}/${MAX_POLL_FAILS})`, err)
+        if (fails >= MAX_POLL_FAILS) setStalled(String(err?.message || err))
+      }
+    }
+    void poll()
+    const stop = live ? ctxRef.setInterval(() => void poll(), POLL_MS) : () => {}
+    return () => {
+      alive = false
+      stop()
+    }
+  }, [runtimeId, live])
+  // A finished batch lingers, then the chip goes.
+  const endedAt = track?.endedAt
+  const [, expire] = useState(0)
+  useEffect(() => {
+    if (!endedAt) return undefined
+    const left = PROGRESS_LINGER_MS - (Date.now() - endedAt)
+    if (left <= 0) return undefined
+    return ctxRef.setTimeout(() => { expire(n => n + 1); petUpdate() }, left + 50)
+  }, [endedAt])
+  if (!track?.workers.size || (endedAt && Date.now() - endedAt > PROGRESS_LINGER_MS)) return null
+  const pr = progressOf(track)
+  const cost = fmtCost(pr.cost.usd, pr.cost.status, t)
+  const st = stalled ? 'failed' : pr.state
+  const tip = stalled
+    ? t('sw.progress.stalled', stalled)
+    : t('sw.progress.tip', pr.finished, pr.total, pr.failed, pr.running, cost)
+  const pct = pr.total ? Math.round((pr.finished / pr.total) * 100) : 0
+  return jsxs('span', {
+    className: 'sw-sbw',
+    children: [
+      jsx('style', { children: CHIP_CSS }, 'css'),
+      jsx(Tip, {
+        label: tip,
+        children: jsxs('button', {
+          type: 'button', className: 'sw-sb', 'data-st': st, 'aria-label': tip,
+          onClick: () => host.navigate(ROUTE),
+          children: [
+            jsx('span', { className: 'sw-sbm', 'aria-hidden': 'true', children: (MARKS[st] || MARKS.stopped)() }, 'm'),
+            jsx('span', { className: 'sw-sbn', children: `${pr.finished}/${pr.total}` }, 'n'),
+            jsx('span', { className: 'sw-sbbar', 'aria-hidden': 'true', children: jsx('i', { style: { width: `${pct}%` } }) }, 'b'),
+            cost ? jsx('span', { className: 'sw-sbc', children: cost }, 'c') : null
+          ]
+        })
+      }, 'chip')
+    ]
+  })
+}
+
+const CHIP_CSS = `
+.sw-sbw{display:inline-flex;align-items:center}
+.sw-sb{display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 6px;border-radius:5px;border:0;background:transparent;
+ color:var(--ui-text-secondary);font:inherit;font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer;--sw-tint:var(--ui-yellow)}
+.sw-sb:hover{background:var(--ui-bg-tertiary);color:var(--ui-text-primary)}
+.sw-sb:focus-visible{outline:2px solid var(--ui-stroke-primary);outline-offset:1px}
+.sw-sb[data-st=completed]{--sw-tint:var(--ui-green)}
+.sw-sb[data-st=failed]{--sw-tint:var(--ui-red)}
+.sw-sb[data-st=stopped],.sw-sb[data-st=queued]{--sw-tint:var(--ui-text-quaternary)}
+.sw-sbm{width:13px;height:13px;flex:none}
+.sw-sbm svg{width:100%;height:100%;display:block}
+.sw-sbbar{width:44px;height:5px;border-radius:3px;background:var(--ui-bg-tertiary);overflow:hidden;flex:none}
+.sw-sbbar>i{display:block;height:100%;background:var(--sw-tint);transition:width .3s}
+.sw-sb .sw-spin{animation:sw-rot 1.1s linear infinite;transform-origin:50% 50%}
+@keyframes sw-rot{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.sw-sb .sw-spin{animation:none}.sw-sbbar>i{transition:none}}
+`
+
 const CSS = `
 .sw-page{height:100%;min-height:0;overflow:auto;padding:20px 24px;color:var(--ui-text-primary);font-size:12px}
 .sw-panel{position:relative;container-type:inline-size;
@@ -1123,7 +1424,9 @@ const CSS = `
 /* Docked beside the chat the worker name needs every pixel: a model chip cut to 'c…' says nothing. */
 @container (max-width:420px){.sw-panel .sw-model,.sw-panel .sw-strip{display:none}.sw-panel .sw-bl{gap:7px;padding:0 8px}.sw-panel .sw-now{max-width:72px}
  /* The hidden strip carried the push to the right; without it counts and times lost their column. */
- .sw-panel .sw-bl .sw-bc{margin-left:auto}}
+ .sw-panel .sw-bl .sw-bc{margin-left:auto}
+ /* With a cost chip the cost takes the push, and the count sits beside it. */
+ .sw-panel .sw-bl .sw-bcost{margin-left:auto}.sw-panel .sw-bl .sw-bcost~.sw-bc{margin-left:0}}
 .sw-page svg{width:100%;height:100%;display:block}
 .sw-spin{animation:sw-rot 1.1s linear infinite;transform-origin:50% 50%}
 @keyframes sw-rot{to{transform:rotate(360deg)}}
@@ -1156,7 +1459,7 @@ const CSS = `
 @media (prefers-reduced-motion:reduce){.sw-ib.is-busy svg{animation:none}}
 /* The app removes every focus ring; a keyboard user still has to see where focus is. */
 .sw-ib:focus-visible,.sw-bl:focus-visible,.sw-nd:focus-visible,.sw-more:focus-visible,.sw-dtg:focus-visible,.sw-plt:focus-visible,
-.sw-stat:focus-visible,.sw-mk:focus-visible,.sw-held:focus-visible{
+.sw-stat:focus-visible,.sw-mk:focus-visible,.sw-held:focus-visible,.sw-bcost:focus-visible{
  outline:2px solid var(--ui-stroke-primary);outline-offset:1px}
 .sw-hint{margin:12px 6px;font-size:12px;line-height:18px;color:var(--ui-text-secondary)}
 .sw-err{margin:8px 0;padding:8px 10px;border-radius:8px;border:1px solid color-mix(in srgb,var(--ui-red) 45%,transparent);font-size:12px}
@@ -1170,6 +1473,7 @@ const CSS = `
 .sw-strip i[data-st=queued]{background:transparent;box-shadow:inset 0 0 0 1px var(--t)}
 .sw-bc,.sw-bt,.sw-wt{font-size:11.5px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
 .sw-bc{min-width:28px;text-align:right}
+.sw-bcost{font-size:11.5px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
 .sw-bt{min-width:52px;text-align:right}
 .sw-chev{width:14px;height:14px;color:var(--ui-text-quaternary);flex:none}
 .sw-box{margin:2px 0 8px;overflow:hidden}
@@ -1280,5 +1584,10 @@ export default {
     ctx.i18n?.register?.(BUNDLES)
     ctx.register({ id: 'page', area: 'routes', data: { path: ROUTE }, render: () => jsx(Page, {}) })
     ctx.register({ id: 'nav', area: 'sidebar.nav', data: { path: ROUTE, label: navLabel(), codicon: 'type-hierarchy-sub' } })
+    ctx.register({ id: 'progress', area: STATUSBAR_AREAS.right, order: 125, render: () => jsx(ProgressChip, {}) })
+    for (const type of SUBAGENT_EVENTS) ctx.onEvent(type, event => trackEvent(type, event))
+    // A pet shown later, or a chat switch, gets the current line at once.
+    ctx.pet?.visible?.listen?.(() => petUpdate())
+    host.state.focusedSessionId.listen?.(() => petUpdate())
   }
 }

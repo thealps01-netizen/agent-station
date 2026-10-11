@@ -3,13 +3,15 @@
  *
  * Run: cd tests && node render_check.mjs && node preview.mjs      (writes preview.html, exit 0 = ok)
  *
- * It draws THREE FRAMES in jsdom with the real React — the page's REAL output, never a hand-drawn
+ * It draws SIX FRAMES in jsdom with the real React — the page's REAL output, never a hand-drawn
  * mock — through the same SDK stub the render check writes (`.out/sdk-stub.mjs`):
  *   1. Now — a running batch as a live tree (a nested worker, a failed one, a queued one, the merge
  *      node) above two earlier batches and the background commands, one of each status.
  *   2. Earlier — a batch opened to its workers, one worker's detail open, and a failed background
  *      command opened to its exit code and output tail.
  *   3. Failures — every read failing at once: the alert box with each message, nothing swallowed.
+ *   4-5. Narrow (380 px) and docked (480 px) widths.
+ *   6. The status-bar progress chip: a running batch with a failed worker and a cost so far.
  *
  * STYLES: the application's OWN COMPILED stylesheet (`apps/desktop/dist/assets/index-*.css`, newest
  * build) carries the theme — light and dark blocks both — so nothing is copied from another repo.
@@ -55,14 +57,14 @@ const HISTORY = {
     {
       started_at: NOW - 5400,
       workers: [
-        { session_id: 'c-a', goal: "Audit 'fleet-routing' against the kit", model: 'anthropic/claude-opus-5-5', effort: 'medium', status: 'completed', duration_s: 312, tool_calls: 40, tokens: 120000, summary: '' },
-        { session_id: 'c-b', goal: "Audit 'fleet-status' against the kit", model: 'anthropic/claude-opus-5-5', status: 'stopped', duration_s: null, tool_calls: 12, tokens: 9000, summary: '' }
+        { session_id: 'c-a', goal: "Audit 'fleet-routing' against the kit", model: 'anthropic/claude-opus-5-5', effort: 'medium', status: 'completed', duration_s: 312, tool_calls: 40, tokens: 120000, cost_usd: 1.62, cost_status: 'estimated', summary: '' },
+        { session_id: 'c-b', goal: "Audit 'fleet-status' against the kit", model: 'anthropic/claude-opus-5-5', status: 'stopped', duration_s: null, tool_calls: 12, tokens: 9000, cost_usd: 0.31, cost_status: 'estimated', summary: '' }
       ]
     },
     {
       started_at: NOW - 1800,
       workers: [
-        { session_id: 'c-c', goal: "Write the 'wiki-watchdog' changelog", model: 'openai/gpt-5.2', status: 'completed', duration_s: 45, tool_calls: 3, tokens: 800, summary: '' }
+        { session_id: 'c-c', goal: "Write the 'wiki-watchdog' changelog", model: 'openai/gpt-5.2', status: 'completed', duration_s: 45, tool_calls: 3, tokens: 800, cost_usd: 0, cost_status: 'included', summary: '' }
       ]
     }
   ]
@@ -130,7 +132,7 @@ async function frame(label, { fail = false, live = false, open = null, narrow = 
     await emit('subagent.start', { subagent_id: 's1', delegation_id: 'd1', goal: "Polish 'fleet-status' visuals", model: 'anthropic/claude-opus-5-5', started_at: NOW - 140 })
     await emit('subagent.start', { subagent_id: 's1a', parent_id: 's1', delegation_id: 'd1', goal: "Judge 'fleet-status' contrast", depth: 1, model: 'openai/gpt-5.2', started_at: NOW - 60 })
     await emit('subagent.tool', { subagent_id: 's1', tool_name: 'terminal', tool_preview: 'node preview.mjs' })
-    await emit('subagent.complete', { subagent_id: 's2', status: 'error', summary: 'boom', duration_seconds: 12 })
+    await emit('subagent.complete', { subagent_id: 's2', status: 'error', summary: 'boom', duration_seconds: 12, cost_usd: 0.42 })
   }
   if (narrow) {
     // The page docked beside the chat: six running workers and a finished command with a long path.
@@ -178,6 +180,32 @@ await frame('4 · Narrow (380 px) — six running workers and a command with a l
 await frame('5 · Docked (480 px) — an Earlier worker whose model chip carries its reasoning effort', { open: 'earlier', docked: true })
 stub.state.listFails = false
 
+// 6. The status-bar chip, in a strip the height of the app's status bar.
+{
+  const { ctx, registered } = makeCtx(false)
+  stub.state.list['rt-chip'] = []
+  mod.default.register(ctx)
+  stub.atoms.focusedSessionId.set('rt-chip')
+  const chipReg = registered.find(c => c.area === 'statusBar.right')
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const root = createRoot(host)
+  await act(async () => { root.render(React.createElement(chipReg.render)) })
+  const send = (type, payload) => act(async () => { mod.trackEvent(type, { session_id: 'rt-chip', payload }) })
+  for (const id of ['k1', 'k2', 'k3', 'k4', 'k5']) await send('subagent.spawn_requested', { subagent_id: id })
+  for (const id of ['k1', 'k2', 'k3', 'k4']) await send('subagent.start', { subagent_id: id })
+  await send('subagent.complete', { subagent_id: 'k1', status: 'completed', cost_usd: 1.62 })
+  await send('subagent.complete', { subagent_id: 'k2', status: 'completed', cost_usd: 2.58 })
+  await send('subagent.complete', { subagent_id: 'k3', status: 'error', cost_usd: 0 })
+  await tick(20)
+  const html = host.innerHTML
+  if (!host.querySelector('.sw-sb')) problems.push('6: the progress chip did not render')
+  if (host.querySelectorAll('[title]').length) problems.push('6: a native title= on the chip')
+  frames.push({ label: '6 · Status bar — the progress chip: 3 of 5 finished, one failed, cost so far', html, bar: true })
+  await act(async () => root.unmount())
+  host.remove()
+}
+
 const DIST_ASSETS = DESKTOP_APP ? `${DESKTOP_APP.replace(/\\/g, '/')}/dist/assets` : null
 function newestCss(pattern) {
   try {
@@ -201,9 +229,9 @@ if (!appCss) console.log(`warning: ${styles}`)
 const DARK_SEEDS = ':root.dark { --theme-background-seed: #0d0d0e; --theme-sidebar-seed: #0a0a0b;'
   + ' --theme-card-seed: #161618; --theme-neutral-card: #161618; --theme-foreground: #f4f4f6; }'
 
-const body = frames.map(f => `<section class="swp-wrap${f.narrow ? ' is-narrow' : ''}${f.docked ? ' is-docked' : ''}">
+const body = frames.map(f => `<section class="swp-wrap${f.narrow ? ' is-narrow' : ''}${f.docked ? ' is-docked' : ''}${f.bar ? ' is-bar' : ''}">
   <p class="swp-label">${f.label}</p>
-  <div class="swp-frame">${f.html}</div>
+  <div class="swp-frame">${f.bar ? `<div class="swp-bar">${f.html}</div>` : f.html}</div>
 </section>`).join('\n')
 
 const page = `<!doctype html>
@@ -218,6 +246,7 @@ body{padding:16px 18px 28px}
 .swp-wrap{margin:0 0 22px;width:640px}
 .swp-wrap.is-narrow{width:380px}
 .swp-wrap.is-docked{width:480px}
+.swp-bar{height:24px;display:flex;align-items:center;justify-content:flex-end;padding:0 8px;background:var(--ui-bg-sidebar);font-size:11px}
 .swp-label{font-size:11px;color:var(--ui-text-tertiary);margin:0 0 6px}
 .swp-frame{border:1px solid var(--ui-stroke-primary);border-radius:10px;overflow:hidden;background:var(--ui-bg-primary)}
 </style>

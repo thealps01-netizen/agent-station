@@ -3,6 +3,36 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.4.0 — 2026-10-11
+
+Closes the gaps a comparison with Savvy Progress (a Claude Code subagent panel) found: cost, a
+progress bar beside the chat, and a mascot. Every new lock has a canary that breaks it.
+
+### Added
+
+- **Cost per worker and per batch.** Each worker's spend as Hermes recorded it in `state.db`
+  (`estimated_cost_usd` / `actual_cost_usd` / `cost_status`), summed over a compressed worker's
+  halves. Shown as `~$1.25` (estimate), `$0.38` (billed) or `subscription`; a worker Hermes could not
+  price is never shown as $0 — the batch tooltip counts priced, subscription and unpriced workers.
+  A worker's detail shows its cost; Earlier and live batch headers show the batch total. A live
+  worker's cost comes from its complete frame (`cost_usd`), taken only when positive: the frame has no
+  cost status, so a 0 can be a subscription.
+- **Progress chip in the status bar** for the focused chat's running batch: finished/total, a bar,
+  the cost so far; red when a worker failed; click opens the page. It lingers 8 s after the batch ends.
+  A status-bar chip, not a composer banner: a composer slot is given no session, so in a split layout
+  every composer would show the focused chat's batch. Fed by a tracker of its own (the same events),
+  so it shows while the page is closed; `subagent.list` picks up a batch already running and ends a
+  worker whose complete frame never arrived; three failed polls turn it red and say so.
+- **Pet line.** With a Hermes pet on screen (Settings → pet), the same progress is a line in its
+  speech bubble (`Subagents 3/5 done · ~$4.20`), through `ctx.pet` — no mascot of the plugin's own,
+  so there is one mascot system. Nothing is said while no pet is shown.
+
+### Gates
+
+- Core contract: `subagent.complete` still carries `cost_usd`; `CostStatus` still names exactly the
+  four statuses read; `ctx.pet` keeps `say` / `clear` / `visible`; `host.navigate` and
+  `STATUSBAR_AREAS` exist. CI's pinned core moves to the revision that has `ctx.pet`.
+
 ## 1.3.0 — 2026-10-10
 
 1.2.0 was the reverted Attention Desk release; this version skips its number so the two are never
