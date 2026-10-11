@@ -15,8 +15,11 @@ Checked against the core checkout (`HERMES_AGENT_DIR`, see env.py):
              `ProcessRegistry._host_pid_is_ours` exists (the liveness test the backend borrows)
   gateway    every `subagent.*` event the page subscribes to is declared, `subagent.list` is a
              method, and every wire status of `SubagentStatus` maps to a mark (`STATUS_OF`)
-  sdk        every name the page imports from `@hermes/plugin-sdk` is exported, and the two
-             `host.state` atoms it reads exist
+  cost       a worker's complete frame still carries `cost_usd`; Hermes' CostStatus still names
+             the statuses the backend and page read (actual / estimated / included / unknown)
+  sdk        every name the page imports from `@hermes/plugin-sdk` is exported, the two
+             `host.state` atoms it reads exist, `host.navigate` exists (the progress chip opens the
+             page), and `ctx.pet` keeps `say` / `clear` / `visible` (the progress line)
 
 Running:
   python contract_core.py             exit 0 = contract holds; 1 = something moved (named); 2 = no core
@@ -46,6 +49,11 @@ EVENTS_FILE = "tui_gateway/contracts/events.py"
 STATUS_FILE = "tui_gateway/contracts/common.py"
 CONTRACTS_DIR = "tui_gateway/contracts"
 SDK_FILE = "apps/desktop/src/sdk/index.ts"
+CHILD_RUN_FILE = "tools/delegate_tool_child_run.py"
+PRICING_FILE = "agent/usage_pricing.py"
+PET_FILE = "apps/desktop/src/contrib/plugin.ts"
+COST_STATUSES = ("actual", "estimated", "included", "unknown")
+PET_MEMBERS = ("say", "clear", "visible")
 
 # What the backend reads from each Hermes file, by key.
 RECEIPT_KEYS = ("id", "command", "cwd", "parent_session_id", "started_at", "exit_code", "completion_reason")
@@ -171,8 +179,32 @@ def check(core: Path) -> list[str]:
             problems.append(f"{STATUS_FILE}: wire status `{name}` has no entry in the page's STATUS_OF — "
                             "it would draw as stopped")
 
+    if "complete_kwargs[\"cost_usd\"]" not in _read(core, CHILD_RUN_FILE, problems):
+        problems.append(f"{CHILD_RUN_FILE}: a worker's complete frame no longer carries `cost_usd` — "
+                        "the live batch and the progress chip would show no cost")
+    pricing = _read(core, PRICING_FILE, problems)
+    literal = re.search(r"^CostStatus = Literal\[(.*?)\]", pricing, re.M)
+    if pricing and not literal:
+        problems.append(f"{PRICING_FILE}: `CostStatus` is gone — the cost statuses the backend reads are unknown")
+    elif literal:
+        named = set(re.findall(r"\"([a-z_]+)\"", literal.group(1)))
+        for status in sorted(set(COST_STATUSES) - named):
+            problems.append(f"{PRICING_FILE}: cost status `{status}` is gone from CostStatus — the backend reads it")
+        for status in sorted(named - set(COST_STATUSES)):
+            problems.append(f"{PRICING_FILE}: new cost status `{status}` — the backend would read it as not priced")
+
+    plugin_ts = _read(core, PET_FILE, problems)
+    if plugin_ts and not re.search(r"^\s+pet: PluginPet$", plugin_ts, re.M):
+        problems.append(f"{PET_FILE}: `ctx.pet` is gone — the progress line in the pet's bubble would never show")
+    pet = re.search(r"export interface PluginPet \{(.*?)\n\}", plugin_ts, re.S)
+    for member in PET_MEMBERS:
+        if not pet or not re.search(rf"^\s+{member}:", pet.group(1), re.M):
+            problems.append(f"{PET_FILE}: `PluginPet.{member}` is gone — the progress line uses it")
+
     sdk = _read(core, SDK_FILE, problems)
     if sdk:
+        if not re.search(r"^\s+navigate: \(path", sdk, re.M):
+            problems.append(f"{SDK_FILE}: `host.navigate` is gone — the progress chip opens the page with it")
         exported = set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", " ".join(
             re.findall(r"export \{([^}]*)\}", sdk) + re.findall(r"export (?:const|function) ([A-Za-z_]+)", sdk))))
         exported |= set(re.findall(r"as ([A-Za-z_]+)", " ".join(re.findall(r"export \{([^}]*)\}", sdk))))
@@ -198,6 +230,14 @@ BREAKS = [
     (STATUS_FILE, "    timeout = \"timeout\"\n", "    timeout = \"timeout\"\n    paused = \"paused\"\n", "wire status `paused`"),
     (SDK_FILE, "  PanelEmpty,\n", "\n", "`PanelEmpty` is not exported"),
     (SDK_FILE, "    focusedStoredSessionId: readonlyAtom", "    storedSessionId: readonlyAtom", "`host.state.focusedStoredSessionId` is gone"),
+    (SDK_FILE, "  navigate: (path", "  go: (path", "`host.navigate` is gone"),
+    (SDK_FILE, "STATUSBAR_AREAS, ", "", "`STATUSBAR_AREAS` is not exported"),
+    (SCHEMA_FILE, "    cost_status TEXT,", "    billing_status TEXT,", "`sessions.cost_status` is gone"),
+    (CHILD_RUN_FILE, "complete_kwargs[\"cost_usd\"]", "complete_kwargs[\"spend\"]", "no longer carries `cost_usd`"),
+    (PRICING_FILE, "\"included\", ", "", "cost status `included` is gone"),
+    (PRICING_FILE, "\"unknown\"]", "\"unknown\", \"partial\"]", "new cost status `partial`"),
+    (PET_FILE, "  pet: PluginPet\n", "  mascot: PluginPet\n", "`ctx.pet` is gone"),
+    (PET_FILE, "  say: (text", "  speak: (text", "`PluginPet.say` is gone"),
 ]
 
 
@@ -207,7 +247,7 @@ def selftest(core: Path) -> int:
     with tempfile.TemporaryDirectory(prefix="sw-contract-") as tmp:
         fake = Path(tmp)
         rels = {SCHEMA_FILE, DELEGATE_FILE, COMPRESSION_FILE, RESULTS_FILE, REGISTRY_FILE, EVENTS_FILE,
-                STATUS_FILE, SDK_FILE} | {str(p.relative_to(core)).replace("\\", "/")
+                STATUS_FILE, SDK_FILE, CHILD_RUN_FILE, PRICING_FILE, PET_FILE} | {str(p.relative_to(core)).replace("\\", "/")
                                            for p in (core / CONTRACTS_DIR).glob("*.py")}
         for rel in rels:
             (fake / rel).parent.mkdir(parents=True, exist_ok=True)

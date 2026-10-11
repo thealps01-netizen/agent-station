@@ -34,6 +34,13 @@
  *      code on a failed row, "—" for a stopped one; a row opens the full command + output tail read
  *      for that chat; a running command asks for no output; unreadable records and a failed read
  *      are shown; a chat with no commands draws no section.
+ *  17. 1.4.0 cost: a worker's detail and each batch header show Hermes' recorded cost (~ estimate,
+ *      billed, subscription); an unpriced worker is never $0; a live complete frame's cost joins the
+ *      live batch; a 0 in a frame (subscription or unpriced) is not shown as a price.
+ *  18. 1.4.0 progress: a status-bar chip for the FOCUSED chat's batch (finished/total, a bar, the
+ *      cost so far) that ignores other chats, picks up a batch already running via subagent.list,
+ *      ends a worker the list dropped, lingers then goes, says when its poll stopped, and opens
+ *      the page; with a pet on screen the same progress is a line in its bubble (none without).
  *  16. 1.3.0: the header names the watched chat (and says when it is held), its tint is failed /
  *      running / idle and its pill counts workers and commands; a toggled card keeps focus; a
  *      queued worker not yet listed stays queued; a stale snapshot never revives a finished worker;
@@ -57,7 +64,8 @@ writeFileSync(`${OUT}sdk-stub.mjs`, `
 import { cloneElement, isValidElement, useSyncExternalStore } from 'react'
 import { jsx } from 'react/jsx-runtime'
 
-export const calls = { request: [], opened: [] }
+export const calls = { request: [], opened: [], navigated: [] }
+export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' }
 export const state = { listFails: false, list: {}, listHold: null }
 
 function atom(v) {
@@ -65,6 +73,7 @@ function atom(v) {
   return { get: () => v, set: n => { v = n; subs.forEach(f => f()) }, listen: f => { subs.add(f); return () => subs.delete(f) } }
 }
 export const atoms = { focusedSessionId: atom('rt-1'), focusedStoredSessionId: atom('st-1') }
+export const pet = { visible: atom(false), said: [], cleared: [] }
 export function useValue(a) { return useSyncExternalStore(a.listen, a.get) }
 
 const bundles = new Map()
@@ -92,7 +101,8 @@ export const host = {
     if (state.listFails) throw new Error('gateway down')
     return { subagents: state.list[params.session_id] || [] }
   },
-  openSession: async sid => { calls.opened.push(sid) }
+  openSession: async sid => { calls.opened.push(sid) },
+  navigate: path => { calls.navigated.push(path) }
 }
 export default { host }
 `)
@@ -152,8 +162,8 @@ const HISTORY = {
     {
       started_at: 1000,
       workers: [
-        { session_id: 'c-a', goal: "Polish 'alpha-panel' visuals", model: 'anthropic/claude-opus-5-5', effort: 'medium', status: 'completed', duration_s: 312, tool_calls: 40, tokens: 120000, summary: 'Alpha answer paragraph.' },
-        { session_id: 'c-b', goal: "Polish 'beta-panel' visuals", model: 'claude-opus-5-5', effort: null, status: 'stopped', duration_s: null, tool_calls: 12, tokens: 9000, summary: '' }
+        { session_id: 'c-a', goal: "Polish 'alpha-panel' visuals", model: 'anthropic/claude-opus-5-5', effort: 'medium', status: 'completed', duration_s: 312, tool_calls: 40, tokens: 120000, cost_usd: 1.5, cost_status: 'estimated', summary: 'Alpha answer paragraph.' },
+        { session_id: 'c-b', goal: "Polish 'beta-panel' visuals", model: 'claude-opus-5-5', effort: null, status: 'stopped', duration_s: null, tool_calls: 12, tokens: 9000, cost_usd: 0, cost_status: 'included', summary: '' }
       ]
     },
     {
@@ -166,6 +176,11 @@ const HISTORY = {
 deepFreeze(HISTORY)
 deepFreeze(PROCS)
 const ctx = {
+  pet: {
+    visible: stub.pet.visible,
+    say: (text, opts) => { stub.pet.said.push([text, opts]); return () => {} },
+    clear: id => { stub.pet.cleared.push(id) }
+  },
   register: c => { registered.push(c); return () => {} },
   i18n: { register: b => stub.registerBundles('subagent-watch', b), t: k => k },
   onEvent: (type, fn) => {
@@ -277,6 +292,23 @@ check(bls[0].textContent.includes('design judge') || bls[0].textContent.includes
 check(bls[1].querySelector('.sw-bn')?.textContent === 'alpha-panel' && bls[1].querySelector('.sw-bmore')?.textContent === '+1 more',
   `a batch of several workers is not labelled as its first worker alone (${bls[1].querySelector('.sw-bn')?.textContent} ${bls[1].querySelector('.sw-bmore')?.textContent})`)
 check(!bls[0].querySelector('.sw-bmore'), 'a one-worker batch carries no "+N more"')
+// 17. cost on the batch header: priced workers summed, a subscription one counted, none priced -> nothing
+{
+  const chip = bls[1].querySelector('.sw-bcost')
+  check(chip?.textContent === '~$1.50' && /1 priced/.test(chip?.dataset.tip || '') && /1 in a subscription/.test(chip?.dataset.tip || ''),
+    `a batch header shows its summed cost with the breakdown (${chip?.textContent} | ${chip?.dataset.tip})`)
+  check(!bls[0].querySelector('.sw-bcost'), 'a batch with no priced worker shows no cost (never $0)')
+}
+check(mod.fmtCost(1.25, 'estimated') === '~$1.25' && mod.fmtCost(0.38, 'actual') === '$0.38' && mod.fmtCost(0, 'included') === 'subscription'
+  && mod.fmtCost(0, 'unknown') === '' && mod.fmtCost(null, 'estimated') === '' && mod.fmtCost(0.001, 'estimated') === '<$0.01',
+  'cost format: ~ estimate, billed as is, subscription named, unpriced empty, sub-cent marked')
+{
+  const s = mod.sumCost([{ cost_usd: 1, cost_status: 'actual' }, { cost_usd: 0.5, cost_status: 'estimated' }, { cost_usd: 0, cost_status: 'included' }, { cost_status: 'unknown' }, {}])
+  check(s.usd === 1.5 && s.status === 'estimated' && s.priced === 2 && s.included === 1 && s.unknown === 2,
+    `a sum counts subscription and unpriced workers apart, one estimate makes it an estimate (${JSON.stringify(s)})`)
+  check(mod.sumCost([{ cost_usd: 0, cost_status: 'included' }]).status === 'included' && mod.sumCost([{}]).usd === null,
+    'all-subscription reads subscription; nothing priced is null, not 0')
+}
 check(q('h2.sw-ht')?.textContent === 'Subagents' && qa('h3.sw-lab').map(e => e.textContent).join('|').includes('Earlier'),
   `the title and section labels are headings (${qa('h2, h3').map(e => e.tagName + ':' + e.textContent).join('|')})`)
 const css = q('style')?.textContent || ''
@@ -321,7 +353,7 @@ check(/flex:0 0 auto/.test(modelRule) && !/text-overflow:ellipsis/.test(modelRul
 check(/@container \(max-width:420px\)\{[^}]*\.sw-model/.test(css), 'the chip is still hidden below 420 px')
 await act(async () => { rows[0].click() })
 check(q('.sw-dt') && !q('.sw-dt p') && /tokens/.test(q('.sw-dtm')?.textContent || ''), 'worker detail is actions + stats only, no answer text')
-check(q('.sw-dtm')?.textContent === '40 tools · 120k tokens', `the detail does not repeat the row's duration (${q('.sw-dtm')?.textContent})`)
+check(q('.sw-dtm')?.textContent === '40 tools · 120k tokens · ~$1.50', `the detail adds tools, tokens and the estimated cost, not the row's duration (${q('.sw-dtm')?.textContent})`)
 check(qa('.sw-dt .sw-ib.is-text').map(b => b.textContent).join('|') === 'Copy full output|Open session', 'the detail actions are labelled buttons, not bare icons')
 check(q('.sw-dtg')?.textContent === "Polish 'alpha-panel' visuals" && q('.sw-dt').firstElementChild?.querySelector('.sw-dtg') !== null, 'worker detail shows its goal above the actions')
 check([...q('.sw-dt').children].every(c => c.classList.contains('sw-br')), 'every piece of an opened detail hangs on its own tree branch, no outer frame')
@@ -422,7 +454,7 @@ await emit('subagent.spawn_requested', 'rt-1', { subagent_id: 's3', delegation_i
 await emit('subagent.start', 'rt-1', { subagent_id: 's1', delegation_id: 'd1', goal: "Build 'one'", child_session_id: 'k1', model: 'anthropic/claude-opus-5-5' })
 await emit('subagent.start', 'rt-1', { subagent_id: 's1a', parent_id: 's1', delegation_id: 'd1', goal: "Nested 'one-a'", depth: 1 })
 await emit('subagent.tool', 'rt-1', { subagent_id: 's1', tool_name: 'terminal', tool_preview: 'npm test' })
-await emit('subagent.complete', 'rt-1', { subagent_id: 's2', status: 'error', summary: 'boom', duration_seconds: 12 })
+await emit('subagent.complete', 'rt-1', { subagent_id: 's2', status: 'error', summary: 'boom', duration_seconds: 12, cost_usd: 0.42 })
 stub.state.list['rt-1'] = [
   { subagent_id: 's1', delegation_id: 'd1', status: 'running', goal: "Build 'one'" },
   { subagent_id: 's1a', parent_id: 's1', delegation_id: 'd1', status: 'running', goal: "Nested 'one-a'" },
@@ -467,6 +499,8 @@ check(byName('three')?.querySelector('.sw-mk').dataset.st === 'queued' && byName
 check(byName('two')?.querySelector('.sw-mk').dataset.st === 'failed', 'failed is red, not done')
 check(byName('one')?.querySelector('.sw-now')?.textContent === 'terminal', 'running node shows its current tool')
 check(q('.sw-merge')?.textContent.includes('waiting for workers'), 'merge node waits')
+check(q('.sw-fl .sw-root .sw-bcost')?.textContent === '~$0.42' && q('.sw-fl .sw-root .sw-bcost')?.tabIndex === 0,
+  `a live batch shows the cost its finished workers reported, as a focusable chip (${q('.sw-fl .sw-root .sw-bcost')?.textContent})`)
 check(q('.sw-pill')?.textContent === '2 workers · 1 command running', `header counts running workers AND commands (${q('.sw-pill')?.textContent})`)
 
 // 8. finishing the batch moves it out of "Now" and reloads history
@@ -684,5 +718,90 @@ await tick(10)
 check(q('[data-slot=panel-empty]')?.textContent.includes('No chat selected'), 'no chat -> empty state')
 
 await act(async () => root.unmount())
+
+// 18. the progress chip in the status bar, and the pet line
+const chipReg = registered.find(c => c.area === 'statusBar.right')
+check(chipReg?.id === 'progress' && typeof chipReg.render === 'function', 'a progress chip is registered in the status bar')
+const chipHost = document.createElement('div')
+document.body.appendChild(chipHost)
+const chipRoot = createRoot(chipHost)
+stub.state.listFails = false
+stub.state.list['rt-9'] = []
+await act(async () => { stub.atoms.focusedSessionId.set('rt-9'); stub.atoms.focusedStoredSessionId.set('st-9') })
+await act(async () => { chipRoot.render(React.createElement(chipReg.render)) })
+await tick(10)
+const chip = () => chipHost.querySelector('.sw-sb')
+check(!chip() && stub.calls.request.some(([m, p]) => m === 'subagent.list' && p.session_id === 'rt-9'),
+  'no batch -> no chip; the focused chat is asked once for a batch already running')
+const said0 = stub.pet.said.length
+for (const id of ['p1', 'p2', 'p3']) await emit('subagent.spawn_requested', 'rt-9', { subagent_id: id, goal: id })
+await tick(5)
+check(chip()?.querySelector('.sw-sbn')?.textContent === '0/3' && chip()?.dataset.st === 'queued', `three queued workers read 0/3 (${chip()?.querySelector('.sw-sbn')?.textContent})`)
+check(stub.pet.said.length === said0, 'no pet on screen -> nothing is said')
+await emit('subagent.spawn_requested', 'rt-OTHER', { subagent_id: 'o1', goal: 'other chat' })
+await tick(5)
+check(chip()?.querySelector('.sw-sbn')?.textContent === '0/3', 'another chat\'s worker is not counted')
+await act(async () => { stub.pet.visible.set(true) })
+await emit('subagent.start', 'rt-9', { subagent_id: 'p1' })
+await emit('subagent.complete', 'rt-9', { subagent_id: 'p1', status: 'completed', cost_usd: 1.2 })
+await emit('subagent.start', 'rt-9', { subagent_id: 'p2' })
+await tick(5)
+const bar = () => chipHost.querySelector('.sw-sbbar > i')?.style.width
+check(chip()?.querySelector('.sw-sbn')?.textContent === '1/3' && bar() === '33%' && chip()?.querySelector('.sw-sbc')?.textContent === '~$1.20',
+  `one done of three: 1/3, a third of the bar, the cost so far (${chip()?.querySelector('.sw-sbn')?.textContent} ${bar()} ${chip()?.querySelector('.sw-sbc')?.textContent})`)
+check(chip()?.dataset.st === 'running' && chip()?.getAttribute('aria-label') === chip()?.dataset.tip && /1 of 3 finished/.test(chip()?.dataset.tip || ''),
+  `the chip is named by its tooltip (${chip()?.dataset.tip})`)
+let lastSaid = stub.pet.said.at(-1)
+check(lastSaid?.[0] === 'Subagents 1/3 done · ~$1.20' && lastSaid?.[1]?.id === 'progress' && lastSaid?.[1]?.tone === 'wait',
+  `with a pet on screen the progress is a line in its bubble (${JSON.stringify(lastSaid)})`)
+const saidN = stub.pet.said.length
+await emit('subagent.tool', 'rt-9', { subagent_id: 'p2', tool_name: 'terminal' })
+stub.state.list['rt-9'] = [{ subagent_id: 'p2', status: 'running', goal: 'p2' }]
+await tick(3100) // and one subagent.list poll that changes nothing
+check(stub.pet.said.length === saidN, `a tool call or a poll that changes nothing says nothing again (the pet is rate-limited) (${stub.pet.said.length - saidN} extra)`)
+await emit('subagent.complete', 'rt-9', { subagent_id: 'p2', status: 'error', cost_usd: 0 })
+await tick(5)
+check(chip()?.querySelector('.sw-sbn')?.textContent === '2/3' && /1 failed/.test(chip()?.dataset.tip || '') && chip()?.querySelector('.sw-sbc')?.textContent === '~$1.20',
+  `a failed worker counts as finished, is named in the tooltip, and its $0 frame adds no price (${chip()?.dataset.tip})`)
+await emit('subagent.start', 'rt-9', { subagent_id: 'p3' })
+await emit('subagent.complete', 'rt-9', { subagent_id: 'p3', status: 'completed' })
+await tick(5)
+lastSaid = stub.pet.said.at(-1)
+check(chip()?.querySelector('.sw-sbn')?.textContent === '3/3' && chip()?.dataset.st === 'failed' && bar() === '100%',
+  `a finished batch with a failure reads 3/3 in red (${chip()?.dataset.st})`)
+check(lastSaid?.[1]?.tone === 'error' && lastSaid?.[1]?.ttlMs === 8000, `the pet's last line for that batch is an error that expires (${JSON.stringify(lastSaid)})`)
+await emit('subagent.complete', 'rt-9', { subagent_id: 'p1', status: 'failed' })
+check(chip()?.querySelector('.sw-sbn')?.textContent === '3/3' && /1 failed/.test(chip()?.dataset.tip || ''), 'a late frame never changes a worker that already ended')
+await act(async () => { chip().click() })
+check(stub.calls.navigated.at(-1) === '/subagent-watch', 'the chip opens the Subagents page')
+await tick(8200)
+check(!chip() && stub.pet.cleared.includes('progress'), 'a finished batch lingers, then the chip and the pet line go')
+// A batch already running when the app loaded: found by subagent.list on focus, ended when the list drops it.
+stub.state.list['rt-8'] = [{ subagent_id: 'r1', status: 'running', goal: 'r1' }, { subagent_id: 'r2', status: 'running', goal: 'r2' }]
+await act(async () => { stub.atoms.focusedSessionId.set('rt-8') })
+await tick(10)
+check(chip()?.querySelector('.sw-sbn')?.textContent === '0/2', `a batch already running is picked up from subagent.list (${chip()?.querySelector('.sw-sbn')?.textContent})`)
+stub.state.list['rt-8'] = [{ subagent_id: 'r2', status: 'running', goal: 'r2' }]
+await tick(3100)
+check(chip()?.querySelector('.sw-sbn')?.textContent === '1/2' && /1 failed or stopped/.test(chip()?.dataset.tip || ''),
+  `a worker the list dropped without a complete frame ends as stopped (${chip()?.dataset.tip})`)
+stub.state.listFails = true
+const warnChip = console.warn
+console.warn = () => {}
+for (let i = 0; i < 3; i++) await tick(3100)
+console.warn = warnChip
+check(chip()?.dataset.st === 'failed' && /stopped updating: gateway down/.test(chip()?.dataset.tip || ''),
+  `three failed polls are shown on the chip (${chip()?.dataset.tip})`)
+stub.state.listFails = false
+// A complete frame's 0 is a subscription or an unpriced model: never shown as a price.
+await emit('subagent.complete', 'rt-8', { subagent_id: 'r2', status: 'completed', cost_usd: 0 })
+await tick(5)
+check(chip()?.querySelector('.sw-sbn')?.textContent === '2/2' && !chip()?.querySelector('.sw-sbc'),
+  `a batch whose only cost frames read 0 shows no cost, not $0.00 (${chip()?.querySelector('.sw-sbc')?.textContent})`)
+// The chip follows the focused chat: switching back to the finished chat shows nothing.
+await act(async () => { stub.atoms.focusedSessionId.set('rt-9') })
+await tick(10)
+check(!chip(), 'switching to a chat whose batch is long finished shows no chip')
+await act(async () => chipRoot.unmount())
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED')
 process.exit(failures ? 1 : 0)
