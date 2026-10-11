@@ -62,8 +62,8 @@ jobs:
           git -C "$core" remote add origin "$CORE_REPO"
           git -C "$core" sparse-checkout init --no-cone
           # MSYS_NO_PATHCONV: Git Bash on Windows would rewrite /tools/ into C:/Program Files/Git/tools/
-          MSYS_NO_PATHCONV=1 git -C "$core" sparse-checkout set /hermes_state_common.py /tools/ /agent/conversation_compression.py /agent/usage_pricing.py \
-            /tui_gateway/contracts/ /apps/desktop/src/sdk/ /apps/desktop/src/contrib/plugin.ts
+          MSYS_NO_PATHCONV=1 git -C "$core" sparse-checkout set /hermes_state_common.py /tools/ /agent/conversation_compression.py /agent/usage_pricing.py /agent/context_compressor.py \
+            /tui_gateway/contracts/ /tui_gateway/server.py /apps/desktop/src/sdk/ /apps/desktop/src/contrib/plugin.ts
           for i in 1 2 3; do git -C "$core" fetch -q --depth 1 origin "$CORE_SHA" && break; sleep $((i*20)); done
           git -C "$core" checkout -q FETCH_HEAD
           test -f "$core/hermes_state_common.py" || { echo "core sources missing"; exit 1; }

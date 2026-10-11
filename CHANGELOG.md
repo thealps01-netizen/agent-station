@@ -3,6 +3,34 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.5.0 — 2026-10-11
+
+Adds what a comparison with File Tree (a Claude Code mod that makes a file shimmer in a tree while
+the agent touches it) found missing: Hermes' own file tree colours what git sees changed, but nothing
+shows which file the agent is reading or editing right now. Every new lock has a canary that breaks it.
+
+### Added
+
+- **Files section.** The files the chat and its workers read or wrote with the file tools
+  (`read_file`, `write_file`, `patch`), newest first, grouped by folder (the chat's folder by name,
+  its sub-folders relative). Each file says read only / edited / deleted / last change failed, how
+  often it was read and edited, and whether a worker touched it; a click copies its path. Read by the
+  new `GET /files` from the tool calls `state.db` recorded: one file however its path is spelled
+  (`path_key`, shared with the page through `tests/path_vectors.json`), a V4A patch read with Hermes'
+  own parser (a move deletes its source and writes its target), a refused write or a compressed
+  `FAILED` / `BLOCKED` stub counted as a failure, never an edit.
+- **Shimmer.** A file tool call in the focused chat makes its row shimmer from `tool.start` until a
+  moment after `tool.complete` (a file not yet recorded appears at the top); the finished call reloads
+  the list. Stops for reduced motion.
+
+### Not covered, on purpose and said on the page
+
+- Edits made by terminal commands or code runs carry no path Hermes records (about 40% of
+  write-like calls in a 30-day sample of this install's history). The section says so and points to
+  Review › Last turn, which lists every change from git.
+- A worker's calls reach the page as mirrored rows without arguments, and a V4A patch's files are
+  inside its text: neither shimmers; both appear when the list reloads.
+
 ## 1.4.0 — 2026-10-11
 
 Closes the gaps a comparison with Savvy Progress (a Claude Code subagent panel) found: cost, a

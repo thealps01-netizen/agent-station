@@ -32,8 +32,54 @@ PY = "dashboard/plugin_api.py"
 
 # (gate, file, old, new, what the mutation breaks)
 MUTATIONS = [
+    # ── 1.5.0 files: the page ───────────────────────────────────────────────────────────────
+    ("render", JS, "return /^[A-Za-z]:\\//.test(folded) ? folded.toLowerCase() : folded", "return folded",
+     "the page keys a drive path by its case, so the backend's row never shimmers"),
+    ("render", JS, "if (event?.session_id !== runtimeId) return\n      const p = event.payload || {}\n      const targets",
+     "const p = event.payload || {}\n      const targets", "another chat's file tool call shimmers this chat's files"),
+    ("render", JS, "if (name === 'patch' && (args.mode || 'replace') === 'patch') return []\n", "",
+     "a V4A patch's text is taken for a path"),
+    ("render", JS, "if (!cwd || text.startsWith('~')", "if (true || text.startsWith('~')",
+     "a relative path is not joined to the chat's folder"),
+    ("render", JS, "const TOUCH_LINGER_MS = 4000", "const TOUCH_LINGER_MS = 0",
+     "the shimmer ends with the call, too fast to see"),
+    ("render", JS, "      doneRef.current?.()\n", "",
+     "a finished file call does not reload the list"),
+    ("render", JS, "  if (f.last_failed) return 'failed'\n", "",
+     "a failed last edit reads as edited"),
+    ("render", JS, "    now.push(byKey.get(key) || {", "    if (byKey.get(key)) now.push(byKey.get(key) || {",
+     "a file touched now but not yet recorded is not shown"),
+    ("render", JS, "/files?session_id=${encodeURIComponent(storedId)}", "/files?session_id=st-1",
+     "files are read for another chat"),
+    ("render", JS, "t('sw.files.unreadable', unreadable)", "''",
+     "unreadable file calls are hidden"),
+    ("render", JS, "data?.more ? jsx('p'", "false ? jsx('p'", "files past the list are dropped silently"),
+    ("render", JS, "      jsx('p', { className: 'sw-fio', children: t('sw.files.blind') }, 'b'),\n", "",
+     "the section no longer says what it cannot see"),
+    ("render", JS, "@media (prefers-reduced-motion:reduce){.sw-fir[data-op=active]::after{animation:none;display:none}}", "",
+     "the shimmer ignores reduced motion"),
+    ("render", JS, "deletes > 1 ? `deleted ${deletes}×` : deletes ? 'deleted' : '',", "deletes ? 'deleted' : '',",
+     "a file deleted twice reads as once"),
+    # ── 1.5.0 files: the backend ────────────────────────────────────────────────────────────
+    ("backend", PY, "    return folded.lower() if _DRIVE.match(folded) else folded", "    return folded",
+     "the backend keys a drive path by its case: one file, two rows"),
+    ("backend", PY, "    workers = _worker_ids(conn, ids)\n", "    workers = []\n",
+     "a worker's files are not its chat's"),
+    ("backend", PY, "    ids = _lineage(conn, session_id)\n    workers", "    ids = [session_id]\n    workers",
+     "files before a compression are lost"),
+    ("backend", PY, "        return \" FAILED:\" in line or", "        return False and",
+     "a compressed failure stub reads as an edit"),
+    ("backend", PY, "            out += [(op.file_path, \"delete\"), (op.new_path, \"write\")]",
+     "            out.append((op.file_path, \"write\"))", "a V4A move loses its target"),
+    ("backend", PY, "                unreadable += 1\n", "", "an unreadable file call is dropped, not counted"),
+    ("backend", PY, "\"more\": max(0, len(ordered) - MAX_FILES)", "\"more\": 0", "files past MAX_FILES vanish silently"),
+    ("backend", PY, "    if unixish.startswith(\"/\") or _DRIVE.match(unixish) or not cwd:", "    if True:",
+     "a relative path is not joined to the chat's folder"),
+    ("backend", PY, "                if failed:\n", "                if False:\n", "a refused write counts as an edit"),
+    ("backend", PY, "    cached = _FILES_CACHE.get(key)", "    cached = _FILES_CACHE.get(key[0])",
+     "the cache is keyed by chat only"),
     # ── render: the page ────────────────────────────────────────────────────────────────────
-    ("render", JS, "if (event?.session_id !== runtimeId) return", "",
+    ("render", JS, "if (event?.session_id !== runtimeId) return\n      const p = event.payload || {}\n      if (!p.subagent_id", "const p = event.payload || {}\n      if (!p.subagent_id",
      "events of another chat are no longer filtered out"),
     ("render", JS, "queued: 'queued', running", "queued: 'completed', running",
      "a queued worker is drawn as done"),
@@ -290,7 +336,7 @@ def _copy_panel(dest: Path) -> None:
         else:
             shutil.copy2(src, dest / rel)
     (dest / "tests").mkdir()
-    for name in ("audit_static.py", "release_gate.py", "env.py", "check_api.py"):
+    for name in ("audit_static.py", "release_gate.py", "env.py", "check_api.py", "path_vectors.json"):
         shutil.copy2(HERE / name, dest / "tests" / name)
 
 

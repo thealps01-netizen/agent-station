@@ -97,6 +97,7 @@ def check_i18n(js: str) -> None:
         "sw.status": statuses,
         "sw.proc.status": {"running", "completed", "failed", "stopped"},
         "sw.merge": {"waiting", "done", "partial"},
+        "sw.files.op": {"active", "write", "delete", "read", "failed"},
     }
     for prefix, values in templates.items():
         if f"t(`{prefix}.${{" not in js:
