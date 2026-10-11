@@ -601,9 +601,10 @@ def _failed(result: str | None) -> bool:
     return isinstance(data, dict) and (bool(data.get("error")) or data.get("success") is False)
 
 
-def _worker_ids(conn: sqlite3.Connection, owners: list[str]) -> list[str]:
-    """Every session of the workers delegated from `owners`, nested workers and continuations included."""
-    found: list[str] = []
+def _worker_ids(conn: sqlite3.Connection, owners: list[str]) -> dict[str, str]:
+    """Every session of the workers delegated from `owners`, nested workers and continuations included,
+    mapped to the worker it belongs to: the first session of its chain, the id the batches list names."""
+    found: dict[str, str] = {}
     seen = set(owners)
     frontier = list(owners)
     for _ in range(MAX_CHAIN):
@@ -614,11 +615,11 @@ def _worker_ids(conn: sqlite3.Connection, owners: list[str]) -> list[str]:
             f"select {_WORKER_COLUMNS} from sessions "
             f"where json_extract(model_config, '$._delegate_from') in ({marks})", frontier).fetchall()
         frontier = []
-        for row in rows:
+        for row in sorted(rows, key=lambda r: _is_continuation(conn, r)):
             for link in _chain(conn, row):
                 if link["id"] not in seen:
                     seen.add(link["id"])
-                    found.append(link["id"])
+                    found[link["id"]] = row["id"]
                     frontier.append(link["id"])
     return found
 
@@ -627,12 +628,13 @@ def list_files(conn: sqlite3.Connection, session_id: str) -> dict:
     """The files one conversation (and its workers) read or wrote with the file tools, newest first.
 
     Each file: how often it was read and written, when it was last touched, whether its last write
-    failed, whether a worker touched it. Calls whose arguments cannot be read are counted, never
+    failed, and who touched it (`who`: "" for the chat itself, else the worker's session id) and who
+    changed it (`editors`, same ids: a successful write or delete). Calls whose arguments cannot be read are counted, never
     dropped. The answer is cached until a new message lands in any of the sessions it covers.
     """
     ids = _lineage(conn, session_id)
     workers = _worker_ids(conn, ids)
-    every = ids + workers
+    every = ids + list(workers)
     marks = ",".join("?" * len(every))
     stamp = conn.execute(f"select count(*) n, max(id) m from messages where session_id in ({marks})", every).fetchone()
     cwd_row = conn.execute(
@@ -647,7 +649,6 @@ def list_files(conn: sqlite3.Connection, session_id: str) -> dict:
     results = {r["tool_call_id"]: r["content"] for r in conn.execute(
         f"select tool_call_id, substr(content, 1, 2000) content from messages where session_id in ({marks}) "
         "and role = 'tool' and tool_call_id is not null", every)}
-    worker_set = set(workers)
     files: dict[str, dict] = {}
     calls = unreadable = 0
     rows = conn.execute(
@@ -678,7 +679,7 @@ def list_files(conn: sqlite3.Connection, session_id: str) -> dict:
                 k = path_key(path)
                 f = files.setdefault(k, {"key": k, "path": path, "reads": 0, "writes": 0, "deletes": 0, "failed": 0,
                                          "first_at": row["timestamp"], "last_at": row["timestamp"], "last_op": op,
-                                         "last_failed": False, "by_worker": 0})
+                                         "last_failed": False, "who": [], "editors": []})
                 f["path"] = path
                 if failed:
                     f["failed"] += 1
@@ -688,7 +689,11 @@ def list_files(conn: sqlite3.Connection, session_id: str) -> dict:
                     f["deletes"] += 1
                 else:
                     f["writes"] += 1
-                f["by_worker"] += 1 if row["session_id"] in worker_set else 0
+                who = workers.get(row["session_id"], "")
+                if who not in f["who"]:
+                    f["who"].append(who)
+                if not failed and op != "read" and who not in f["editors"]:
+                    f["editors"].append(who)
                 f["last_at"] = row["timestamp"]
                 f["last_op"] = op
                 f["last_failed"] = failed

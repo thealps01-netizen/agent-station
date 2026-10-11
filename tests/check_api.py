@@ -550,7 +550,8 @@ def build_files_fixture() -> None:
 
     session("F1", 100, 200, "compression", cwd="D:\\Proj")
     session("F2", 200, parent="F1", cwd="D:\\Proj")
-    session("FW", 150, 180, "completed", delegate_from="F1", cwd="D:\\Proj")
+    session("FW", 150, 170, "compression", delegate_from="F1", cwd="D:\\Proj")
+    session("FW2", 170, 180, "completed", parent="FW", delegate_from="F1", cwd="D:\\Proj")
     session("G", 100, cwd="/other")
     call("F1", 101, "read_file", {"path": "D:\\Proj\\src\\a.py"})
     call("F1", 102, "patch", {"mode": "replace", "path": "src/a.py", "old_string": "x", "new_string": "y"})
@@ -560,6 +561,7 @@ def build_files_fixture() -> None:
     call("F1", 105, "read_file", {}, raw_args="{not json")
     call("FW", 160, "read_file", {"path": "D:/Proj/docs/guide.md"})
     call("FW", 161, "write_file", {"path": "d:\\proj\\SRC\\..\\src\\A.py", "content": "z"})
+    call("FW2", 171, "read_file", {"path": "D:/Proj/docs/guide.md"})
     call("F2", 201, "patch", {"mode": "patch", "patch": "*** Begin Patch\n*** Update File: D:/Proj/src/b.py\n@@\n-a\n+b\n"
                                                        "*** Move File: D:/Proj/old.txt -> D:/Proj/new.txt\n"
                                                        "*** Delete File: D:/Proj/gone.txt\n*** End Patch"})
@@ -590,11 +592,12 @@ def run_files() -> None:
         check(again is got, "files: a second read with no new message is served from the cache")
         check(got["cwd"] == "D:\\Proj", f"files: the chat's folder comes from the newest link [{got['cwd']}]")
         a = by.get("d:/proj/src/a.py")
-        check(bool(a) and a["reads"] == 1 and a["writes"] == 2 and a["by_worker"] == 1,
+        check(bool(a) and a["reads"] == 1 and a["writes"] == 2 and a["who"] == ["", "FW"] and a["editors"] == ["", "FW"],
               "files: one file under three spellings (absolute, relative to the chat's folder, '..' and case) "
-              "is one row: read 1, edited 2, one call from the worker")
-        check("d:/proj/docs/guide.md" in by and by["d:/proj/docs/guide.md"]["by_worker"] == 1,
-              "files: a worker's file is listed and marked as the worker's")
+              "is one row: read 1, edited 2, touched by the chat first and then by the worker")
+        guide = by.get("d:/proj/docs/guide.md")
+        check(bool(guide) and guide["who"] == ["FW"] and guide["editors"] == [] and guide["reads"] == 2,
+              f"files: a worker's file names the worker; its compressed later half counts as the same worker [{guide and guide['who']}]")
         readme = by.get("d:/proj/readme.md")
         check(bool(readme) and readme["writes"] == 0 and readme["failed"] == 2 and readme["last_failed"],
               "files: a refused write ({\"error\"}) and a compressed BLOCKED stub count as failed, not as edits")
@@ -610,7 +613,7 @@ def run_files() -> None:
         check(by.get("d:/proj/gone.txt", {}).get("deletes") == 1, "files: a V4A delete is a delete")
         check(not any("x.txt" in k for k in by), "files: a terminal command's redirect is not a file-tool call")
         check(not any("secret" in k for k in by), "files: another chat's files never show")
-        check(got["unreadable"] == 2 and got["calls"] == 12,
+        check(got["unreadable"] == 2 and got["calls"] == 13,
               f"files: unparseable arguments and an unreadable patch are counted, not dropped "
               f"[unreadable {got['unreadable']}, calls {got['calls']}]")
         fresh = sqlite3.connect(FILES_DB)

@@ -5,10 +5,10 @@
  *
  * It draws SIX FRAMES in jsdom with the real React — the page's REAL output, never a hand-drawn
  * mock — through the same SDK stub the render check writes (`.out/sdk-stub.mjs`):
- *   1. Now — a running batch as a live tree (a nested worker, a failed one, a queued one, the merge
- *      node) above two earlier batches and the background commands, one of each status.
- *   2. Earlier — a batch opened to its workers, one worker's detail open, and a failed background
- *      command opened to its exit code and output tail.
+ *   1. The command deck live — a running batch (a nested worker, a failed one, a queued one) with
+ *      the files its agents touched, the live log, earlier batches and the background commands.
+ *   2. The deck at rest — the last run drawn as the deck, an Earlier batch opened to its workers, one
+ *      worker's detail open, and a failed background command opened to its exit code and output tail.
  *   3. Failures — every read failing at once: the alert box with each message, nothing swallowed.
  *   4-5. Narrow (380 px) and docked (480 px) widths.
  *   6. The status-bar progress chip: a running batch with a failed worker and a cost so far.
@@ -66,6 +66,15 @@ const HISTORY = {
       workers: [
         { session_id: 'c-c', goal: "Write the 'wiki-watchdog' changelog", model: 'openai/gpt-5.2', status: 'completed', duration_s: 45, tool_calls: 3, tokens: 800, cost_usd: 0, cost_status: 'included', summary: '' }
       ]
+    },
+    // The last run: with nothing running it is the deck.
+    {
+      started_at: NOW - 600,
+      workers: [
+        { session_id: 'c-d', goal: "Review 'desktop-panel' layout", model: 'anthropic/claude-opus-5-5', effort: 'high', status: 'completed', duration_s: 184, tool_calls: 22, tokens: 60000, cost_usd: 0.74, cost_status: 'estimated', summary: '' },
+        { session_id: 'c-e', goal: "Measure 'contrast' of every label", model: 'anthropic/claude-sonnet-5', status: 'completed', duration_s: 97, tool_calls: 9, tokens: 21000, cost_usd: 0.12, cost_status: 'estimated', summary: '' },
+        { session_id: 'c-f', goal: "Fix 'render-check' fixtures", model: 'openai/gpt-5.2', status: 'failed', duration_s: 41, tool_calls: 6, tokens: 9000, cost_usd: 0, cost_status: 'included', summary: '' }
+      ]
     }
   ]
 }
@@ -75,20 +84,28 @@ const PROCS = [
   { id: 'proc_bad', command: 'node build.mjs --release', cwd: 'C:/work/panel', status: 'failed', started_at: NOW - 1200, duration_s: 5, exit_code: 1 },
   { id: 'proc_kill', command: 'sleep 999', cwd: 'C:/work/panel', status: 'stopped', started_at: NOW - 3000, duration_s: 100, exit_code: -15 }
 ]
+// Who touched each file, as the backend names them: '' the chat, else a worker's session id. The
+// live frame's agents are k1-k3, the stored last run's c-d..c-f.
+const filesFor = live => {
+  const w = live ? { a: 'k1', b: 'k2', c: 'k1a' } : { a: 'c-d', b: 'c-e', c: 'c-f' }
+  const who = (...ks) => ks.map(k => (k ? w[k] : ''))
+  const sets = [[who('a', ''), who('a', '')], [who('c'), []], [who('b', 'a'), []], [who(''), who('')], [who(''), who('')], [who('b'), []]]
+  return { ...FILES, files: FILES.files.map((f, i) => ({ ...f, who: sets[i][0], editors: sets[i][1] })) }
+}
 const FILES = {
   session_id: 'st-1', cwd: 'C:/work/panel', unreadable: 0, more: 0,
   files: [
-    { key: 'c:/work/panel/desktop/plugin.js', path: 'C:/work/panel/desktop/plugin.js', reads: 6, writes: 4, deletes: 0, failed: 0, by_worker: 0, last_op: 'write', last_failed: false, last_at: NOW - 30 },
-    { key: 'c:/work/panel/tests/render_check.mjs', path: 'C:/work/panel/tests/render_check.mjs', reads: 2, writes: 1, deletes: 0, failed: 1, by_worker: 0, last_op: 'write', last_failed: true, last_at: NOW - 60 },
-    { key: 'c:/work/panel/dashboard/plugin_api.py', path: 'C:/work/panel/dashboard/plugin_api.py', reads: 3, writes: 0, deletes: 0, failed: 0, by_worker: 2, last_op: 'read', last_failed: false, last_at: NOW - 120 },
-    { key: 'c:/work/panel/changelog.md', path: 'C:/work/panel/CHANGELOG.md', reads: 1, writes: 2, deletes: 0, failed: 0, by_worker: 0, last_op: 'write', last_failed: false, last_at: NOW - 400 },
-    { key: 'c:/work/panel/old-notes.md', path: 'C:/work/panel/old-notes.md', reads: 0, writes: 0, deletes: 1, failed: 0, by_worker: 0, last_op: 'delete', last_failed: false, last_at: NOW - 600 },
-    { key: 'c:/users/someone/appdata/local/hermes/hermes-agent/apps/desktop/src/sdk/index.ts', path: 'C:/Users/someone/AppData/Local/hermes/hermes-agent/apps/desktop/src/sdk/index.ts', reads: 2, writes: 0, deletes: 0, failed: 0, by_worker: 0, last_op: 'read', last_failed: false, last_at: NOW - 700 }
+    { key: 'c:/work/panel/desktop/plugin.js', path: 'C:/work/panel/desktop/plugin.js', reads: 6, writes: 4, deletes: 0, failed: 0, last_op: 'write', last_failed: false, last_at: NOW - 30 },
+    { key: 'c:/work/panel/tests/render_check.mjs', path: 'C:/work/panel/tests/render_check.mjs', reads: 2, writes: 1, deletes: 0, failed: 1, last_op: 'write', last_failed: true, last_at: NOW - 60 },
+    { key: 'c:/work/panel/dashboard/plugin_api.py', path: 'C:/work/panel/dashboard/plugin_api.py', reads: 3, writes: 0, deletes: 0, failed: 0, last_op: 'read', last_failed: false, last_at: NOW - 120 },
+    { key: 'c:/work/panel/changelog.md', path: 'C:/work/panel/CHANGELOG.md', reads: 1, writes: 2, deletes: 0, failed: 0, last_op: 'write', last_failed: false, last_at: NOW - 400 },
+    { key: 'c:/work/panel/old-notes.md', path: 'C:/work/panel/old-notes.md', reads: 0, writes: 0, deletes: 1, failed: 0, last_op: 'delete', last_failed: false, last_at: NOW - 600 },
+    { key: 'c:/users/someone/appdata/local/hermes/hermes-agent/apps/desktop/src/sdk/index.ts', path: 'C:/Users/someone/AppData/Local/hermes/hermes-agent/apps/desktop/src/sdk/index.ts', reads: 2, writes: 0, deletes: 0, failed: 0, last_op: 'read', last_failed: false, last_at: NOW - 700 }
   ]
 }
 const OUTPUT = 'building 14 entries…\nerror: Cannot find module \'./sdk-stub.mjs\'\n    at build.mjs:41:9\nexit 1'
 
-function makeCtx(fail) {
+function makeCtx(fail, live = false) {
   const listeners = new Map()
   const registered = []
   const ctx = {
@@ -105,7 +122,7 @@ function makeCtx(fail) {
       if (fail) throw new Error(path.startsWith('/children') ? 'backend 503: state.db not found' : 'backend 503: processes.json unreadable')
       if (path.startsWith('/children')) return HISTORY
       if (path.startsWith('/processes')) return { session_id: 'st-1', processes: PROCS, unreadable: 1 }
-      if (path.startsWith('/files')) return FILES
+      if (path.startsWith('/files')) return filesFor(live)
       if (path.startsWith('/process_output')) {
         const id = new URLSearchParams(path.split('?')[1]).get('process_id')
         const p = PROCS.find(x => x.id === id)
@@ -125,7 +142,7 @@ const problems = []
 const frames = []
 
 async function frame(label, { fail = false, live = false, open = null, narrow = false, docked = false } = {}) {
-  const { ctx, registered, emit } = makeCtx(fail)
+  const { ctx, registered, emit } = makeCtx(fail, live)
   stub.state.listFails = fail
   stub.state.list['rt-1'] = []
   stub.atoms.focusedSessionId.set('rt-1')
@@ -141,16 +158,19 @@ async function frame(label, { fail = false, live = false, open = null, narrow = 
     await emit('subagent.spawn_requested', { subagent_id: 's1', delegation_id: 'd1', goal: "Polish 'fleet-status' visuals", task_index: 0 })
     await emit('subagent.spawn_requested', { subagent_id: 's2', delegation_id: 'd1', goal: "Polish 'wiki-watchdog' visuals", task_index: 1 })
     await emit('subagent.spawn_requested', { subagent_id: 's3', delegation_id: 'd1', goal: "Polish 'subagent-watch' visuals", task_index: 2 })
-    await emit('subagent.start', { subagent_id: 's1', delegation_id: 'd1', goal: "Polish 'fleet-status' visuals", model: 'anthropic/claude-opus-5-5', started_at: NOW - 140 })
-    await emit('subagent.start', { subagent_id: 's1a', parent_id: 's1', delegation_id: 'd1', goal: "Judge 'fleet-status' contrast", depth: 1, model: 'openai/gpt-5.2', started_at: NOW - 60 })
-    await emit('subagent.tool', { subagent_id: 's1', tool_name: 'terminal', tool_preview: 'node preview.mjs' })
-    await emit('tool.start', { tool_id: 'f1', name: 'read_file', args: { path: 'dashboard/plugin_api.py' } })
+    await emit('subagent.start', { subagent_id: 's1', delegation_id: 'd1', goal: "Polish 'fleet-status' visuals", child_session_id: 'k1', model: 'anthropic/claude-opus-5-5', started_at: NOW - 140 })
+    await emit('subagent.start', { subagent_id: 's2', delegation_id: 'd1', goal: "Polish 'wiki-watchdog' visuals", child_session_id: 'k2', model: 'anthropic/claude-sonnet-5', started_at: NOW - 140 })
+    await emit('subagent.tool', { subagent_id: 's2', tool_name: 'read_file', tool_preview: 'C:/work/panel/tests/render_check.mjs' })
+    await emit('subagent.start', { subagent_id: 's1a', parent_id: 's1', delegation_id: 'd1', goal: "Judge 'fleet-status' contrast", child_session_id: 'k1a', depth: 1, model: 'openai/gpt-5.2', started_at: NOW - 60 })
+    await emit('subagent.tool', { subagent_id: 's1a', tool_name: 'search_files', tool_preview: 'color-mix' })
     await emit('subagent.complete', { subagent_id: 's2', status: 'error', summary: 'boom', duration_seconds: 12, cost_usd: 0.42 })
+    await emit('subagent.tool', { subagent_id: 's1', tool_name: 'patch', tool_preview: 'C:/work/panel/desktop/plugin.js' })
+    await emit('tool.start', { tool_id: 'f1', name: 'read_file', args: { path: 'dashboard/plugin_api.py' } })
   }
   if (narrow) {
     // The page docked beside the chat: six running workers and a finished command with a long path.
     for (let i = 1; i <= 6; i++) {
-      await emit('subagent.start', { subagent_id: `n${i}`, delegation_id: 'dn', goal: `Blind-review desktop panel ${i}: score CODE and UI`, model: 'anthropic/claude-opus-5-5', started_at: NOW - 28 })
+      await emit('subagent.start', { subagent_id: `n${i}`, delegation_id: 'dn', goal: `Blind-review ${['alpha', 'beta', 'gamma', 'delta', 'echo', 'foxtrot'][i - 1]} panel: score CODE and UI`, model: 'anthropic/claude-opus-5-5', started_at: NOW - 28 })
       await emit('subagent.tool', { subagent_id: `n${i}`, tool_name: 'read_file', tool_preview: 'plugin.js' })
     }
     const ok = [...host.querySelectorAll('.sw-pr')].find(p => p.dataset.st === 'completed')
@@ -186,8 +206,8 @@ async function frame(label, { fail = false, live = false, open = null, narrow = 
   host.remove()
 }
 
-await frame('1 · Now — a running batch as a live tree, earlier batches and background commands', { live: true })
-await frame('2 · Earlier — a batch, a worker and a failed command opened', { open: 'earlier' })
+await frame('1 · Command deck, live — agents, the files they touch, the live log', { live: true })
+await frame('2 · The deck at rest — the last run, an Earlier batch, a worker and a failed command opened', { open: 'earlier' })
 await frame('3 · Failures — every read failing: nothing is swallowed', { fail: true })
 await frame('4 · Narrow (380 px) — six running workers and a command with a long working directory', { narrow: true })
 await frame('5 · Docked (480 px) — an Earlier worker whose model chip carries its reasoning effort', { open: 'earlier', docked: true })

@@ -154,14 +154,14 @@ const FILES = {
     unreadable: 1,
     more: 2,
     files: [
-      { key: 'd:/proj/src/a.py', path: 'D:\\Proj\\src\\a.py', reads: 2, writes: 3, deletes: 0, failed: 0, by_worker: 1, last_op: 'write', last_failed: false, last_at: 30 },
-      { key: 'd:/proj/readme.md', path: 'D:\\Proj\\README.md', reads: 0, writes: 0, deletes: 0, failed: 1, by_worker: 0, last_op: 'write', last_failed: true, last_at: 20 },
-      { key: 'd:/proj/src/b.py', path: 'D:\\Proj\\src\\b.py', reads: 1, writes: 0, deletes: 0, failed: 0, by_worker: 0, last_op: 'read', last_failed: false, last_at: 15 },
-      { key: 'd:/proj/old.txt', path: 'D:\\Proj\\old.txt', reads: 0, writes: 1, deletes: 1, failed: 0, by_worker: 0, last_op: 'delete', last_failed: false, last_at: 10 },
-      { key: 'c:/elsewhere/very/long/folder/name/that/goes/on/and/on/x.md', path: 'C:/elsewhere/very/long/folder/name/that/goes/on/and/on/x.md', reads: 1, writes: 0, deletes: 0, failed: 0, by_worker: 0, last_op: 'read', last_failed: false, last_at: 5 }
+      { key: 'd:/proj/src/a.py', path: 'D:\\Proj\\src\\a.py', reads: 2, writes: 3, deletes: 0, failed: 0, who: ['c-d', ''], editors: ['c-d', ''], last_op: 'write', last_failed: false, last_at: 30 },
+      { key: 'd:/proj/readme.md', path: 'D:\\Proj\\README.md', reads: 0, writes: 0, deletes: 0, failed: 1, who: [''], editors: [], last_op: 'write', last_failed: true, last_at: 20 },
+      { key: 'd:/proj/src/b.py', path: 'D:\\Proj\\src\\b.py', reads: 1, writes: 0, deletes: 0, failed: 0, who: [''], editors: [], last_op: 'read', last_failed: false, last_at: 15 },
+      { key: 'd:/proj/old.txt', path: 'D:\\Proj\\old.txt', reads: 0, writes: 1, deletes: 1, failed: 0, who: [''], editors: [''], last_op: 'delete', last_failed: false, last_at: 10 },
+      { key: 'c:/elsewhere/very/long/folder/name/that/goes/on/and/on/x.md', path: 'C:/elsewhere/very/long/folder/name/that/goes/on/and/on/x.md', reads: 1, writes: 0, deletes: 0, failed: 0, who: [''], editors: [], last_op: 'read', last_failed: false, last_at: 5 }
     ]
   },
-  'st-many': { cwd: '/w', unreadable: 0, more: 0, files: Array.from({ length: 45 }, (_, i) => ({ key: `/w/f${i}.txt`, path: `/w/f${i}.txt`, reads: 1, writes: 0, deletes: 0, failed: 0, by_worker: 0, last_op: 'read', last_failed: false, last_at: 100 - i })) }
+  'st-many': { cwd: '/w', unreadable: 0, more: 0, files: Array.from({ length: 45 }, (_, i) => ({ key: `/w/f${i}.txt`, path: `/w/f${i}.txt`, reads: 1, writes: 0, deletes: 0, failed: 0, who: [''], editors: [], last_op: 'read', last_failed: false, last_at: 100 - i })) }
 }
 // Scenario state: extra stored batches and held (pending) reads. The fixtures below are never mutated.
 let extraBatches = []
@@ -193,6 +193,14 @@ const HISTORY = {
     {
       started_at: 2000,
       workers: [{ session_id: 'c-c', goal: 'Act as a strict design judge\nmore', status: 'completed', duration_s: 45, tool_calls: 3, tokens: 800, summary: 'Judge verdict.' }]
+    },
+    // The newest stored batch: with nothing running it is drawn as the command deck, not under Earlier.
+    {
+      started_at: 2500,
+      workers: [
+        { session_id: 'c-d', goal: "Write the 'docs-writer' notes", model: 'anthropic/claude-opus-5-5', effort: 'high', status: 'completed', duration_s: 48, tool_calls: 5, tokens: 2000, cost_usd: 0.08, cost_status: 'estimated', summary: 'Docs.' },
+        { session_id: 'c-e', goal: "Watch the 'wiki-watchdog' panel", model: 'claude-opus-5-5', status: 'failed', duration_s: 12, tool_calls: 2, tokens: 500, summary: 'Cannot find module.' }
+      ]
     }
   ]
 }
@@ -317,7 +325,7 @@ check(q('.sw-pu .sw-mk[data-st=failed]') !== null, 'unreadable records carry the
 // 5. history
 const bls = qa('.sw-hb')
 check(bls.length === 2, `two history batches drawn (${bls.length})`)
-check(qa('.sw-hd .sw-stat').map(e => e.textContent).join(',') === '2,3,4', `header counts batches, workers and commands (${qa('.sw-hd .sw-stat').map(e => e.textContent)})`)
+check(qa('.sw-hd .sw-stat').map(e => e.textContent).join(',') === '3,5,4', `header counts batches, workers and commands (${qa('.sw-hd .sw-stat').map(e => e.textContent)})`)
 check(bls[0].textContent.includes('design judge') || bls[0].textContent.includes('Act as a strict'), 'newest batch first')
 check(bls[1].querySelector('.sw-bn')?.textContent === 'alpha-panel' && bls[1].querySelector('.sw-bmore')?.textContent === '+1 more',
   `a batch of several workers is not labelled as its first worker alone (${bls[1].querySelector('.sw-bn')?.textContent} ${bls[1].querySelector('.sw-bmore')?.textContent})`)
@@ -477,6 +485,7 @@ check(qa('.sw-box:not(:has(.sw-pr)) > .sw-bb').length === 2 && qa('.sw-bb .sw-dt
 
 // 2 + 3 + 4. live tree, scoped
 await emit('subagent.spawn_requested', 'rt-OTHER', { subagent_id: 'x1', delegation_id: 'd9', goal: 'foreign', task_index: 0 })
+await emit('subagent.tool', 'rt-OTHER', { subagent_id: 'x1', tool_name: 'read_file', tool_preview: 'foreign.txt' })
 check(!q('.sw-fl'), 'events from another chat are ignored')
 await emit('subagent.spawn_requested', 'rt-1', { subagent_id: 's1', delegation_id: 'd1', goal: "Build 'one'", task_index: 0 })
 await emit('subagent.spawn_requested', 'rt-1', { subagent_id: 's2', delegation_id: 'd1', goal: "Build 'two'", task_index: 1 })
@@ -496,7 +505,7 @@ const liveStart = Date.now() / 1000
 extraBatches = [{ started_at: liveStart - 1, workers: [{ session_id: 'k9', goal: "Build 'one'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' }] }]
 await act(async () => q('.sw-hd .sw-ib').click())
 await tick(10)
-check(qa('.sw-hb').length === 2, 'a stored batch still running is not repeated under Earlier while live')
+check(qa('.sw-hb').length === 3, 'a stored batch still running is not repeated under Earlier while live (every stored batch is under Earlier while one runs)')
 // Its finished workers are gone from subagent.list, so the live tree must take them from state.db.
 extraBatches = [{ started_at: liveStart - 1, workers: [
   { session_id: 'k9', goal: "Build 'one'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' },
@@ -513,7 +522,7 @@ check(!qa('.sw-fl .sw-nd').some(n => n.textContent.includes("Build 'one'") && n.
 extraBatches = [{ started_at: 3000, workers: [{ session_id: 'k8', goal: "Old 'crashed-run'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' }] }]
 await act(async () => q('.sw-hd .sw-ib').click())
 await tick(10)
-check(qa('.sw-hb').length === 3 && qa('.sw-hb').some(b => b.textContent.includes('crashed-run')),
+check(qa('.sw-hb').length === 4 && qa('.sw-hb').some(b => b.textContent.includes('crashed-run')),
   `a running stored batch that is not the live one stays under Earlier (${qa('.sw-hb').length})`)
 extraBatches = []
 await act(async () => q('.sw-hd .sw-ib').click())
@@ -521,16 +530,28 @@ await tick(10)
 const nodes = qa('.sw-fl .sw-nd')
 const byName = n => nodes.find(x => x.querySelector('.sw-wn').textContent === n)
 check(nodes.length === 4, `four live nodes incl. the nested one (${nodes.length})`)
-check(byName('one-a')?.closest('.sw-sub') !== null, 'nested worker sits under its parent')
+check(byName('one-a')?.querySelector('.sw-from')?.textContent === 'from O' && nodes.indexOf(byName('one-a')) === nodes.indexOf(byName('one')) + 1,
+  `nested worker sits right after its parent and names it by letter (${byName('one-a')?.querySelector('.sw-from')?.textContent})`)
 check(byName('one')?.querySelector('.sw-mk').dataset.st === 'running', 'running mark')
 check(byName('one')?.querySelector('.sw-model')?.textContent === 'claude-opus-5-5', 'live node shows its model')
 check(!byName('one')?.querySelector('.sw-goal'), 'live node has no goal line')
 check(byName('three')?.querySelector('.sw-mk').dataset.st === 'queued' && byName('three').textContent.includes('waiting'), 'queued is queued, not done')
 check(byName('two')?.querySelector('.sw-mk').dataset.st === 'failed', 'failed is red, not done')
-check(byName('one')?.querySelector('.sw-now')?.textContent === 'terminal', 'running node shows its current tool')
-check(q('.sw-merge')?.textContent.includes('waiting for workers'), 'merge node waits')
-check(q('.sw-fl .sw-root .sw-bcost')?.textContent === '~$0.42' && q('.sw-fl .sw-root .sw-bcost')?.tabIndex === 0,
-  `a live batch shows the cost its finished workers reported, as a focusable chip (${q('.sw-fl .sw-root .sw-bcost')?.textContent})`)
+check(byName('one')?.querySelector('.sw-uv')?.textContent === 'running a command' && byName('one')?.querySelector('.sw-now')?.textContent === 'npm test'
+  && byName('one')?.querySelector('.sw-now')?.dataset.tip === 'npm test',
+  `running unit says what it does now and on what (${byName('one')?.querySelector('.sw-ua')?.textContent})`)
+check(q('.sw-fl .sw-bign')?.textContent === '0/4' && q('.sw-fl .sw-bigl')?.textContent === 'agents finished'
+  && q('.sw-fl .sw-legend')?.textContent.startsWith('2 working1 failed or stopped1 waiting'),
+  `the deck's score counts finished agents and names the rest (${q('.sw-fl .sw-bign')?.textContent} | ${q('.sw-fl .sw-legend')?.textContent})`)
+check(qa('.sw-fl .sw-cells i').map(i => i.dataset.st).join(',') === nodes.map(n => n.dataset.st).join(','), 'one energy cell per agent, in its status')
+check(q('.sw-fl .sw-bcost')?.textContent === '~$0.42' && q('.sw-fl .sw-money')?.tabIndex === 0,
+  `a live batch shows the cost its finished workers reported, as a focusable chip (${q('.sw-fl .sw-bcost')?.textContent})`)
+const logRows = qa('.sw-log .sw-ev')
+check(logRows.length === 4 && logRows[0].querySelector('.sw-evx')?.textContent === 'failed' && logRows[0].querySelector('.sw-sig')?.textContent === 'T'
+  && logRows.some(r => r.querySelector('.sw-evx')?.textContent === 'running a command npm test' && r.querySelector('.sw-sig')?.textContent === 'O')
+  && logRows[0].querySelector('.sw-evt')?.textContent === 'now',
+  `the live log lists this chat's events newest first (start, tool, end; not a spawn request), each with its agent's letter (${logRows.map(r => r.textContent).join(' | ')})`)
+check(!logRows.some(r => r.textContent.includes('foreign')) && qa('.sw-log .sw-ev').length <= 6, "another chat's events stay out of the log")
 check(q('.sw-pill')?.textContent === '2 workers · 1 command running', `header counts running workers AND commands (${q('.sw-pill')?.textContent})`)
 
 // 8. finishing the batch moves it out of "Now" and reloads history
@@ -539,6 +560,8 @@ stub.state.list['rt-1'] = []
 for (const id of ['s1', 's1a', 's3']) await emit('subagent.complete', 'rt-1', { subagent_id: id, status: 'completed' })
 await tick(10)
 check(!q('.sw-fl'), 'finished batch leaves Now')
+check(qa('.sw-log .sw-ev').length === 6 && qa('.sw-log .sw-ev')[0].textContent.includes('finished'),
+  `the live log keeps the newest six (${qa('.sw-log .sw-ev').length})`)
 check(rest.filter(p => p.startsWith('/children')).length > before, 'history reloaded when a batch finishes')
 // The backend can still list a finished batch's workers for a while: they must not come back.
 stub.state.list['rt-1'] = ['s1', 's1a', 's3'].map(id => ({ subagent_id: id, delegation_id: 'd1', status: 'completed', goal: id }))
@@ -706,9 +729,11 @@ check(!!q('.sw-fl') && !q('[data-slot=panel-empty]'), 'a finished batch stays in
 await act(async () => { releaseHand() })
 await tick(20)
 const moved = qa('[data-batch]').find(el => el.textContent.includes('qa-one') && !el.classList.contains('sw-fl'))
-check(!q('.sw-fl') && moved?.querySelector('button.sw-hb')?.getAttribute('aria-expanded') === 'true', 'the finished batch moves to Earlier, opened')
-check(moved?.querySelectorAll('.sw-dt').length === 1, 'the worker detail that was open stays open under Earlier')
-check(!!moved && document.activeElement === moved.querySelector('button.sw-hb'), `focus follows the batch to its Earlier header (${document.activeElement?.className})`)
+const movedOpen = moved?.querySelector('button.sw-unit.is-open')
+check(!q('.sw-fl') && moved?.classList.contains('sw-deck') && moved.querySelector('.sw-bigl')?.textContent === 'finished in the last run',
+  'the finished batch stays on the deck as the last run, from its stored copy')
+check(moved?.querySelectorAll('.sw-dt').length === 1 && movedOpen?.textContent.includes('qa-two'), 'the worker detail that was open stays open')
+check(!!movedOpen && document.activeElement === movedOpen, `focus follows the batch to its open agent (${document.activeElement?.className})`)
 // Copying an empty output says so instead of "Copied".
 const clipBefore = clip.length
 if (moved?.querySelector('.sw-dt .sw-ib')) await act(async () => { moved.querySelector('.sw-dt .sw-ib').click() })
@@ -866,16 +891,38 @@ const fq = s => fhost.querySelector(s)
 const fqa = s => [...fhost.querySelectorAll(s)]
 const rowOf = name => fqa('.sw-fir').find(b => b.querySelector('.sw-fin')?.textContent === name)
 check(rest.some(p => p === '/files?session_id=st-f'), 'files are read for the stored chat id')
-check(fq('.sw-files h3')?.textContent.includes('Files') && /terminal commands or code runs are not listed/.test(fq('.sw-fio')?.textContent || '') &&
-  /Review › Last turn/.test(fq('.sw-fio')?.textContent || ''), `the section says what it cannot see and where every change is (${fq('.sw-fio')?.textContent})`)
+const blind = fqa('.sw-files .sw-fio').at(-1)?.textContent || ''
+check(fq('.sw-files h3')?.textContent.includes('Files') && /terminal commands or code runs are not listed/.test(blind) &&
+  /Review › Last turn/.test(blind), `the section says what it cannot see and where every change is (${blind})`)
 const dirs = fqa('.sw-fid').map(d => d.textContent)
 check(dirs[0] === './src' && dirs[1] === 'chat folder' && dirs[2]?.startsWith('…') && dirs.length === 3 && fqa('.sw-fid')[2]?.dataset.tip.startsWith('C:/elsewhere'),
   `files are grouped by folder, newest folder first, long folder cut with the full path on hover (${JSON.stringify(dirs)})`)
 check(rowOf('a.py')?.dataset.op === 'write' && rowOf('README.md')?.dataset.op === 'failed' && rowOf('b.py')?.dataset.op === 'read' && rowOf('old.txt')?.dataset.op === 'delete',
   'each file state draws its own mark: edited, failed, read only, deleted')
-check(rowOf('a.py')?.querySelector('.sw-fic')?.textContent === 'read 2× · edited 3×' && rowOf('a.py')?.querySelector('.sw-fiw')?.textContent === 'worker' &&
-  rowOf('a.py')?.getAttribute('aria-label') === 'a.py: Edited, read 2× · edited 3×' && rowOf('README.md')?.querySelector('.sw-fic')?.textContent === '1 failed',
-  `a row counts its reads, edits and failures, says a worker touched it, and names all of it for a screen reader (${rowOf('a.py')?.getAttribute('aria-label')})`)
+const sigs = name => [...(rowOf(name)?.querySelectorAll('.sw-sig') || [])].map(e => e.textContent).join(',')
+check(rowOf('a.py')?.querySelector('.sw-fic')?.textContent === 'read 2× · edited 3×' && sigs('a.py') === 'D,Chat' &&
+  rowOf('a.py')?.getAttribute('aria-label') === 'a.py: Edited, read 2× · edited 3×, by docs-writer, this chat (the main agent)' && rowOf('README.md')?.querySelector('.sw-fic')?.textContent === '1 failed',
+  `a tile counts its reads, edits and failures, badges who touched it with the deck's letters, and names all of it for a screen reader (${sigs('a.py')} | ${rowOf('a.py')?.getAttribute('aria-label')})`)
+const deckD = fqa('.sw-deck .sw-unit').find(u => u.textContent.includes('docs-writer'))
+check(deckD?.querySelector('.sw-orbl')?.textContent === 'D' && deckD.style.getPropertyValue('--u') === rowOf('a.py')?.style.getPropertyValue('--u'),
+  'the deck and the files give one agent the same letter and colour')
+check(/edited 1 file/.test(deckD?.querySelector('.sw-ua')?.textContent || ''), `a finished unit says what it changed (${deckD?.querySelector('.sw-ua')?.textContent})`)
+// the deck's pure parts
+check(mod.agentLetters([['docs', 'design', 'wiki', ''], ['Docs']]).flat().join(',') === 'D,D2,W,?,D3', 'agent letters: first letter, a repeat numbered across the page, no name a ?')
+check(mod.baseLetters(['Review alpha panel', 'Review beta panel', 'review gamma']).join(',') === 'A,B,G' && mod.baseLetters(['Review alpha']).join() === 'R'
+  && mod.baseLetters(['Review', 'Review x']).join(',') === 'R,R', "a batch's shared opening words are skipped for its letters, never a whole name")
+check(mod.shortTarget('D:\\Proj\\src\\a.py') === 'src/a.py' && mod.shortTarget('npm test\nmore') === 'npm test' && mod.shortTarget('a b/c') === 'a b/c',
+  'a tool target: a path keeps its last two parts, a command its first line')
+const tb = mod.touchedBy([{ who: ['', 'w1'], editors: ['w1'] }, { who: ['w1'], editors: [] }])
+check(tb.get('w1')?.edited === 1 && tb.get('w1')?.opened === 1 && tb.get('')?.opened === 1, 'per agent: files changed vs only opened')
+const ua = (status, rec) => mod.unitAction({ status, rec }, { edited: 2, opened: 0 }, tr)
+check(ua('running', { last_tool: 'read_file', tool_preview: 'D:/x/y/z.py' }).verb === 'reading' && ua('running', { last_tool: 'read_file', tool_preview: 'D:/x/y/z.py' }).target === 'y/z.py'
+  && ua('running', {}).verb === 'thinking…' && ua('running', { last_tool: 'mcp_x' }).verb === 'using mcp_x'
+  && ua('completed', {}).target === 'edited 2 files' && ua('failed', {}).verb === 'ended with an error' && ua('queued', {}).verb === 'in the queue',
+  'the line under an orb: the verb of its tool and its target while running, what it changed once ended')
+check(rowOf('a.py')?.style.getPropertyValue('--u') === 'var(--ui-blue)' && rowOf('b.py')?.style.getPropertyValue('--u') === 'var(--ui-text-tertiary)',
+  "a tile takes the colour of the agent that touched it first; the chat's own files stay neutral")
+check(parseInt(rowOf('a.py')?.style.getPropertyValue('--heat')) > parseInt(rowOf('b.py')?.style.getPropertyValue('--heat')), 'a file touched more glows brighter')
 check(/1 call could not be read/.test(fq('.sw-files h3')?.textContent || '') && /2 older files not listed/.test(fq('.sw-files')?.textContent || ''),
   'unreadable calls and files past the list are said, never silently dropped')
 await act(async () => { rowOf('b.py').click() })
@@ -892,8 +939,8 @@ await emit('tool.start', 'rt-f', { tool_id: 't1', name: 'read_file', args: { pat
 check(rowOf('b.py')?.dataset.op === 'active' && fqa('.sw-fir')[0] === rowOf('b.py') && rowOf('b.py')?.getAttribute('aria-label').startsWith('b.py: Being worked on now'),
   'a file tool call in the focused chat makes its row shimmer and moves it to the top (a relative path joins the chat folder)')
 await emit('tool.start', 'rt-f', { tool_id: 't2', name: 'write_file', args: { path: 'D:/Proj/src/new.ts', content: 'x' } })
-check(rowOf('new.ts')?.dataset.op === 'active' && !rowOf('new.ts')?.querySelector('.sw-fic')?.textContent,
-  'a file not yet recorded appears at once, shimmering, with no counts')
+check(rowOf('new.ts')?.dataset.op === 'active' && rowOf('new.ts')?.querySelector('.sw-fic')?.textContent === 'now' && sigs('new.ts') === 'Chat',
+  'a file not yet recorded appears at once, shimmering, marked now and as the chat\'s')
 const readsBefore = filesReads()
 await emit('tool.complete', 'rt-f', { tool_id: 't1', name: 'read_file' })
 await tick(5)
@@ -904,7 +951,9 @@ await emit('tool.complete', 'rt-f', { tool_id: 't2', name: 'write_file' })
 await tick(4100)
 check(!fq('.sw-fir[data-op=active]') && !rowOf('new.ts'), 'once every call ended nothing shimmers, and an unrecorded file leaves with its shimmer')
 const pluginCss = readFileSync(SRC, 'utf8')
-check(/prefers-reduced-motion:reduce\)\{\.sw-fir\[data-op=active\]::after\{animation:none/.test(pluginCss), 'the shimmer stops for reduced motion')
+const calm = pluginCss.match(/prefers-reduced-motion:reduce\)\{(\.sw-scan[^{]*)\{animation:none!important\}/)?.[1] || ''
+check(['.sw-scan', '.sw-cells i', '.sw-orb::after', '.sw-ut::after', '.sw-ev', '.sw-fir[data-op=active]::after'].every(sel => calm.split(',').includes(sel)),
+  `every deck animation and the shimmer stop for reduced motion (${calm})`)
 // a read failure, many files, no files
 filesFails = true
 const warnFiles = console.warn

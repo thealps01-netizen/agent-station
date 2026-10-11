@@ -1,7 +1,8 @@
 # Subagent Watch
 
 A Hermes **Desktop** plugin. A read-only page for the `delegate_task` workers of the focused chat —
-the running batch as a live tree, earlier batches as a list, each worker's full output and recorded
+the running batch as a command deck (one unit per agent, its status and what it does right now; each
+agent's letter and colour also mark its files and its lines in a live log), earlier batches as a list, each worker's full output and recorded
 cost on demand — plus the chat's background shell commands (`terminal(background=true)`), running and
 finished, and the files the chat read or edited with the file tools, with the one being touched right
 now shimmering. A status-bar chip (and, with a pet on screen, a line in its bubble) shows the running
