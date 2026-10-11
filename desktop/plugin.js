@@ -1,36 +1,39 @@
 /**
- * Subagent Watch — read-only page for delegate_task workers of the focused chat.
+ * Subagent Watch — read-only page for the focused chat's agents: the main agent, the delegate_task
+ * subagents it started, and the shell commands it left running in the background.
  *
- *   Deck     the running batch (with none running, the last one) as a command deck: one big score
- *            (agents finished / all), a status cell per agent, the cost so far, and one unit per
- *            agent — its letter in an orb whose ring is its status, and what it does right now.
- *            Each agent keeps that letter and colour on its files and in the live log. Fed by gateway
- *            `subagent.*` events for the focused runtime session, reconciled by a `subagent.list`
- *            poll (the RPC is session-scoped, so other chats never leak in).
- *   Live log what the agents did while the page was open, newest first (events only, never stored).
- *   Earlier  the other finished batches as a collapsed list, from this plugin's backend
- *            (dashboard/plugin_api.py, state.db opened read-only). A worker row opens a detail with
- *            its answer, "copy full output" and "open session".
- *   Background commands
- *            shell commands the agent started with terminal(background=true), running and finished,
- *            from the backend's /processes (Hermes' own processes.json + process-results receipts).
- *            A row opens the full command, its exit code and the end of its output.
- *
- *   Progress the focused chat's running batch as a status-bar chip (finished/total, a bar, the cost
- *            so far) and, when a pet is on screen, as a line in the pet's speech bubble. Fed by the
- *            same events through a small tracker of its own, so it shows while the page is closed.
- *   Cost     each worker's spend as Hermes recorded it in state.db (estimated / billed / in a
- *            subscription / not priced) — shown, never computed or guessed here.
- *   Files    the files the chat and its workers read or wrote with the file tools, grouped by
- *            folder, from the backend's /files (the tool calls state.db recorded). A file the agent is
- *            touching right now shimmers, fed by the focused chat's tool.start / tool.complete events.
- *            Edits made through terminal commands or code runs carry no path and are not listed: the
- *            section says so and points to Review › Last turn, which lists every change.
+ *   Agents    one run at a time — the running one, else the last; the run picker opens earlier
+ *             ones, calm, with "Back to now". A score (subagents done / all), one status cell per
+ *             subagent, the cost the subagents spent, and one unit per agent — the main agent first
+ *             and selected — whose icon says what it does now (editing, reading, running a command,
+ *             waiting, done, failed, stopped, idle). Past SWARM_AT subagents the units turn into a
+ *             swarm grouped by status, failed first by name. One focus panel under the units shows
+ *             the selected agent: what it works on now, the files it changed and the ones it only
+ *             read (from the backend's /files `who` / `editors`); a subagent's panel adds its task,
+ *             model, answer, Copy answer (/output) and Open its chat.
+ *             Fed by gateway `subagent.*` and `tool.*` events for the watched runtime session,
+ *             reconciled by a `subagent.list` poll (session-scoped, so other chats never leak in),
+ *             and by this plugin's backend (dashboard/plugin_api.py: /children, /files, /output;
+ *             state.db opened read-only). Edits made through terminal commands or code runs carry
+ *             no path and are not listed: the panel says so and points to Review › Last turn.
+ *   Commands  shell commands the agent started with terminal(background=true), running and
+ *             finished, from the backend's /processes; a row opens its exit code, folder and the
+ *             end of its output (/process_output).
+ *   Looks     two themes over the same page: Cockpit (the default; theme tokens only, the accent
+ *             is the app's --ui-accent) and Terminal (a fixed phosphor palette, declared once in
+ *             TM_PALETTE). The choice is kept in the plugin's ctx.storage; a missing or failing
+ *             storage falls back to Cockpit and never breaks the page.
+ *   Progress  the focused chat's running batch as a status-bar chip (finished/total, a bar, the
+ *             cost so far) and, when a pet is on screen, as a line in its speech bubble. Fed by
+ *             a small tracker of its own, so it shows while the page is closed.
+ *   Cost      each worker's spend as Hermes recorded it in state.db (estimated / billed / in a
+ *             subscription / not priced) — shown, never computed or guessed here.
  *
  * Nothing here writes: no interrupt, no steer (the composer status stack already owns those).
- * Every failed read is shown in the page; nothing is swallowed.
+ * Every failed read is shown in the page; nothing is swallowed. All motion stops under
+ * prefers-reduced-motion.
  */
-import { ErrorState, host, Loader, PanelEmpty, STATUSBAR_AREAS, Tip, usePluginI18n, useValue } from '@hermes/plugin-sdk'
+import { host, STATUSBAR_AREAS, Tip, usePluginI18n, useValue } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -38,9 +41,10 @@ const ID = 'subagent-watch'
 const ROUTE = '/subagent-watch'
 const POLL_MS = 3000
 const MAX_POLL_FAILS = 3
+// Earlier runs listed in the run picker before "Show N older runs".
 const HISTORY_PAGE = 8
 // A stored batch still reading "running" is the live tree only when it started around the same time:
-// one that started well before the live tree began is a crashed run and stays under Earlier.
+// one that started well before the live tree began is a crashed run and stays an earlier run.
 const LIVE_MATCH_S = 120
 // Hermes announces a worker (spawn_requested) while it is still being built and only registers it
 // with subagent.list when it starts running. A queued worker the list does not show yet is waiting,
@@ -52,7 +56,7 @@ const ROW_COMMAND_CHARS = 28
 const SUBAGENT_EVENTS = [
   'subagent.spawn_requested', 'subagent.start', 'subagent.progress', 'subagent.tool', 'subagent.complete'
 ]
-// Wire statuses (tui_gateway/contracts/common.py SubagentStatus) -> the five marks this page draws.
+// Wire statuses (tui_gateway/contracts/common.py SubagentStatus) -> the five states this page draws.
 const STATUS_OF = {
   queued: 'queued', running: 'running', completed: 'completed',
   failed: 'failed', error: 'failed', timeout: 'failed', interrupted: 'stopped', stopped: 'stopped'
@@ -67,11 +71,23 @@ const PROGRESS_LINGER_MS = 8000
 const PET_LINE_MS = 30000
 // The file tools whose calls name a file (tools/file_tools.py). search_files names a folder to look in.
 const FILE_TOOLS = new Set(['read_file', 'write_file', 'patch'])
-// A file tool call takes milliseconds: the shimmer stays this long after it ends, or nobody sees it.
+// A file tool call takes milliseconds: "working on now" keeps it this long after it ends, or nobody sees it.
 const TOUCH_LINGER_MS = 4000
-// Files listed before "N more"; a folder path longer than this is cut from the left (the end names it).
-const FILES_PAGE = 40
+// A folder path longer than this is cut from the left (the end names it).
 const DIR_CHARS = 48
+// More subagents than this and the units turn into the grouped swarm.
+const SWARM_AT = 8
+// Rows a focus panel lists before "Show N more": changed files, files only read.
+const CHANGED_ROWS = 8
+const READ_ROWS = 3
+// A subagent's task is shown up to this many characters before "Show all".
+const TASK_CHARS = 180
+// How long a unit that just finished (or failed) plays its moment.
+const FLASH_MS = 1400
+const THEMES = ['cockpit', 'terminal']
+const THEME_KEY = 'theme'
+// The main agent's unit key: never a subagent id or a session id.
+const MAIN = 'main'
 
 let ctxRef = null
 // The stored id of the chat the page watches (see useWatchedChat), for reads deep in the tree.
@@ -81,61 +97,145 @@ const BUNDLES = {
   en: {
     sw: {
       title: 'Subagents',
-      running: (workers, commands) => [
-        workers ? `${workers} worker${workers === 1 ? '' : 's'}` : '',
-        commands ? `${commands} command${commands === 1 ? '' : 's'}` : ''
-      ].filter(Boolean).join(' · ') + ' running',
       chat: {
         untitled: id => `Chat …${id}`,
         held: 'held',
-        heldTip: 'Showing the chat you last used here. Click a chat to follow it.'
+        heldTip: 'You clicked inside this page, so it keeps showing this chat. Click a chat to follow it again.'
+      },
+      theme: { label: 'Look of this page', cockpit: 'Cockpit', terminal: 'Terminal' },
+      tabs: {
+        label: 'Sections', agents: 'Agents', commands: 'Commands',
+        running: n => `${n} command${n === 1 ? '' : 's'} running`
       },
       retry: 'Try again',
-      nothingToCopy: 'Nothing to copy — the output is empty',
-      nBatches: n => `${n} batch${n === 1 ? '' : 'es'}`,
-      nWorkers: n => `${n} worker${n === 1 ? '' : 's'}`,
+      refresh: 'Refresh',
+      nothingToCopy: 'Nothing to copy — it is empty',
+      copying: 'Copying…',
+      copied: 'Copied',
+      copyFailed: 'Copy failed',
       countFailed: 'Unknown — its source could not be read',
-      earlier: 'Earlier',
-      older: n => `${n} older`,
-      waiting: 'waiting',
-      deck: {
-        finished: 'agents finished',
-        lastRun: 'finished in the last run',
-        label: (done, total) => `${done} of ${total} agents finished`,
-        spent: 'spent so far',
-        legend: { running: 'working', failed: 'failed or stopped', queued: 'waiting' }
+      loading: 'Reading this chat…',
+      allFailed: 'Nothing could be read. Use Try again in the box above.',
+      noChat: { title: 'No chat selected', body: 'Open a chat to see its agents and their files.' },
+      run: {
+        current: 'Current run',
+        last: 'Last run',
+        live: ago => `live · started ${ago}`,
+        lastMeta: (ago, took) => ['last run', ago, took ? `took ${took}` : ''].filter(Boolean).join(' · '),
+        past: (ago, took) => ['earlier run', ago, took ? `took ${took}` : ''].filter(Boolean).join(' · '),
+        back: 'Back to now',
+        earlier: 'Earlier runs',
+        older: n => `Show ${n} older run${n === 1 ? '' : 's'}`,
+        name: (first, others) => (others ? `${first} +${others}` : first),
+        meta: (ago, done, total, cost) => [ago, `${done}/${total}`, cost].filter(Boolean).join(' · '),
+        liveMeta: (done, total, cost) => ['live', `${done}/${total}`, cost].filter(Boolean).join(' · '),
+        pick: 'Choose which run to show'
       },
-      unit: {
-        st: { running: 'working', completed: 'done', failed: 'failed', stopped: 'stopped', queued: 'waiting' },
-        thinking: 'thinking…',
-        queued: 'in the queue',
-        completed: 'finished',
-        failed: 'ended with an error',
-        stopped: 'closed before it finished',
-        touched: (edited, opened) => [
-          edited ? `edited ${edited} file${edited === 1 ? '' : 's'}` : '',
-          opened ? `opened ${opened}` : ''
-        ].filter(Boolean).join(' · '),
-        from: letter => `from ${letter}`
+      ago: { now: 'just now', m: n => `${n}m ago`, h: n => `${n}h ago`, yesterday: 'yesterday', d: n => `${n}d ago` },
+      score: {
+        status: 'Status',
+        done: 'Subagents done',
+        none: 'No subagents yet',
+        spent: 'Spent',
+        label: (done, total) => `${done} of ${total} subagents done`
+      },
+      agents: 'Agents of this run',
+      noSubagents: 'Subagents appear here when the main agent hands work off to a helper.',
+      main: { name: 'Main agent', tag: 'main' },
+      st: {
+        running: 'working', completed: 'done', failed: 'failed', stopped: 'stopped', queued: 'waiting', idle: 'idle',
+        waitingOn: n => `waiting on ${n}`
+      },
+      act: { edit: 'editing', read: 'reading', run: 'running', think: 'working', wait: 'waiting' },
+      tag: {
+        edit: '[EDIT]', read: '[READ]', run: '[RUN]', think: '[RUN]', wait: '[WAIT]', completed: '[OK ]', failed: '[ERR]',
+        stopped: '[STP]', queued: '[WAIT]', idle: '[IDLE]'
       },
       verb: {
         read: 'reading', write: 'writing', edit: 'editing', search: 'searching', run: 'running a command',
-        code: 'running code', delegate: 'starting agents', web: 'on the web', other: name => `using ${name}`
+        code: 'running code', delegate: 'starting subagents', web: 'on the web', other: name => `using ${name}`
       },
-      id: { chat: 'Chat', chatName: 'this chat (the main agent)', other: 'an agent not on this page', otherLetter: '·' },
-      log: {
-        title: 'Live log',
-        tip: 'What the agents of this chat did while this page was open, newest first.',
-        now: 'now', start: 'started', completed: 'finished', failed: 'failed', stopped: 'stopped'
+      swarm: {
+        failed: 'Failed', running: 'Working', queued: 'Waiting', completed: 'Done',
+        show: 'Show', hide: 'Hide', cell: (name, line) => `${name} — ${line}`
+      },
+      focus: {
+        mainLabel: 'Focus · main agent · this chat',
+        subLabel: 'Focus · subagent',
+        main: {
+          working: verb => `${verb[0].toUpperCase()}${verb.slice(1)}`,
+          waiting: n => `Waiting on ${n} subagent${n === 1 ? '' : 's'}`,
+          busy: 'Working — no tool running right now',
+          idle: 'Idle — waiting for your message',
+          unknown: 'No tool running right now',
+          touched: n => (n ? `touched ${n} file${n === 1 ? '' : 's'} in this chat` : 'no files touched in this chat yet')
+        },
+        line: {
+          running: (time, act) => [time ? `Working ${time}` : 'Working', act].filter(Boolean).join(' — '),
+          queued: 'Waiting in the queue',
+          completed: time => (time ? `Done in ${time}` : 'Done'),
+          failed: time => (time ? `Failed after ${time}` : 'Failed'),
+          stopped: 'Stopped — closed before it finished'
+        },
+        did: (changed, read) => (changed
+          ? `changed ${changed} file${changed === 1 ? '' : 's'}`
+          : read ? `changed nothing, read ${read} file${read === 1 ? '' : 's'}` : 'touched no files'),
+        startedBy: name => `started by ${name}`,
+        now: 'Working on now',
+        changed: n => `Changed · ${n}`,
+        read: n => `Only read · ${n}`,
+        files: 'Files',
+        noFiles: 'No files read or changed in this chat yet.',
+        noFilesSub: 'No files read or changed with the file tools.',
+        more: n => `Show ${n} more`,
+        note: 'Click a file to copy its path. Changes made by terminal commands or code runs are not listed — Review › Last turn shows every change.',
+        task: 'Task',
+        showAll: 'Show all',
+        showLess: 'Show less',
+        answer: 'Its answer',
+        answerCut: 'Shortened here — Copy answer copies all of it.',
+        noAnswer: 'No answer was recorded.',
+        copy: 'Copy answer',
+        open: 'Open its chat',
+        meta: (tools, tokens, cost) => [`${tools} tool${tools === 1 ? '' : 's'}`, tokens ? `${tokens} tokens` : '', cost || ''].filter(Boolean).join(' · ')
+      },
+      modelTip: (model, effort) => (effort ? `${model} · reasoning effort ${effort}` : model),
+      file: {
+        op: {
+          active: 'now', write: n => `edit ×${n}`, delete: 'deleted', failed: 'failed', read: n => `read ×${n}`
+        },
+        tip: path => `${path}\nClick to copy the path`,
+        name: (name, dir, label) => `${name} in ${dir}: ${label}`,
+        copied: 'Path copied',
+        here: 'chat folder',
+        notListed: n => `${n} older file${n === 1 ? '' : 's'} not listed`,
+        unreadable: n => `${n} tool call${n === 1 ? '' : 's'} could not be read`
+      },
+      proc: {
+        why: 'Terminal commands the agent started and left running in the background — not subagents.',
+        none: 'No background commands in this chat.',
+        short: { running: 'Running', completed: 'Finished', failed: 'Failed', stopped: 'Stopped' },
+        status: {
+          running: 'Running', completed: 'Finished (exit 0)', failed: 'Failed', stopped: 'Stopped before it finished'
+        },
+        exit: c => `exit ${c}`,
+        killed: 'killed',
+        cwd: d => `in ${d}`,
+        copyCommand: 'Copy command',
+        copyOutput: 'Copy output',
+        output: 'End of output',
+        outputCut: n => `last ${n} characters`,
+        commandCut: n => `Only the first ${n} characters of this command are shown and copied.`,
+        noOutput: 'No output was recorded.',
+        printedNothing: 'It printed nothing.',
+        whileRunning: 'Still running — the output is shown here when the command finishes.',
+        reading: 'Reading its output…',
+        unreadable: n => `${n} record${n === 1 ? '' : 's'} could not be read and ${n === 1 ? 'is' : 'are'} not listed`
       },
       status: {
         completed: 'Done', failed: 'Failed', running: 'Running', queued: 'Queued',
         stopped: 'Stopped — closed before it finished'
       },
-      batch: n => `${n} worker${n === 1 ? '' : 's'}`,
-      modelTip: (model, effort) => (effort ? `${model} · reasoning effort ${effort}` : model),
-      more: n => `+${n} more`,
-      meta: (tools, tokens, cost) => [`${tools} tool${tools === 1 ? '' : 's'}`, tokens ? `${tokens} tokens` : '', cost || ''].filter(Boolean).join(' · '),
       cost: {
         est: amount => `~${amount}`,
         under: '<$0.01',
@@ -163,63 +263,16 @@ const BUNDLES = {
         s: s => `${s}s`,
         k: n => `${n}k`
       },
-      copy: 'Copy full output',
-      copying: 'Copying…',
-      copied: 'Copied',
-      copyFailed: 'Copy failed',
-      open: 'Open session',
-      refresh: 'Refresh',
-      procs: 'Background commands',
-      nProcs: n => `${n} background command${n === 1 ? '' : 's'}`,
-      proc: {
-        status: {
-          running: 'Running', completed: 'Finished (exit 0)', failed: 'Failed', stopped: 'Stopped before it finished'
-        },
-        exit: c => `exit ${c}`,
-        killed: 'killed',
-        cwd: d => `in ${d}`,
-        copyCommand: 'Copy command',
-        output: 'End of output',
-        outputCut: n => `last ${n} characters`,
-        commandCut: n => `Only the first ${n} characters of this command are shown and copied.`,
-        noOutput: 'No output was recorded.',
-        whileRunning: 'The output is shown here when the command finishes.',
-        notSubagent: 'Shell commands the agent started in the background (not subagents).',
-        unreadable: n => `${n} record${n === 1 ? '' : 's'} could not be read`
-      },
-      files: {
-        title: 'Files',
-        tip: 'Files this chat and its agents read or wrote with the file tools. The badge says who; a brighter tile was touched more. Click a file to copy its path.',
-        touched: n => `${n} touched`,
-        now: 'now',
-        by: names => `by ${names}`,
-        blind: 'File tools only: edits made by terminal commands or code runs are not listed. Review › Last turn shows every change.',
-        op: {
-          active: 'Being worked on now', write: 'Edited', delete: 'Deleted', read: 'Read only', failed: 'Last change failed'
-        },
-        counts: (reads, writes, deletes, failed) => [
-          reads ? `read ${reads}×` : '',
-          writes ? `edited ${writes}×` : '',
-          deletes > 1 ? `deleted ${deletes}×` : deletes ? 'deleted' : '',
-          failed ? `${failed} failed` : ''
-        ].filter(Boolean).join(' · '),
-        here: 'chat folder',
-        copied: 'Path copied',
-        more: n => `${n} more file${n === 1 ? '' : 's'}`,
-        notListed: n => `${n} older file${n === 1 ? '' : 's'} not listed`,
-        unreadable: n => `${n} call${n === 1 ? '' : 's'} could not be read`
-      },
-      noChat: { title: 'No chat selected', body: 'Open a chat to see its subagents.' },
-      empty: { title: 'No subagents yet', body: 'Workers started with delegate_task in this chat appear here.' },
       err: {
-        history: 'Could not read earlier batches',
-        live: 'Live updates stopped',
-        output: 'Could not read the full output',
-        procs: 'Could not read background commands',
-        files: 'Could not read the files list',
-        procOutput: 'Could not read the command output',
-        withDetail: (what, detail) => `${what}: ${detail}`,
-        hint: 'Nothing could be read. Use Try again in the box above.'
+        title: 'Some parts could not be read:',
+        history: 'earlier runs',
+        live: 'live updates stopped',
+        procs: 'background commands',
+        files: 'the files list',
+        item: (what, detail) => `${what} — ${detail}`,
+        output: 'Could not read the full answer',
+        procOutput: 'Could not read its output',
+        withDetail: (what, detail) => `${what}: ${detail}`
       }
     }
   }
@@ -245,6 +298,17 @@ export function fmtDuration(s, t = enT) {
 export function fmtTokens(n, t = enT) {
   if (!n) return ''
   return n >= 1000 ? t('sw.units.k', Math.round(n / 1000)) : String(n)
+}
+
+/** How long ago, in words: 'just now', '5m ago', '2h ago', 'yesterday', '3d ago'. */
+export function fmtAgo(s, t = enT) {
+  if (s === null || s === undefined || !Number.isFinite(s)) return ''
+  const v = Math.max(0, Math.round(s))
+  if (v < 60) return t('sw.ago.now')
+  if (v < 3600) return t('sw.ago.m', Math.floor(v / 60))
+  if (v < 86400) return t('sw.ago.h', Math.floor(v / 3600))
+  if (v < 2 * 86400) return t('sw.ago.yesterday')
+  return t('sw.ago.d', Math.floor(v / 86400))
 }
 
 /** Hermes' cost record as text: '~$1.25' estimated, '$0.38' billed, 'subscription', '' unpriced. */
@@ -283,9 +347,9 @@ export function workerName(goal) {
 }
 
 /**
- * Names for sibling rows: when several share a long opening ('Blind-review desktop panel 1: …',
+ * Names for sibling units: when several share a long opening ('Blind-review desktop panel 1: …',
  * '… panel 2: …') a narrow pane cuts them all to the same text. The shared words are dropped (the
- * last one kept for context) so what tells the rows apart is what stays visible.
+ * last one kept for context) so what tells the units apart is what stays visible.
  */
 export function distinctNames(goals) {
   const names = goals.map(workerName)
@@ -298,6 +362,11 @@ export function distinctNames(goals) {
   return names.map(n => (n.length > cut ? `…${n.slice(cut)}` : n))
 }
 
+/** A name as the Terminal theme prints it: 'Pact weapon marker' -> 'pact-weapon-marker'. */
+export function slugName(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9…]+/g, '-').replace(/^-+|-+$/g, '') || '-'
+}
+
 /** Model slug without a provider prefix: 'anthropic/claude-opus-5-5' -> 'claude-opus-5-5'. */
 export function modelLabel(model) {
   return String(model || '').split('/').pop()
@@ -307,19 +376,6 @@ export function modelLabel(model) {
 export function modelChip(model, effort) {
   const m = modelLabel(model)
   return m && effort ? `${m} · ${effort}` : m
-}
-
-// Full goal lives in the name's tooltip: the row stays one line, the purpose is one hover away.
-// The chip keeps its full width; the name is what ellipsizes.
-function NameBlock({ t, goal, model, effort, name }) {
-  const chip = modelChip(model, effort)
-  return jsxs('span', {
-    className: 'sw-nl',
-    children: [
-      jsx(Tip, { label: String(goal || '').trim(), children: jsx('span', { className: 'sw-wn', children: name || workerName(goal) }) }, 'n'),
-      chip ? jsx(Tip, { label: t('sw.modelTip', String(model), effort), children: jsx('span', { className: 'sw-model', children: chip }) }, 'm') : null
-    ]
-  })
 }
 
 export function batchState(statuses) {
@@ -351,126 +407,161 @@ export function liveBatches(records) {
   })
 }
 
-// ── marks ────────────────────────────────────────────────────────────────────
+// What a tool call reads as: the verb of a sentence ("running a command npm test") and the icon a
+// unit draws for it (edit pencil, read eye, run prompt; anything else is plain working).
+const VERB = {
+  read_file: 'read', write_file: 'write', patch: 'edit', search_files: 'search', terminal: 'run', process: 'run',
+  execute_code: 'code', delegate_task: 'delegate', web_search: 'web', web_extract: 'web', browser_exec: 'web'
+}
+const ACT_OF = { read: 'read', search: 'read', web: 'read', write: 'edit', edit: 'edit', run: 'run', code: 'run', delegate: 'wait' }
 
-const svg = (children, cls) => jsx('svg', { viewBox: '0 0 16 16', className: cls, 'aria-hidden': 'true', children })
-// Ink of the check / cross drawn ON a filled tone disc: the page ground itself, a cut-out that is
-// neither a success nor a failure token and follows every skin.
-const GLYPH_INK = 'var(--dt-background)'
-const MARKS = {
-  completed: () => svg([
-    jsx('circle', { cx: 8, cy: 8, r: 7, fill: 'var(--ui-green)' }, 'c'),
-    jsx('path', {
-      d: 'M4.8 8.2l2.1 2.1 4.3-4.4', fill: 'none', stroke: GLYPH_INK, strokeWidth: 2,
-      strokeLinecap: 'round', strokeLinejoin: 'round'
-    }, 'p')
-  ]),
-  failed: () => svg([
-    jsx('circle', { cx: 8, cy: 8, r: 7, fill: 'var(--ui-red)' }, 'c'),
-    jsx('path', { d: 'M5.5 5.5l5 5M10.5 5.5l-5 5', stroke: GLYPH_INK, strokeWidth: 2, strokeLinecap: 'round' }, 'p')
-  ]),
-  stopped: () => svg([
-    jsx('circle', { cx: 8, cy: 8, r: 6.2, fill: 'none', stroke: 'var(--ui-text-tertiary)', strokeWidth: 1.6 }, 'c'),
-    jsx('rect', { x: 5.6, y: 5.6, width: 4.8, height: 4.8, rx: 1, fill: 'var(--ui-text-tertiary)' }, 'r')
-  ]),
-  running: () => svg([
-    jsx('circle', { cx: 8, cy: 8, r: 6.2, fill: 'none', stroke: 'var(--ui-stroke-secondary)', strokeWidth: 1.8 }, 'c'),
-    jsx('path', { d: 'M8 1.8a6.2 6.2 0 0 1 6.2 6.2', fill: 'none', stroke: 'var(--ui-yellow)', strokeWidth: 1.8, strokeLinecap: 'round' }, 'a'),
-    jsx('circle', { cx: 8, cy: 8, r: 2.2, fill: 'var(--ui-yellow)' }, 'd')
-  ], 'sw-spin'),
-  queued: () => svg([
-    jsx('circle', {
-      cx: 8, cy: 8, r: 6.2, fill: 'none', stroke: 'var(--ui-text-quaternary)', strokeWidth: 1.6, strokeDasharray: '2.4 2.2'
-    }, 'c')
-  ])
+/** The icon of a running agent's current tool: 'edit' | 'read' | 'run' | 'wait' (it started subagents) | 'think'. */
+export function toolAct(tool) {
+  return ACT_OF[VERB[tool]] || 'think'
 }
-const TONE = {
-  completed: 'var(--ui-green)', failed: 'var(--ui-red)', stopped: 'var(--ui-text-quaternary)',
-  running: 'var(--ui-yellow)', queued: 'var(--ui-stroke-secondary)'
+
+/** A tool's preview as a short target: a path keeps its last two parts, anything else its first line. */
+export function shortTarget(text) {
+  const line = String(text || '').trim().split('\n', 1)[0]
+  if (!/[\\/]/.test(line) || /\s/.test(line)) return line
+  return line.split(/[\\/]+/).filter(Boolean).slice(-2).join('/')
 }
-const ICON = {
-  copy: () => svg([
-    jsx('rect', { x: 5, y: 5, width: 8.5, height: 8.5, rx: 1.6, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3 }, 'r'),
-    jsx('path', { d: 'M3 10.5V3.8C3 3.3 3.3 3 3.8 3h6.7', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3 }, 'p')
-  ]),
-  open: () => svg(jsx('path', {
-    d: 'M9 3h4v4M13 3L7.5 8.5M11.5 9.5V13H3V4.5h3.5', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3,
-    strokeLinecap: 'round', strokeLinejoin: 'round'
-  })),
-  refresh: () => svg(jsx('path', {
-    d: 'M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.8h-2.8', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4,
-    strokeLinecap: 'round', strokeLinejoin: 'round'
-  })),
-  tree: () => svg([
-    jsx('rect', { x: 2, y: 2.5, width: 5, height: 3.5, rx: 1, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3 }, 'a'),
-    jsx('rect', { x: 9, y: 7, width: 5, height: 3.2, rx: 1, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3 }, 'b'),
-    jsx('rect', { x: 9, y: 11.5, width: 5, height: 3.2, rx: 1, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3 }, 'c'),
-    jsx('path', { d: 'M4.5 6v7.1H9M4.5 8.6H9', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }, 'p')
-  ]),
-  stack: () => svg(jsx('path', {
-    d: 'M8 2.5l5.5 2.8L8 8.1 2.5 5.3zM2.5 8l5.5 2.8L13.5 8M2.5 10.7l5.5 2.8 5.5-2.8', fill: 'none', stroke: 'currentColor',
-    strokeWidth: 1.2, strokeLinejoin: 'round'
-  })),
-  bot: () => svg([
-    jsx('rect', { x: 3, y: 5, width: 10, height: 8, rx: 2.2, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3 }, 'h'),
-    jsx('path', { d: 'M8 2.5V5', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }, 'a'),
-    jsx('circle', { cx: 6.2, cy: 9, r: 0.9, fill: 'currentColor' }, 'l'),
-    jsx('circle', { cx: 9.8, cy: 9, r: 0.9, fill: 'currentColor' }, 'r')
-  ]),
-  term: () => svg([
-    jsx('rect', { x: 2, y: 3, width: 12, height: 10, rx: 1.8, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3 }, 'r'),
-    jsx('path', { d: 'M4.8 6.5l2 1.6-2 1.6M8.5 10.2h2.8', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }, 'p')
-  ]),
-  file: () => svg(jsx('path', {
-    d: 'M4 2.5h5l3 3v8H4zM9 2.5v3h3', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinejoin: 'round'
-  })),
-  chev: open => svg(jsx('path', {
-    d: open ? 'M4 6l4 4 4-4' : 'M6 4l4 4-4 4', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5,
-    strokeLinecap: 'round', strokeLinejoin: 'round'
+
+/** What a unit's icon shows: its activity while it runs, else its end (or the queue). */
+export function unitIcon(u) {
+  if (u.status === 'running') return u.act || 'think'
+  return { completed: 'ok', failed: 'bad', stopped: 'stop', queued: 'wait' }[u.status] || 'idle'
+}
+
+/** A live batch as units: each root, then the workers it started (right after it). */
+export function liveUnits(batch, now) {
+  const out = []
+  const walk = (rows, parent) => {
+    rows.forEach(r => {
+      out.push({
+        key: r.subagent_id, sid: r.child_session_id || r.session_id || null, rec: r, parent,
+        status: r.status, act: r.status === 'running' ? toolAct(r.last_tool) : null,
+        duration: r.duration_s ?? (r.started_at ? now - r.started_at : null)
+      })
+      walk(batch.kids.get(r.subagent_id) || [], r.subagent_id)
+    })
+  }
+  walk(batch.roots, null)
+  // Named across the whole run: a nested worker sits beside its parent's siblings, not under them.
+  const names = distinctNames(out.map(u => u.rec.goal))
+  return out.map((u, i) => ({ ...u, name: names[i] }))
+}
+
+/** A stored batch as units, keyed by session id. */
+export function storedUnits(batch) {
+  const names = distinctNames(batch.workers.map(w => w.goal))
+  return batch.workers.map((w, i) => ({
+    key: w.session_id, sid: w.session_id, rec: w, name: names[i], parent: null, status: w.status, act: null, duration: w.duration_s
   }))
 }
 
-// The svg is aria-hidden, so the mark itself carries the Tip's text as its accessible name. A mark
-// outside a button (`focusable`) is a tab stop of its own, so its tooltip is reachable by keyboard.
-function Mark({ status, t, label, focusable }) {
-  const st = MARKS[status] ? status : 'stopped'
-  const name = label || t(`sw.status.${st}`)
-  return jsx(Tip, {
-    label: name,
-    children: jsx('span', { className: 'sw-mk', 'data-st': st, role: 'img', 'aria-label': name, tabIndex: focusable ? 0 : undefined, children: MARKS[st]() })
-  })
+/** The swarm's groups, in the order they are drawn: failed (and stopped) first, then working, waiting, done. */
+export function swarmGroups(units) {
+  const of = { failed: [], running: [], queued: [], completed: [] }
+  for (const u of units) {
+    if (u.status === 'failed' || u.status === 'stopped') of.failed.push(u)
+    else if (of[u.status]) of[u.status].push(u)
+    else of.failed.push(u)
+  }
+  return of
 }
 
-// A header count: the number (or — when its source failed) with the Tip's text as its name.
-function Stat({ label, icon, value }) {
-  return jsx(Tip, { label, children: jsxs('span', { className: 'sw-stat', role: 'img', 'aria-label': label, tabIndex: 0, children: [icon(), value] }) })
-}
+// ── marks ────────────────────────────────────────────────────────────────────
 
-/** A batch's spend with its breakdown as the tooltip; nothing when no worker was priced. */
-function CostChip({ t, workers }) {
-  const sum = sumCost(workers)
-  const text = fmtCost(sum.usd, sum.status, t)
-  if (!text) return null
-  return jsx(Tip, {
-    label: t('sw.cost.tip', sum.priced, sum.included, sum.unknown),
-    children: jsx('span', { className: 'sw-bcost', children: text })
-  })
+const svg = (children, cls) => jsx('svg', { viewBox: '0 0 24 24', className: cls, 'aria-hidden': 'true', children })
+const LINE = { fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }
+const path = (d, key) => jsx('path', { d, ...LINE }, key)
+// What a unit's icon draws: its activity while it works (edit pencil, read eye, run prompt, waiting
+// hourglass, plain working pulse), else how it ended. Never a letter.
+const ICON = {
+  edit: () => svg([path('M12 20h9', 'a'), path('M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z', 'b')]),
+  read: () => svg([path('M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z', 'a'), jsx('circle', { cx: 12, cy: 12, r: 3, ...LINE }, 'b')]),
+  run: () => svg([path('M4 17l6-5-6-5', 'a'), path('M12 19h8', 'b')]),
+  think: () => svg(path('M3 12h4l3-7 4 14 3-7h4')),
+  wait: () => svg([path('M6 3h12M6 21h12', 'a'), path('M7 3c0 5 10 5 10 9s-10 4-10 9M17 3c0 5-10 5-10 9s10 4 10 9', 'b')]),
+  ok: () => svg(path('M20 6L9 17l-5-5')),
+  bad: () => svg(path('M18 6L6 18M6 6l12 12')),
+  stop: () => svg(jsx('rect', { x: 6, y: 6, width: 12, height: 12, rx: 1.5, ...LINE })),
+  idle: () => svg([jsx('circle', { cx: 12, cy: 12, r: 8, ...LINE }, 'a'), path('M9 12h6', 'b')]),
+  copy: () => svg([jsx('rect', { x: 9, y: 9, width: 12, height: 12, rx: 2, ...LINE }, 'a'), path('M5 15V5a2 2 0 0 1 2-2h10', 'b')]),
+  open: () => svg([path('M14 4h6v6', 'a'), path('M20 4l-9 9', 'b'), path('M18 14v6H4V6h6', 'c')]),
+  refresh: () => svg([path('M20 12a8 8 0 1 1-2.3-5.6', 'a'), path('M20 4v4h-4', 'b')]),
+  chev: open => svg(path(open ? 'M6 9l6 6 6-6' : 'M9 6l6 6-6 6'))
 }
-
-function Strip({ statuses }) {
-  return jsx('span', {
-    className: 'sw-strip',
-    children: statuses.map((s, i) => jsx('i', { 'data-st': s, style: { '--t': TONE[s] || TONE.stopped } }, i))
-  })
+// The Terminal look draws the same icon as a glyph inside an ASCII box.
+const GLYPH = { edit: '✎', read: '◉', run: '>_', think: '··', wait: '⧗', ok: '✓', bad: '✗', stop: '■', idle: '○' }
+export function sprite(icon) {
+  const g = GLYPH[icon] || GLYPH.idle
+  return `┌──┐\n│${g.length > 1 ? g : `${g} `}│\n└──┘`
+}
+// Status-bar marks (the chip): a filled disc for an end, a ring for running or waiting.
+const GLYPH_INK = 'var(--dt-background)'
+const MARKS = {
+  completed: () => svg([jsx('circle', { cx: 12, cy: 12, r: 10, fill: 'var(--ui-green)' }, 'c'), jsx('path', { d: 'M7.5 12.3l3 3 6-6.2', fill: 'none', stroke: GLYPH_INK, strokeWidth: 2.6, strokeLinecap: 'round', strokeLinejoin: 'round' }, 'p')]),
+  failed: () => svg([jsx('circle', { cx: 12, cy: 12, r: 10, fill: 'var(--ui-red)' }, 'c'), jsx('path', { d: 'M8.5 8.5l7 7M15.5 8.5l-7 7', stroke: GLYPH_INK, strokeWidth: 2.6, strokeLinecap: 'round' }, 'p')]),
+  stopped: () => svg([jsx('circle', { cx: 12, cy: 12, r: 9, fill: 'none', stroke: 'var(--ui-text-tertiary)', strokeWidth: 2 }, 'c'), jsx('rect', { x: 8.5, y: 8.5, width: 7, height: 7, rx: 1, fill: 'var(--ui-text-tertiary)' }, 'r')]),
+  running: () => svg([jsx('circle', { cx: 12, cy: 12, r: 9, fill: 'none', stroke: 'var(--ui-stroke-secondary)', strokeWidth: 2.4 }, 'c'), jsx('path', { d: 'M12 3a9 9 0 0 1 9 9', fill: 'none', stroke: 'var(--ui-yellow)', strokeWidth: 2.4, strokeLinecap: 'round' }, 'a')], 'sw-spin'),
+  queued: () => svg(jsx('circle', { cx: 12, cy: 12, r: 9, fill: 'none', stroke: 'var(--ui-text-quaternary)', strokeWidth: 2, strokeDasharray: '3.4 3' }))
 }
 
 // `text`: the label is also drawn beside the icon — the page's primary verbs are read, not hovered for.
-function IconButton({ label, icon, onClick, disabled, busy, text }) {
+function IconButton({ label, icon, onClick, disabled, busy, text, primary }) {
   const button = jsx('button', {
-    type: 'button', className: `sw-ib${text ? ' is-text' : ''}${busy ? ' is-busy' : ''}`, 'aria-label': label, 'aria-busy': busy ? 'true' : undefined,
+    type: 'button', className: `sw-ib${text ? ' is-text' : ''}${primary ? ' is-pri' : ''}${busy ? ' is-busy' : ''}`, 'aria-label': label, 'aria-busy': busy ? 'true' : undefined,
     disabled: disabled || busy, onClick, children: text ? [jsx('span', { className: 'sw-ibi', children: icon() }, 'i'), jsx('span', { children: label }, 't')] : icon()
   })
   return text ? button : jsx(Tip, { label, children: button })
+}
+
+/** One cell per agent, in its status colour. */
+function Cells({ statuses, className = 'sw-cells' }) {
+  return jsx('span', {
+    className, 'aria-hidden': 'true',
+    children: statuses.map((s, i) => jsx('i', { 'data-st': s }, i))
+  })
+}
+
+// ── look: Cockpit / Terminal ─────────────────────────────────────────────────
+//
+// The chosen look is kept in the plugin's own storage (ctx.storage). Storage is a convenience: when
+// it is missing, holds something else, or throws, the page draws Cockpit and keeps working.
+
+let themeNow = null
+const themeSubs = new Set()
+
+function readTheme() {
+  try {
+    const kept = ctxRef?.storage?.get?.(THEME_KEY, THEMES[0])
+    return THEMES.includes(kept) ? kept : THEMES[0]
+  } catch (err) {
+    console.warn(`[${ID}] could not read the kept look; using ${THEMES[0]}`, err)
+    return THEMES[0]
+  }
+}
+
+function useTheme() {
+  const [theme, setTheme] = useState(() => themeNow || (themeNow = readTheme()))
+  useEffect(() => {
+    const fn = () => setTheme(themeNow)
+    themeSubs.add(fn)
+    return () => { themeSubs.delete(fn) }
+  }, [])
+  const choose = useCallback(next => {
+    if (!THEMES.includes(next)) return
+    themeNow = next
+    try {
+      ctxRef?.storage?.set?.(THEME_KEY, next)
+    } catch (err) {
+      console.warn(`[${ID}] could not keep the look`, err)
+    }
+    themeSubs.forEach(fn => fn())
+  }, [])
+  return [theme, choose]
 }
 
 // ── data hooks ───────────────────────────────────────────────────────────────
@@ -565,12 +656,15 @@ function useFiles(storedId) {
 }
 
 /**
- * The files the focused chat's own file tool calls are touching now: tool.start adds them, tool.complete
- * ends them, and each stays TOUCH_LINGER_MS after its call ends. A finished call reloads the list.
- * Workers' calls reach the page only as a mirrored row without arguments, so they show on reload.
+ * What the focused chat's own agent (the main agent) is doing, from its `tool.*` events: the tool it
+ * runs now, and the files its file tool calls touch now. tool.start adds a file, tool.complete ends
+ * it, and each stays TOUCH_LINGER_MS after its call ends (a file call takes milliseconds). A
+ * finished file call reloads the files list. Workers' calls reach the page only as a mirrored row
+ * without arguments, so they show when the list reloads.
  */
-function useTouching(runtimeId, cwd, onDone) {
+function useMainTools(runtimeId, cwd, onDone) {
   const [touching, setTouching] = useState(() => new Map())
+  const [tools, setTools] = useState(() => new Map())
   const calls = useRef(new Map())
   const cwdRef = useRef(cwd)
   cwdRef.current = cwd
@@ -578,16 +672,21 @@ function useTouching(runtimeId, cwd, onDone) {
   doneRef.current = onDone
   useEffect(() => {
     setTouching(new Map())
+    setTools(new Map())
     calls.current = new Map()
     if (!runtimeId) return undefined
     const timers = new Set()
     const offStart = ctxRef.onEvent('tool.start', event => {
       if (event?.session_id !== runtimeId) return
       const p = event.payload || {}
+      if (!p.tool_id) return
+      const args = p.args && typeof p.args === 'object' ? p.args : {}
+      const target = shortTarget(args.path || args.command || args.query || args.url || '')
+      setTools(prev => new Map(prev).set(p.tool_id, { name: p.name, target }))
       const targets = fileTargets(p.name, p.args)
-      if (!p.tool_id || !targets.length) return
-      const keys = targets.map(({ path, op }) => {
-        const full = resolvePath(path, cwdRef.current)
+      if (!targets.length) return
+      const keys = targets.map(({ path: file, op }) => {
+        const full = resolvePath(file, cwdRef.current)
         return { key: pathKey(full), path: full, op }
       })
       calls.current.set(p.tool_id, keys)
@@ -599,9 +698,16 @@ function useTouching(runtimeId, cwd, onDone) {
     })
     const offDone = ctxRef.onEvent('tool.complete', event => {
       if (event?.session_id !== runtimeId) return
-      const keys = calls.current.get(event.payload?.tool_id)
+      const id = event.payload?.tool_id
+      setTools(prev => {
+        if (!prev.has(id)) return prev
+        const next = new Map(prev)
+        next.delete(id)
+        return next
+      })
+      const keys = calls.current.get(id)
       if (!keys) return
-      calls.current.delete(event.payload.tool_id)
+      calls.current.delete(id)
       doneRef.current?.()
       const stop = ctxRef.setTimeout(() => {
         timers.delete(stop)
@@ -624,7 +730,9 @@ function useTouching(runtimeId, cwd, onDone) {
       timers.forEach(stop => stop())
     }
   }, [runtimeId])
-  return touching
+  // The newest tool still running is what the main agent does now.
+  const tool = [...tools.values()].pop() || null
+  return { touching, tool }
 }
 
 /**
@@ -790,11 +898,306 @@ async function writeClip(text, t, onToast, done) {
   onToast(ok ? done || t('sw.copied') : t('sw.copyFailed'), !ok)
 }
 
-function Detail({ t, worker, onToast }) {
+/** A tool's name as the verb of a sentence: 'patch' -> 'editing'. */
+function toolVerb(t, name) {
+  return VERB[name] ? t(`sw.verb.${VERB[name]}`) : t('sw.verb.other', name)
+}
+
+/** A unit's status word: what it does while it works ('editing', 'waiting on 3'), else how it ended. */
+function statusWord(t, u, waitingOn) {
+  if (u.status !== 'running') return t(`sw.st.${u.status}`)
+  if (u.act === 'wait' && u.main) return t('sw.st.waitingOn', waitingOn)
+  return t(`sw.act.${u.act || 'think'}`)
+}
+
+/** One line on what a unit does or did: 'editing plugin.js · 3m 10s', 'done · 5m 12s'. */
+function unitLine(t, u) {
+  const time = u.status === 'stopped' || u.main ? '' : fmtDuration(u.duration, t)
+  const what = u.status === 'running' && u.rec?.last_tool
+    ? [toolVerb(t, u.rec.last_tool), shortTarget(u.rec.tool_preview)].filter(Boolean).join(' ')
+    : u.status === 'running' ? t(`sw.act.${u.act || 'think'}`) : t(`sw.st.${u.status}`)
+  return [what, time].filter(Boolean).join(' · ')
+}
+
+function Unit({ t, theme, u, selected, onSelect, flash, waitingOn }) {
+  const icon = unitIcon(u)
+  const word = statusWord(t, u, waitingOn)
+  const tag = t(`sw.tag.${u.status === 'running' ? u.act || 'think' : u.status}`)
+  const term = theme === 'terminal'
+  const goal = String(u.rec?.goal || '').trim()
+  const button = jsxs('button', {
+    type: 'button', className: `sw-unit${selected ? ' is-sel' : ''}${flash ? ` is-${flash}` : ''}`,
+    'data-st': u.status, 'data-icon': icon, 'data-main': u.main ? 'true' : undefined, 'data-batch': u.batch,
+    'aria-pressed': selected, 'aria-label': `${u.name}: ${word}`, onClick: () => onSelect(u.key),
+    children: [
+      term
+        ? jsx('pre', { className: 'sw-spr', 'aria-hidden': 'true', children: sprite(icon) }, 'v')
+        : jsxs('span', {
+          className: 'sw-hex', 'aria-hidden': 'true',
+          children: [
+            jsx('span', { className: 'sw-ring' }, 'r'),
+            jsx('span', { className: 'sw-body' }, 'b'),
+            jsx('span', { className: 'sw-ic', children: ICON[icon]() }, 'i'),
+            u.main ? jsx('span', { className: 'sw-maintag', children: t('sw.main.tag') }, 'm') : null
+          ]
+        }, 'v'),
+      jsx('span', { className: 'sw-un', children: term ? `${u.main ? '★ ' : ''}${slugName(u.name)}` : u.name }, 'n'),
+      // Keyed by its text: a new status mounts anew, so the Terminal look types it again.
+      jsx('span', { className: 'sw-us', children: term ? tag : word }, `s-${term ? tag : word}`)
+    ]
+  })
+  return jsx(Tip, { label: [goal || u.name, unitLine(t, u)].filter(Boolean).join('\n'), children: button })
+}
+
+/** A swarm cell: a small unit, named by its tooltip and its accessible name. */
+function Cell({ t, theme, u, selected, onSelect }) {
+  const icon = unitIcon(u)
+  const label = t('sw.swarm.cell', u.name, unitLine(t, u))
+  return jsx(Tip, {
+    label,
+    children: jsx('button', {
+      type: 'button', className: `sw-cell${selected ? ' is-sel' : ''}`, 'data-st': u.status, 'data-icon': icon,
+      'aria-pressed': selected, 'aria-label': label, onClick: () => onSelect(u.key),
+      children: theme === 'terminal' ? jsx('span', { className: 'sw-glyph', 'aria-hidden': 'true', children: GLYPH[icon] }) : ICON[icon]()
+    })
+  })
+}
+
+function Units({ t, theme, units, selected, onSelect, flash, waitingOn }) {
+  return jsx('div', {
+    className: 'sw-units', role: 'group', 'aria-label': t('sw.agents'),
+    children: units.map(u => jsx(Unit, { t, theme, u, selected: selected === u.key, onSelect, flash: flash.get(u.key), waitingOn }, u.key))
+  })
+}
+
+/** More than SWARM_AT subagents: the main agent, then groups — failed by name, working, waiting, done. */
+function Swarm({ t, theme, main, subs, selected, onSelect, flash, waitingOn }) {
+  const [shown, setShown] = useState(() => new Set())
+  const groups = swarmGroups(subs)
+  const fold = key => setShown(prev => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
+  const head = (key, n, folds) => jsxs('div', {
+    className: 'sw-gh',
+    children: [
+      jsx('h3', { className: 'sw-k', children: [t(`sw.swarm.${key}`), ' ', jsx('em', { children: n }, 'n')] }, 'h'),
+      folds ? jsx('button', {
+        type: 'button', className: 'sw-fold sw-acc', 'aria-expanded': shown.has(key), onClick: () => fold(key),
+        children: t(shown.has(key) ? 'sw.swarm.hide' : 'sw.swarm.show')
+      }, 'f') : null
+    ]
+  })
+  const cells = list => jsx('div', {
+    className: 'sw-cellgrid',
+    children: list.map(u => jsx(Cell, { t, theme, u, selected: selected === u.key, onSelect }, u.key))
+  })
+  return jsxs('div', {
+    className: 'sw-swarm',
+    children: [
+      jsx('div', { className: 'sw-grp sw-gmain', children: jsx(Unit, { t, theme, u: main, selected: selected === main.key, onSelect, flash: null, waitingOn }) }, 'main'),
+      groups.failed.length ? jsxs('section', {
+        className: 'sw-grp', 'data-grp': 'failed',
+        children: [
+          head('failed', groups.failed.length, false),
+          ...groups.failed.map(u => jsxs('button', {
+            type: 'button', className: `sw-frow${selected === u.key ? ' is-sel' : ''}${flash.get(u.key) ? ` is-${flash.get(u.key)}` : ''}`,
+            'data-st': u.status, 'aria-pressed': selected === u.key, onClick: () => onSelect(u.key),
+            children: [
+              jsx('span', { className: 'sw-frn', children: theme === 'terminal' ? `${GLYPH.bad} ${slugName(u.name)}` : u.name }, 'n'),
+              jsx('span', { className: 'sw-frx', children: u.status === 'stopped' ? t('sw.st.stopped') : fmtDuration(u.duration, t) }, 'x')
+            ]
+          }, u.key))
+        ]
+      }, 'failed') : null,
+      groups.running.length ? jsxs('section', { className: 'sw-grp', 'data-grp': 'running', children: [head('running', groups.running.length, false), cells(groups.running)] }, 'running') : null,
+      ...['queued', 'completed'].map(key => (groups[key].length ? jsxs('section', {
+        className: 'sw-grp', 'data-grp': key,
+        children: [head(key, groups[key].length, true), shown.has(key) ? cells(groups[key]) : null]
+      }, key) : null))
+    ]
+  })
+}
+
+/** The big score: subagents done / all, one cell per subagent, what the subagents spent. */
+function Score({ t, subs }) {
+  const done = subs.filter(u => u.status === 'completed').length
+  const sum = sumCost(subs.map(u => u.rec))
+  const cost = fmtCost(sum.usd, sum.status, t)
+  return jsxs('div', {
+    className: 'sw-score', role: 'group', 'aria-label': subs.length ? t('sw.score.label', done, subs.length) : t('sw.score.none'),
+    children: [
+      jsxs('div', {
+        className: 'sw-sbig',
+        children: [
+          jsx('div', { className: 'sw-k', children: t('sw.score.status') }, 'k'),
+          // Keyed by the count: a new count mounts anew and rolls up into place.
+          jsxs('div', { className: 'sw-big', children: [jsx('span', { className: 'sw-bign', children: done }, `n-${done}`), jsx('small', { children: `/${subs.length}` }, 't')] }, 'b')
+        ]
+      }, 'b'),
+      jsxs('div', {
+        className: 'sw-sseg',
+        children: [
+          jsx('div', { className: 'sw-k', children: subs.length ? t('sw.score.done') : t('sw.score.none') }, 'k'),
+          jsx(Cells, { statuses: subs.map(u => u.status), className: 'sw-seg' }, 'c')
+        ]
+      }, 's'),
+      subs.length ? jsxs('div', {
+        className: 'sw-spent',
+        children: [
+          jsx('div', { className: 'sw-k', children: t('sw.score.spent') }, 'k'),
+          jsx(Tip, {
+            label: t('sw.cost.tip', sum.priced, sum.included, sum.unknown),
+            children: jsx('b', { className: 'sw-money', tabIndex: 0, children: cost || '—' })
+          }, 'v')
+        ]
+      }, '$') : null
+    ]
+  })
+}
+
+// ── files of an agent ────────────────────────────────────────────────────────
+
+/**
+ * One agent's files from /files: `who` names everyone who touched a file ('' is the chat itself,
+ * a worker is its first session id) and `editors` who changed it. A change that failed has no
+ * editor; it counts as the agent's change when nobody else changed the file.
+ */
+export function agentFiles(files, who) {
+  const changed = []
+  const read = []
+  for (const f of files || []) {
+    const by = f.who || []
+    const editors = f.editors || []
+    if (!by.includes(who) && !editors.includes(who)) continue
+    const edit = editors.includes(who) || (f.last_failed && !editors.length && f.last_op !== 'read')
+    const row = { ...f, key: f.key || pathKey(f.path) }
+    if (edit) changed.push({ ...row, state: fileState(f, false) })
+    else read.push({ ...row, state: 'read' })
+  }
+  return { changed, read }
+}
+
+/** How many times a row's bar counts: its changes, or its reads. */
+function fileCount(f) {
+  return f.state === 'read' ? f.reads || 1 : (f.writes || 0) + (f.deletes || 0) + (f.failed || 0) || 1
+}
+
+function FileRow({ t, f, cwd, max, label, onToast }) {
+  const { dir, name } = splitPath(f.path)
+  const pct = Math.max(8, Math.round((fileCount(f) / Math.max(1, max)) * 100))
+  const text = label || t(`sw.file.op.${f.state}`, fileCount(f))
+  const copy = () => writeClip(f.path, t, onToast, t('sw.file.copied'))
+  return jsx(Tip, {
+    label: t('sw.file.tip', f.path),
+    children: jsxs('button', {
+      type: 'button', className: `sw-fr${f.state === 'active' ? ' is-now' : ''}`, 'data-op': f.state, onClick: copy,
+      'aria-label': t('sw.file.name', name, dir ? dirLabel(dir, cwd, t) : t('sw.file.here'), text),
+      children: [
+        jsx('span', { className: 'sw-tick', 'aria-hidden': 'true' }, 'k'),
+        jsxs('span', {
+          className: 'sw-fnw',
+          children: [
+            // Keyed by the file: when the file worked on changes, its name slides in anew.
+            jsx('span', { className: 'sw-fn', children: name }, `n-${f.key}`),
+            dir ? jsx('span', { className: 'sw-fd', children: dirLabel(dir, cwd, t) }, 'd') : null
+          ]
+        }, 'w'),
+        jsx('span', { className: 'sw-fbar', 'aria-hidden': 'true', children: jsx('i', { style: { width: `${pct}%` } }) }, 'b'),
+        jsx('span', { className: 'sw-fl', children: text }, 'l')
+      ]
+    })
+  })
+}
+
+function FileList({ t, sec, title, rows, limit, cwd, onToast, label }) {
+  const [all, setAll] = useState(false)
+  if (!rows.length) return null
+  const max = Math.max(...rows.map(fileCount))
+  const shown = all ? rows : rows.slice(0, limit)
+  return jsxs('div', {
+    className: 'sw-fsec', 'data-sec': sec,
+    children: [
+      jsx('h4', { className: 'sw-k', children: title }, 'h'),
+      ...shown.map(f => jsx(FileRow, { t, f, cwd, max, label, onToast }, f.key)),
+      rows.length > shown.length
+        ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setAll(true), children: t('sw.focus.more', rows.length - shown.length) }, 'more')
+        : null
+    ]
+  })
+}
+
+function Files({ t, mine, files, onToast, empty }) {
+  const cwd = files.data?.cwd
+  if (files.loading && !files.data) return jsx('p', { className: 'sw-empty', children: t('sw.loading') })
+  if (!mine.changed.length && !mine.read.length) {
+    return jsxs('div', { className: 'sw-fsec', 'data-sec': 'none', children: [jsx('h4', { className: 'sw-k', children: t('sw.focus.files') }, 'h'), jsx('p', { className: 'sw-empty', children: empty }, 'e')] })
+  }
+  return [
+    jsx(FileList, { t, sec: 'changed', title: t('sw.focus.changed', mine.changed.length), rows: mine.changed, limit: CHANGED_ROWS, cwd, onToast }, 'c'),
+    jsx(FileList, { t, sec: 'read', title: t('sw.focus.read', mine.read.length), rows: mine.read, limit: READ_ROWS, cwd, onToast }, 'r')
+  ]
+}
+
+// ── focus panel ──────────────────────────────────────────────────────────────
+
+function MainPanel({ t, main, files, touching, tool, waitingOn, onToast }) {
+  const all = files.data?.files || []
+  const mine = agentFiles(all, '')
+  const now = fileGroups(all, touching).filter(f => f.state === 'active')
+  const verbOf = f => t((touching.get(f.key)?.op || f.last_op) === 'read' ? 'sw.verb.read' : 'sw.verb.edit')
+  let head
+  // The newest file it touches; keyed by it, so a new file name slides in.
+  const newest = now[now.length - 1]
+  if (newest) head = [t('sw.focus.main.working', verbOf(newest)), ' ', jsx('code', { className: 'sw-nowf', children: splitPath(newest.path).name }, `c-${newest.key}`)]
+  else if (main.status === 'running' && main.act === 'wait') head = t('sw.focus.main.waiting', waitingOn)
+  else if (tool) head = [t('sw.focus.main.working', toolVerb(t, tool.name)), tool.target ? ' ' : '', tool.target ? jsx('code', { children: tool.target }, 'c') : null]
+  else head = main.status === 'running' ? t('sw.focus.main.busy') : t('sw.focus.main.idle')
+  const unreadable = files.data?.unreadable || 0
+  const more = files.data?.more || 0
+  return jsxs('section', {
+    className: 'sw-focus', 'data-kind': 'main', 'data-st': main.status, 'aria-label': t('sw.focus.mainLabel'),
+    children: [
+      jsx('div', { className: 'sw-ph sw-k', children: t('sw.focus.mainLabel') }, 'l'),
+      jsxs('div', { className: 'sw-head', children: [jsx('span', { children: head }, 'h'), main.status === 'running' ? jsx('span', { className: 'sw-cur', 'aria-hidden': 'true' }, 'c') : null] }, 'h'),
+      jsx('div', { className: 'sw-meta', children: t('sw.focus.main.touched', mine.changed.length + mine.read.length) }, 'm'),
+      now.length ? jsxs('div', {
+        className: 'sw-fsec', 'data-sec': 'now',
+        children: [
+          jsx('h4', { className: 'sw-k', children: t('sw.focus.now') }, 'h'),
+          ...now.map(f => jsx(FileRow, { t, f, cwd: files.data?.cwd, max: 1, label: verbOf(f), onToast }, f.key))
+        ]
+      }, 'now') : null,
+      jsx(Files, { t, mine, files, onToast, empty: t('sw.focus.noFiles') }, 'f'),
+      more ? jsx('p', { className: 'sw-fnote', children: t('sw.file.notListed', more) }, 'more') : null,
+      unreadable ? jsx('p', { className: 'sw-fnote is-bad', children: t('sw.file.unreadable', unreadable) }, 'u') : null,
+      jsx('p', { className: 'sw-note', children: t('sw.focus.note') }, 'n')
+    ]
+  })
+}
+
+function SubPanel({ t, u, parentName, files, onToast }) {
   const [busy, setBusy] = useState(false)
+  const [full, setFull] = useState(false)
   // The backend serves a worker's output only to the chat that delegated it.
   const storedId = useContext(WatchedChat)
-  const sid = worker.session_id || worker.child_session_id
+  const rec = u.rec || {}
+  const sid = u.sid
+  const goal = String(rec.goal || '').trim()
+  const title = goal.split('\n', 1)[0] || u.name
+  const mine = sid ? agentFiles(files.data?.files, sid) : { changed: [], read: [] }
+  const time = fmtDuration(u.duration, t)
+  const doing = u.status === 'running' && rec.last_tool ? [toolVerb(t, rec.last_tool), shortTarget(rec.tool_preview)].filter(Boolean).join(' ') : ''
+  const line = u.status === 'running' ? t('sw.focus.line.running', time, doing)
+    : u.status === 'queued' ? t('sw.focus.line.queued')
+      : u.status === 'stopped' ? t('sw.focus.line.stopped')
+        : t(u.status === 'failed' ? 'sw.focus.line.failed' : 'sw.focus.line.completed', time)
+  const ended = TERMINAL.has(u.status)
+  const meta = [line, ended ? t('sw.focus.did', mine.changed.length, mine.read.length) : '', parentName ? t('sw.focus.startedBy', parentName) : ''].filter(Boolean).join(' · ')
+  const chip = modelChip(rec.model, rec.effort)
+  const longTask = goal.length > TASK_CHARS
   const copy = async () => {
     if (!sid) return
     setBusy(true)
@@ -815,373 +1218,259 @@ function Detail({ t, worker, onToast }) {
       onToast(String(err?.message || err), true)
     })
   }
-  const goal = String(worker.goal || '').trim()
-  return jsx(Branches, {
+  const answer = String(rec.summary || '').trim()
+  return jsxs('section', {
+    className: 'sw-focus', 'data-kind': 'sub', 'data-st': u.status, 'aria-label': t('sw.focus.subLabel'),
     children: [
-      goal ? jsx(Tip, { label: goal, children: jsx('div', { className: 'sw-dtg', tabIndex: 0, children: jsx('span', { children: goal }) }) }, 'g') : null,
-      jsxs('div', {
-        className: 'sw-dta',
+      jsx('div', { className: 'sw-ph sw-k', children: t('sw.focus.subLabel') }, 'l'),
+      jsx('div', { className: 'sw-head', children: title }, 'h'),
+      jsx('div', { className: 'sw-meta', children: meta }, 'm'),
+      chip ? jsx(Tip, { label: t('sw.modelTip', rec.model, rec.effort), children: jsx('span', { className: 'sw-model', tabIndex: 0, children: chip }) }, 'chip') : null,
+      goal ? jsxs('p', {
+        className: 'sw-task',
         children: [
-          jsx(IconButton, { label: t(busy ? 'sw.copying' : 'sw.copy'), icon: ICON.copy, onClick: copy, disabled: !sid, busy, text: true }, 'c'),
-          jsx(IconButton, { label: t('sw.open'), icon: ICON.open, onClick: open, disabled: !sid, text: true }, 'o'),
-          // The duration is already on the worker's row; the detail adds only what the row lacks.
-          jsx('span', {
-            className: 'sw-dtm',
-            children: t('sw.meta', worker.tool_calls ?? worker.tool_count ?? 0, fmtTokens(worker.tokens, t), fmtCost(worker.cost_usd, worker.cost_status, t))
-          }, 'm')
+          jsx('b', { children: t('sw.focus.task') }, 'k'), ' — ',
+          longTask && !full ? `${goal.slice(0, TASK_CHARS).trimEnd()}…` : goal,
+          longTask ? jsx('button', { type: 'button', className: 'sw-more sw-inl', onClick: () => setFull(v => !v), children: t(full ? 'sw.focus.showLess' : 'sw.focus.showAll') }, 'x') : null
         ]
-      }, 'a')
+      }, 'task') : null,
+      doing && rec.tool_preview && /[\\/]/.test(String(rec.tool_preview)) && !/\s/.test(String(rec.tool_preview).trim())
+        ? jsxs('div', {
+          className: 'sw-fsec', 'data-sec': 'now',
+          children: [
+            jsx('h4', { className: 'sw-k', children: t('sw.focus.now') }, 'h'),
+            jsx(FileRow, {
+              t, f: { key: pathKey(rec.tool_preview), path: String(rec.tool_preview).trim(), state: 'active' }, cwd: files.data?.cwd, max: 1,
+              label: toolVerb(t, rec.last_tool), onToast
+            }, 'r')
+          ]
+        }, 'now')
+        : null,
+      ended ? jsxs('div', {
+        className: 'sw-ans',
+        children: [
+          jsx('div', { className: 'sw-k', children: t('sw.focus.answer') }, 'k'),
+          jsx('div', { className: 'sw-anst', children: answer || t('sw.focus.noAnswer') }, 't'),
+          rec.summary_truncated ? jsx('div', { className: 'sw-fnote', children: t('sw.focus.answerCut') }, 'c') : null
+        ]
+      }, 'ans') : null,
+      jsx(Files, { t, mine, files, onToast, empty: t('sw.focus.noFilesSub') }, 'f'),
+      jsxs('div', {
+        className: 'sw-btns',
+        children: [
+          jsx(IconButton, { label: t(busy ? 'sw.copying' : 'sw.focus.copy'), icon: ICON.copy, onClick: copy, disabled: !sid, busy, text: true, primary: true }, 'c'),
+          jsx(IconButton, { label: t('sw.focus.open'), icon: ICON.open, onClick: open, disabled: !sid, text: true }, 'o'),
+          jsx('span', { className: 'sw-stats', children: t('sw.focus.meta', rec.tool_calls ?? rec.tool_count ?? 0, fmtTokens(rec.tokens, t), fmtCost(rec.cost_usd, rec.cost_status, t)) }, 'm')
+        ]
+      }, 'b')
     ]
   })
 }
 
-function WorkerRow({ t, w, name, id, open, onToggle }) {
-  const time = w.status === 'stopped' ? '—' : fmtDuration(w.duration_s, t)
-  return jsxs('button', {
-    type: 'button', className: `sw-wr sw-nd sw-acc${open ? ' is-open' : ''}`, 'data-st': w.status, 'aria-expanded': open, onClick: onToggle,
+// ── run picker ───────────────────────────────────────────────────────────────
+
+function RunBar({ t, view, runs, onPick, onBack }) {
+  const [open, setOpen] = useState(false)
+  const [older, setOlder] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return undefined
+    const away = event => { if (ref.current && !ref.current.contains(event.target)) setOpen(false) }
+    const esc = event => { if (event.key === 'Escape') setOpen(false) }
+    window.addEventListener('pointerdown', away, true)
+    window.addEventListener('keydown', esc, true)
+    return () => {
+      window.removeEventListener('pointerdown', away, true)
+      window.removeEventListener('keydown', esc, true)
+    }
+  }, [open])
+  const pick = key => {
+    setOpen(false)
+    onPick(key)
+  }
+  const shown = older ? runs.earlier : runs.earlier.slice(0, HISTORY_PAGE)
+  const row = (key, run, on) => jsxs('button', {
+    type: 'button', role: 'menuitem', className: `sw-mr${on ? ' is-on' : ''}`, 'data-run': key, onClick: () => pick(key),
     children: [
-      jsx(Mark, { t, status: w.status }, 'm'),
-      id ? jsx(Sig, { id }, 's') : null,
-      jsx(NameBlock, { t, goal: w.goal, model: w.model, effort: w.effort, name }, 'n'),
-      jsx('span', { className: 'sw-wt', children: time }, 't')
+      jsx(Cells, { statuses: run.statuses, className: 'sw-mini' }, 'c'),
+      jsx('span', { className: 'sw-mrn', children: run.name }, 'n'),
+      jsx('span', { className: 'sw-mrx', children: run.meta }, 'x')
     ]
-  })
-}
-
-function HistoryBatch({ t, batch, ids, open, onToggle, openWorker, setOpenWorker, onToast }) {
-  const statuses = batch.workers.map(w => w.status)
-  const st = batchState(statuses)
-  const done = statuses.filter(s => s === 'completed').length
-  const times = batch.workers.map(w => w.duration_s).filter(v => v !== null && v !== undefined)
-  const names = distinctNames(batch.workers.map(w => w.goal))
-  // The first worker names the batch; the others are counted, so a batch is never read as one task.
-  const head = [
-    jsx(Mark, { t, status: st }, 'm'),
-    jsx('span', { className: 'sw-bn', children: workerName(batch.workers[0]?.goal) }, 'n'),
-    statuses.length > 1 ? jsx('span', { className: 'sw-bmore', children: t('sw.more', statuses.length - 1) }, 'x') : null,
-    jsx(Strip, { statuses }, 's'),
-    jsx(CostChip, { t, workers: batch.workers }, '$'),
-    jsx('span', { className: 'sw-bc', children: `${done}/${statuses.length}` }, 'c'),
-    jsx('span', { className: 'sw-bt', children: times.length ? fmtDuration(Math.max(...times), t) : '' }, 't'),
-    jsx('span', { className: 'sw-chev', children: ICON.chev(open) }, 'v')
-  ]
-  // One wrapper and one header button in both states: swapping a collapsed <button> for an open
-  // <section> remounted the header and dropped keyboard focus to <body> on every toggle.
+  }, key)
   return jsxs('div', {
-    className: open ? 'sw-box sw-frame' : 'sw-cw', 'data-st': st, 'data-batch': batchKey(batch),
+    className: 'sw-runb', ref,
     children: [
       jsx('button', {
-        type: 'button', className: open ? 'sw-bl sw-hb sw-bh' : 'sw-bl sw-hb sw-card sw-acc', 'data-st': st,
-        'aria-expanded': open, onClick: onToggle, children: head
-      }, 'h'),
-      // Same tree as the live batch: the header is the root, each worker hangs off one rail.
-      open ? jsx('div', {
-        className: 'sw-bb sw-fw',
-        children: batch.workers.map((w, i) => jsxs('div', {
-          className: 'sw-nwrap',
-          children: [
-            jsx(WorkerRow, {
-              t, w, name: names[i], id: ids?.get(w.session_id), open: openWorker.has(w.session_id),
-              onToggle: () => setOpenWorker(w.session_id)
-            }, 'r'),
-            openWorker.has(w.session_id) ? jsx(Detail, { t, worker: w, onToast }, 'd') : null
-          ]
-        }, w.session_id))
-      }, 'b') : null
-    ]
-  })
-}
-
-/** A stored batch's identity: its start alone can be shared by two batches; its first worker cannot. */
-function batchKey(b) {
-  return `${b.started_at}:${b.workers[0]?.session_id || ''}`
-}
-
-// ── command deck ─────────────────────────────────────────────────────────────
-
-// Each agent's colour on the deck, on its files and in the log. Status keeps yellow / green / red,
-// so the agent colours stay clear of them; past four, the letter tells two agents apart.
-const HUES = ['var(--ui-blue)', 'var(--ui-purple)', 'var(--ui-cyan)', 'var(--ui-orange)']
-const CHAT_HUE = 'var(--ui-text-tertiary)'
-// Live log rows kept, newest first.
-const LOG_ROWS = 6
-// A log row younger than this reads "now".
-const LOG_NOW_S = 3
-// What a worker's current tool reads as under its orb (and in the log).
-const VERB = {
-  read_file: 'read', write_file: 'write', patch: 'edit', search_files: 'search', terminal: 'run', process: 'run',
-  execute_code: 'code', delegate_task: 'delegate', web_search: 'web', web_extract: 'web', browser_exec: 'web'
-}
-
-/** The letter each name of one batch starts with, past the words every name of the batch opens with
- * ("Review alpha", "Review beta" -> A, B), so a batch of look-alike goals still gets telling letters. */
-export function baseLetters(names) {
-  const words = names.map(n => String(n || '').split(/\s+/).filter(Boolean))
-  let skip = 0
-  if (names.length > 1) {
-    while (words.every(w => w.length > skip + 1 && w[skip].toLowerCase() === words[0][skip].toLowerCase())) skip++
-  }
-  return words.map(w => (w.slice(skip).join(' ').match(/[a-z0-9]/i)?.[0] || '?').toUpperCase())
-}
-
-/** One letter per agent; a letter already taken on the page gets a number (F, F2), so no two agents
- * share a badge. `groups` are the page's batches in order, each a list of names. */
-export function agentLetters(groups) {
-  const seen = new Map()
-  return groups.map(names => baseLetters(names).map(ch => {
-    const k = (seen.get(ch) || 0) + 1
-    seen.set(ch, k)
-    return k === 1 ? ch : `${ch}${k}`
-  }))
-}
-
-/** The page's batches, each a list of agents ({ name, keys }) -> a lookup by any of their keys
- * (subagent id, session id): letter, hue, name. Hues run on across batches. */
-export function agentIds(groups) {
-  const letters = agentLetters(groups.map(g => g.map(a => a.name)))
-  const ids = new Map()
-  let n = 0
-  groups.forEach((g, gi) => g.forEach((a, i) => {
-    const id = { letter: letters[gi][i], hue: HUES[n++ % HUES.length], name: a.name }
-    for (const k of a.keys) if (k && !ids.has(k)) ids.set(k, id)
-  }))
-  return ids
-}
-
-/** Per agent (worker session id, '' for the chat): how many files it changed and how many it only opened. */
-export function touchedBy(files) {
-  const by = new Map()
-  for (const f of files || []) {
-    for (const w of f.who || []) {
-      const c = by.get(w) || { edited: 0, opened: 0 }
-      if ((f.editors || []).includes(w)) c.edited++
-      else c.opened++
-      by.set(w, c)
-    }
-  }
-  return by
-}
-
-/** A tool's preview as a short target: a path keeps its last two parts, anything else its first line. */
-export function shortTarget(text) {
-  const line = String(text || '').trim().split('\n', 1)[0]
-  if (!/[\\/]/.test(line) || /\s/.test(line)) return line
-  return line.split(/[\\/]+/).filter(Boolean).slice(-2).join('/')
-}
-
-/** The line under an agent's orb: what it does now while it runs, what it did once it ended. */
-export function unitAction(u, touched, t = enT) {
-  if (u.status === 'running') {
-    const tool = u.rec.last_tool
-    if (!tool) return { verb: t('sw.unit.thinking') }
-    return { verb: t(`sw.verb.${VERB[tool] || 'other'}`, tool), target: shortTarget(u.rec.tool_preview), full: u.rec.tool_preview }
-  }
-  if (u.status === 'queued') return { verb: t('sw.unit.queued') }
-  const did = touched && (touched.edited || touched.opened) ? t('sw.unit.touched', touched.edited, touched.opened) : ''
-  return { verb: t(`sw.unit.${TERMINAL.has(u.status) ? u.status : 'stopped'}`), target: did }
-}
-
-/** A live batch as deck units: each root, then the workers it started (marked with its letter). */
-export function liveUnits(batch, now) {
-  const out = []
-  const walk = (rows, parent) => {
-    rows.forEach(r => {
-      out.push({
-        key: r.subagent_id, sid: r.child_session_id || r.session_id || null, rec: r, parent,
-        status: r.status, duration: r.duration_s ?? (r.started_at ? now - r.started_at : null)
-      })
-      walk(batch.kids.get(r.subagent_id) || [], r.subagent_id)
-    })
-  }
-  walk(batch.roots, null)
-  // Named across the whole deck: a nested worker sits beside its parent's siblings, not under them.
-  const names = distinctNames(out.map(u => u.rec.goal))
-  return out.map((u, i) => ({ ...u, name: names[i] }))
-}
-
-/** A stored batch as deck units, keyed by session id like the Earlier list. */
-export function storedUnits(batch) {
-  const names = distinctNames(batch.workers.map(w => w.goal))
-  return batch.workers.map((w, i) => ({
-    key: w.session_id, sid: w.session_id, rec: w, name: names[i], parent: null, status: w.status, duration: w.duration_s
-  }))
-}
-
-function Sig({ id }) {
-  return jsx('span', { className: 'sw-sig', style: { '--u': id.hue }, 'aria-hidden': 'true', children: id.letter })
-}
-
-function Unit({ t, u, id, parentId, open, onToggle, touched }) {
-  const time = u.status === 'queued' ? '' : u.status === 'stopped' ? '' : fmtDuration(u.duration, t)
-  const act = unitAction(u, touched, t)
-  const chip = modelChip(u.rec.model, u.rec.effort)
-  const state = t(`sw.unit.st.${MARKS[u.status] ? u.status : 'stopped'}`)
-  return jsxs('button', {
-    type: 'button', className: `sw-unit sw-nd${open ? ' is-open' : ''}`, 'data-st': u.status, style: { '--u': id.hue },
-    'aria-expanded': open, onClick: onToggle,
-    children: [
-      parentId ? jsx('span', { className: 'sw-from', children: t('sw.unit.from', parentId.letter) }, 'f') : null,
-      jsxs('span', {
-        className: 'sw-orb', 'data-st': u.status,
-        children: [jsx('span', { className: 'sw-orbl', 'aria-hidden': 'true', children: id.letter }, 'l'), jsx(Mark, { t, status: u.status }, 'm')]
-      }, 'o'),
-      jsx(Tip, { label: String(u.rec.goal || '').trim(), children: jsx('span', { className: 'sw-wn', children: u.name }) }, 'n'),
-      jsx('span', { className: 'sw-us', children: [state, time].filter(Boolean).join(' · ') }, 's'),
-      chip ? jsx(Tip, { label: t('sw.modelTip', String(u.rec.model), u.rec.effort), children: jsx('span', { className: 'sw-model', children: chip }) }, 'c') : null,
-      jsxs('span', {
-        className: 'sw-ua',
-        children: [
-          jsx('span', { className: 'sw-uv', children: act.verb }, 'v'),
-          act.target
-            ? (act.full
-              ? jsx(Tip, { label: String(act.full), children: jsx('span', { className: 'sw-ut sw-now', children: act.target }) }, 't')
-              : jsx('span', { className: 'sw-ut', children: act.target }, 't'))
-            : null
-        ]
-      }, 'a')
-    ]
-  })
-}
-
-function Deck({ t, deck, now, ids, touched, openWorker, setOpenWorker, onToast }) {
-  const { units, live } = deck
-  const statuses = units.map(u => u.status)
-  const st = batchState(statuses)
-  const done = statuses.filter(s => s === 'completed').length
-  const n = s => statuses.filter(x => s.includes(x)).length
-  const starts = units.map(u => u.rec.started_at).filter(Number.isFinite)
-  const elapsed = live
-    ? (starts.length ? now - Math.min(...starts) : null)
-    : Math.max(0, ...units.map(u => u.duration ?? 0))
-  const sum = sumCost(units.map(u => u.rec))
-  const cost = fmtCost(sum.usd, sum.status, t)
-  const legend = [['running', n(['running'])], ['failed', n(['failed', 'stopped'])], ['queued', n(['queued'])]].filter(([, c]) => c)
-  const byKey = new Map(units.map(u => [u.key, u]))
-  const opened = units.filter(u => openWorker.has(u.key))
-  const idOf = u => ids.get(u.key) || ids.get(u.sid) || { letter: '?', hue: CHAT_HUE, name: u.name }
-  return jsxs('section', {
-    className: live ? 'sw-deck sw-fl' : 'sw-deck', 'data-st': st, 'data-batch': deck.id, 'aria-label': t('sw.deck.label', done, units.length),
-    children: [
-      jsx('span', { className: 'sw-scan', 'aria-hidden': 'true' }, 'scan'),
-      jsxs('div', {
-        className: 'sw-score',
-        children: [
-          jsxs('div', {
-            className: 'sw-big', role: 'img', 'aria-label': t('sw.deck.label', done, units.length),
-            children: [
-              jsxs('span', { className: 'sw-bign', children: [String(done), jsx('small', { children: `/${units.length}` }, 's')] }, 'n'),
-              jsx('span', { className: 'sw-bigl', children: t(live ? 'sw.deck.finished' : 'sw.deck.lastRun') }, 'l')
-            ]
-          }, 'b'),
-          jsxs('div', {
-            className: 'sw-energy',
-            children: [
-              jsx('span', { className: 'sw-cells', 'aria-hidden': 'true', children: statuses.map((s, i) => jsx('i', { 'data-st': s }, i)) }, 'c'),
-              jsxs('span', {
-                className: 'sw-legend',
-                children: [
-                  ...legend.map(([s, c]) => jsxs('span', { children: [jsx('b', { children: c }, 'n'), ` ${t(`sw.deck.legend.${s}`)}`] }, s)),
-                  elapsed !== null && elapsed > 0 ? jsx('span', { className: 'sw-el', children: fmtDuration(elapsed, t) }, 'e') : null
-                ]
-              }, 'l')
-            ]
-          }, 'e'),
-          cost
-            ? jsx(Tip, {
-              label: t('sw.cost.tip', sum.priced, sum.included, sum.unknown),
-              children: jsxs('span', {
-                className: 'sw-money', tabIndex: 0,
-                children: [jsx('span', { className: 'sw-bcost', children: cost }, 'n'), jsx('span', { className: 'sw-moneyl', children: t('sw.deck.spent') }, 'l')]
-              })
-            }, '$')
-            : null
-        ]
-      }, 's'),
-      jsx('div', {
-        className: 'sw-party',
-        children: units.map(u => jsx(Unit, {
-          t, u, id: idOf(u), parentId: u.parent && byKey.has(u.parent) ? idOf(byKey.get(u.parent)) : null,
-          open: openWorker.has(u.key), onToggle: () => setOpenWorker(u.key), touched: touched.get(u.sid)
-        }, u.key))
+        type: 'button', className: 'sw-pick', 'aria-haspopup': 'menu', 'aria-expanded': open, 'aria-label': t('sw.run.pick'), onClick: () => setOpen(v => !v),
+        children: [jsx('span', { children: view.name }, 'n'), jsx('span', { className: 'sw-pickv', 'aria-hidden': 'true', children: ICON.chev(true) }, 'v')]
       }, 'p'),
-      opened.length
-        ? jsx('div', {
-          className: 'sw-unitds',
-          children: opened.map(u => jsxs('div', {
-            className: 'sw-unitd',
-            children: [
-              jsxs('div', { className: 'sw-unitdh', children: [jsx(Sig, { id: idOf(u) }, 's'), jsx('span', { children: u.name }, 'n')] }, 'h'),
-              jsx(Detail, { t, worker: u.rec, onToast }, 'd')
-            ]
-          }, u.key))
-        }, 'd')
-        : null
+      view.kind === 'live' ? jsx('span', { className: 'sw-ld', 'aria-hidden': 'true' }, 'ld') : null,
+      jsx('span', { className: 'sw-runm', children: view.meta }, 'm'),
+      view.kind === 'past' ? jsx('button', { type: 'button', className: 'sw-back', onClick: onBack, children: t('sw.run.back') }, 'b') : null,
+      open ? jsxs('div', {
+        className: 'sw-menu', role: 'menu', 'aria-label': t('sw.run.pick'),
+        children: [
+          runs.now ? row('now', runs.now, view.kind !== 'past') : null,
+          runs.earlier.length ? jsx('div', { className: 'sw-mh sw-k', role: 'presentation', children: t('sw.run.earlier') }, 'h') : null,
+          ...shown.map(r => row(r.key, r, view.key === r.key)),
+          !older && runs.earlier.length > HISTORY_PAGE
+            ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setOlder(true), children: t('sw.run.older', runs.earlier.length - HISTORY_PAGE) }, 'more')
+            : null
+        ]
+      }, 'menu') : null
     ]
   })
 }
 
-/** What happened in this chat while the page was open: workers starting, their tools, their ends. */
-function useLog(runtimeId) {
-  const [log, setLog] = useState([])
+/** A unit that just finished plays its moment: 'done' (ring closes green) or 'fail' (shakes red). */
+function useFlash(units, active) {
+  const prev = useRef(new Map())
+  const timers = useRef(new Set())
+  const [flash, setFlash] = useState(() => new Map())
+  const sig = units.map(u => `${u.key}:${u.status}`).join('|')
+  // Each moment ends on its own timer: a later finish must not cancel an earlier one's end.
+  useEffect(() => () => { timers.current.forEach(stop => stop()) }, [])
   useEffect(() => {
-    setLog([])
-    if (!runtimeId) return undefined
-    let seq = 0
-    const push = e => setLog(prev => [{ ...e, id: ++seq, at: Date.now() / 1000 }, ...prev].slice(0, LOG_ROWS))
-    const on = (type, fn) => ctxRef.onEvent(type, event => {
-      if (event?.session_id !== runtimeId) return
-      fn(event.payload || {})
+    const before = prev.current
+    prev.current = new Map(units.map(u => [u.key, u.status]))
+    if (!active) return
+    const hits = units.filter(u => before.has(u.key) && !TERMINAL.has(before.get(u.key)) && (u.status === 'completed' || u.status === 'failed'))
+    if (!hits.length) return
+    setFlash(cur => {
+      const next = new Map(cur)
+      for (const u of hits) next.set(u.key, u.status === 'completed' ? 'done' : 'fail')
+      return next
     })
-    const offs = [
-      on('subagent.start', p => { if (p.subagent_id) push({ who: p.subagent_id, kind: 'start' }) }),
-      on('subagent.tool', p => { if (p.subagent_id && p.tool_name) push({ who: p.subagent_id, kind: 'tool', tool: p.tool_name, target: p.tool_preview || '' }) }),
-      on('subagent.complete', p => {
-        const kind = STATUS_OF[p.status] || 'completed'
-        if (p.subagent_id) push({ who: p.subagent_id, kind: TERMINAL.has(kind) ? kind : 'stopped' })
-      }),
-      on('tool.start', p => {
-        const targets = fileTargets(p.name, p.args)
-        if (targets.length) push({ who: '', kind: 'tool', tool: p.name, target: targets[0].path })
+    const stop = ctxRef.setTimeout(() => {
+      timers.current.delete(stop)
+      setFlash(cur => {
+        const next = new Map(cur)
+        for (const u of hits) next.delete(u.key)
+        return next
       })
-    ]
-    return () => offs.forEach(off => off())
-  }, [runtimeId])
-  return log
-}
-
-function LogSection({ t, log, ids, chatId, now }) {
-  return jsxs('section', {
-    className: 'sw-logs', 'aria-labelledby': 'sw-log-h',
-    children: [
-      jsx('h3', {
-        className: 'sw-lab sw-plab', id: 'sw-log-h',
-        children: jsx(Tip, { label: t('sw.log.tip'), children: jsx('span', { className: 'sw-plt', tabIndex: 0, children: t('sw.log.title') }) })
-      }, 'h'),
-      jsx('ol', {
-        className: 'sw-log',
-        children: log.map(e => {
-          const id = e.who ? ids.get(e.who) || { letter: t('sw.id.otherLetter'), hue: CHAT_HUE, name: t('sw.id.other') } : chatId
-          const age = now - e.at
-          const verb = e.kind === 'tool' ? t(`sw.verb.${VERB[e.tool] || 'other'}`, e.tool) : t(`sw.log.${e.kind}`)
-          const st = e.kind === 'tool' || e.kind === 'start' ? 'running' : e.kind
-          return jsxs('li', {
-            className: 'sw-ev', 'data-st': st,
-            children: [
-              jsx('span', { className: 'sw-evt', children: age < LOG_NOW_S ? t('sw.log.now') : fmtDuration(age, t) }, 't'),
-              jsx(Tip, { label: id.name, children: jsx('span', { className: 'sw-evw', tabIndex: 0, children: jsx(Sig, { id }) }) }, 'w'),
-              jsxs('span', {
-                className: 'sw-evx',
-                children: [verb, e.target ? jsx(Tip, { label: e.target, children: jsx('code', { children: ` ${shortTarget(e.target)}` }) }, 'c') : null]
-              }, 'x')
-            ]
-          }, e.id)
-        })
-      }, 'l')
-    ]
-  })
+    }, FLASH_MS)
+    timers.current.add(stop)
+  }, [sig, active])
+  return flash
 }
 
 // ── background commands ──────────────────────────────────────────────────────
+
+/** First non-empty line of a command, for the one-line row; the full text is the tooltip. */
+export function commandLine(command) {
+  return String(command || '').split('\n').map(s => s.trim()).find(Boolean) || ''
+}
+
+function ProcDetail({ t, p, storedId, onToast }) {
+  // Only a finished command's receipt has output; a checkpoint-only row (the app closed under it)
+  // has none, and asking for it was a guaranteed 404 shown as a read failure.
+  const fetches = p.status !== 'running' && p.has_output !== false
+  const [out, setOut] = useState({ loading: fetches, data: null, error: null })
+  const [attempt, setAttempt] = useState(0)
+  useEffect(() => {
+    if (!fetches) return undefined
+    let alive = true
+    setOut({ loading: true, data: null, error: null })
+    ctxRef.rest(`/process_output?session_id=${encodeURIComponent(storedId)}&process_id=${encodeURIComponent(p.id)}`).then(
+      data => alive && setOut({ loading: false, data, error: null }),
+      err => alive && setOut({ loading: false, data: null, error: String(err?.message || err) })
+    )
+    return () => { alive = false }
+  }, [p.id, p.status, storedId, fetches, attempt])
+  // The receipt holds the whole command; the list row carries at most COMMAND_CHARS of it.
+  const command = out.data?.command || p.command || ''
+  const cut = !out.data?.command && p.command_truncated
+  const meta = [
+    p.status === 'stopped' ? t('sw.proc.killed') : p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : '',
+    p.cwd ? t('sw.proc.cwd', p.cwd) : '',
+    cut ? t('sw.proc.commandCut', command.length) : ''
+  ].filter(Boolean).join(' · ')
+  // The row already reads a short one-line command in full; the block is for what it cannot show.
+  const showCommand = command !== commandLine(p.command) || command.length > ROW_COMMAND_CHARS || cut
+  let body
+  if (p.status === 'running') body = jsx('p', { className: 'sw-cmnote', children: t('sw.proc.whileRunning') })
+  else if (!fetches) body = jsx('p', { className: 'sw-cmnote', children: t('sw.proc.noOutput') })
+  else if (out.loading) body = jsxs('p', { className: 'sw-cmnote sw-cmwait', children: [jsx('span', { className: 'sw-spin', 'aria-hidden': 'true' }, 's'), t('sw.proc.reading')] })
+  else if (out.error) {
+    body = jsxs('div', {
+      className: 'sw-cmerr', role: 'alert',
+      children: [
+        jsx('p', { children: t('sw.err.withDetail', t('sw.err.procOutput'), out.error) }, 'm'),
+        jsx(IconButton, { label: t('sw.retry'), icon: ICON.refresh, onClick: () => setAttempt(n => n + 1), text: true }, 'r')
+      ]
+    })
+  } else if (!out.data?.output) body = jsx('p', { className: 'sw-cmnote', children: t('sw.proc.printedNothing') })
+  else {
+    body = [
+      jsxs('div', {
+        className: 'sw-k sw-outl',
+        children: [t('sw.proc.output'), out.data.output_truncated ? ` · ${t('sw.proc.outputCut', out.data.output.length)}` : '']
+      }, 'l'),
+      jsx('pre', { className: 'sw-out', children: out.data.output }, 'o')
+    ]
+  }
+  return jsxs('div', {
+    className: 'sw-cmo', 'data-st': p.status,
+    children: [
+      meta ? jsx('div', { className: 'sw-cmeta', children: meta }, 'm') : null,
+      showCommand ? jsx('pre', { className: 'sw-pc', children: command }, 'c') : null,
+      body,
+      jsxs('div', {
+        className: 'sw-btns',
+        children: [
+          out.data?.output ? jsx(IconButton, { label: t('sw.proc.copyOutput'), icon: ICON.copy, onClick: () => writeClip(out.data.output, t, onToast), text: true, primary: true }, 'o') : null,
+          jsx(IconButton, { label: t('sw.proc.copyCommand'), icon: ICON.copy, onClick: () => writeClip(command, t, onToast), text: true }, 'c')
+        ]
+      }, 'b')
+    ]
+  })
+}
+
+function ProcRow({ t, theme, p, now, open, onToggle, storedId, onToast }) {
+  const time = p.status === 'running'
+    ? fmtDuration(p.started_at ? now - p.started_at : null, t)
+    : p.status === 'stopped' ? '—' : fmtDuration(p.duration_s, t)
+  const exit = p.status === 'failed' && p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : ''
+  const state = t(`sw.proc.short.${p.status}`)
+  return jsxs('div', {
+    className: 'sw-cm', 'data-st': p.status,
+    children: [
+      jsxs('button', {
+        type: 'button', className: 'sw-cmr sw-acc', 'data-st': p.status, 'aria-expanded': open, onClick: onToggle,
+        'aria-label': `${commandLine(p.command)}: ${t(`sw.proc.status.${p.status}`)}`,
+        children: [
+          theme === 'terminal'
+            ? jsx('span', { className: 'sw-cmt', 'aria-hidden': 'true', children: t(`sw.tag.${p.status === 'running' ? 'run' : p.status}`) }, 't')
+            : jsx('span', { className: p.status === 'running' ? 'sw-spin' : 'sw-cmd', 'aria-hidden': 'true' }, 't'),
+          jsx(Tip, { label: p.command, children: jsx('code', { className: 'sw-cmc', children: commandLine(p.command) }) }, 'c'),
+          jsx('span', { className: 'sw-cmx', children: [state, exit, time].filter(Boolean).join(' · ') }, 'x'),
+          jsx('span', { className: 'sw-chev', 'aria-hidden': 'true', children: ICON.chev(open) }, 'v')
+        ]
+      }, 'h'),
+      open ? jsx(ProcDetail, { t, p, storedId, onToast }, `d-${p.status}`) : null
+    ]
+  })
+}
+
+function Commands({ t, theme, procs, now, storedId, openProc, toggleProc, onToast }) {
+  const unreadable = procs.data?.unreadable || 0
+  const rows = [...(procs.data?.processes || [])].reverse()
+  return jsxs('div', {
+    className: 'sw-cmds', role: 'tabpanel', id: 'sw-tab-commands', 'aria-labelledby': 'sw-tabb-commands',
+    children: [
+      jsx('p', { className: 'sw-why', children: t('sw.proc.why') }, 'why'),
+      procs.loading
+        ? jsxs('p', { className: 'sw-cmnote sw-cmwait', children: [jsx('span', { className: 'sw-spin', 'aria-hidden': 'true' }, 's'), t('sw.loading')] }, 'w')
+        : rows.length
+          ? jsx('div', {
+            className: 'sw-plist',
+            children: rows.map(p => jsx(ProcRow, { t, theme, p, now, storedId, onToast, open: openProc.has(p.id), onToggle: () => toggleProc(p.id) }, p.id))
+          }, 'l')
+          : procs.error ? null : jsx('p', { className: 'sw-empty', children: t('sw.proc.none') }, 'none'),
+      unreadable ? jsx('p', { className: 'sw-pu', children: t('sw.proc.unreadable', unreadable) }, 'u') : null
+    ]
+  })
+}
 
 // ── files: pure helpers (exported for the render check) ────────────────────
 
@@ -1249,14 +1538,14 @@ function splitPath(path) {
 export function dirLabel(dir, cwd, t = enT) {
   const d = pathKey(dir)
   const c = cwd ? pathKey(cwd) : ''
-  if (c && d === c) return t('sw.files.here')
+  if (c && d === c) return t('sw.file.here')
   if (c && d.startsWith(`${c}/`)) return `./${dir.replace(/\\/g, '/').slice(cwd.replace(/[/\\]+$/, '').length + 1)}`
   return dir.length > DIR_CHARS ? `…${dir.slice(-(DIR_CHARS - 1))}` : dir
 }
 
 /**
- * The rows the section draws: the backend's files plus any file touched now that the backend has
- * not recorded yet. Files being touched come first, then the newest; grouped by folder in that order.
+ * The main agent's files with what it touches now: the backend's files plus any file touched now that
+ * the backend has not recorded yet. Files being touched come first (state 'active'), then the newest.
  */
 export function fileGroups(files, touching) {
   const byKey = new Map((files || []).map(f => [f.key || pathKey(f.path), f]))
@@ -1269,235 +1558,6 @@ export function fileGroups(files, touching) {
   const nowKeys = new Set(now.map(f => f.key))
   const ordered = [...now, ...(files || []).filter(f => !nowKeys.has(f.key || pathKey(f.path)))]
   return ordered.map(f => ({ ...f, key: f.key || pathKey(f.path), state: fileState(f, nowKeys.has(f.key || pathKey(f.path))) }))
-}
-
-function groupByDir(rows) {
-  const groups = new Map()
-  for (const f of rows) {
-    const { dir, name } = splitPath(f.path)
-    const k = pathKey(dir)
-    if (!groups.has(k)) groups.set(k, { dir, rows: [] })
-    groups.get(k).rows.push({ ...f, name })
-  }
-  return [...groups.values()]
-}
-
-/** First non-empty line of a command, for the one-line row; the full text is the tooltip. */
-export function commandLine(command) {
-  return String(command || '').split('\n').map(s => s.trim()).find(Boolean) || ''
-}
-
-// An opened row's pieces hang under it as tree branches, the same lines the live batch tree draws.
-// Each leaf gets its own wrapper so the connector is drawn outside the leaf (a scrolling <pre> would
-// clip a connector drawn on itself). A worker's detail branches off its row (`sw-dt`); a command's
-// hangs off the batch rail of its framed box (`onRail`), exactly like an earlier batch's workers.
-function Branches({ children, onRail }) {
-  return jsx('div', {
-    className: onRail ? 'sw-bb sw-fw' : 'sw-dt',
-    children: children.filter(Boolean).map((leaf, i) => onRail
-      ? jsx('div', { className: 'sw-nwrap', children: jsx('div', { className: 'sw-leaf', children: leaf }) }, i)
-      : jsx('div', { className: 'sw-br', children: leaf }, i))
-  })
-}
-
-function ProcDetail({ t, p, storedId, onToast }) {
-  // Only a finished command's receipt has output; a checkpoint-only row (the app closed under it)
-  // has none, and asking for it was a guaranteed 404 shown as a read failure.
-  const fetches = p.status !== 'running' && p.has_output !== false
-  const [out, setOut] = useState({ loading: fetches, data: null, error: null })
-  useEffect(() => {
-    if (!fetches) return undefined
-    let alive = true
-    ctxRef.rest(`/process_output?session_id=${encodeURIComponent(storedId)}&process_id=${encodeURIComponent(p.id)}`).then(
-      data => alive && setOut({ loading: false, data, error: null }),
-      err => alive && setOut({ loading: false, data: null, error: String(err?.message || err) })
-    )
-    return () => { alive = false }
-  }, [p.id, p.status, storedId, fetches])
-  // The receipt holds the whole command; the list row carries at most COMMAND_CHARS of it.
-  const command = out.data?.command || p.command || ''
-  const cut = !out.data?.command && p.command_truncated
-  const copy = () => writeClip(command, t, onToast)
-  let body
-  if (p.status === 'running') body = jsx('div', { className: 'sw-po-note', children: t('sw.proc.whileRunning') })
-  else if (out.loading) body = jsx(Loader, { label: t('sw.proc.output') })
-  else if (out.error) body = jsx(ErrorState, { title: t('sw.err.withDetail', t('sw.err.procOutput'), out.error) })
-  else if (!out.data?.output) body = jsx('div', { className: 'sw-po-note', children: t('sw.proc.noOutput') })
-  else body = jsx('pre', { className: 'sw-po', children: out.data.output })
-  const meta = [
-    p.status === 'stopped' ? t('sw.proc.killed')
-      // A failed row already shows its exit code; the detail does not repeat it.
-      : p.status !== 'failed' && p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : '',
-    p.cwd ? t('sw.proc.cwd', p.cwd) : '',
-    cut ? t('sw.proc.commandCut', command.length) : ''
-  ].filter(Boolean).join(' · ')
-  // The row already reads a short one-line command in full; the block is for what it cannot show.
-  const showCommand = command !== commandLine(p.command) || command.length > ROW_COMMAND_CHARS || cut
-  return jsx(Branches, {
-    onRail: true,
-    children: [
-      showCommand ? jsx('pre', { className: 'sw-pc', children: command }, 'c') : null,
-      jsxs('div', {
-        className: 'sw-dta',
-        children: [
-          jsx(IconButton, { label: t('sw.proc.copyCommand'), icon: ICON.copy, onClick: copy }, 'c'),
-          jsx('span', { className: 'sw-dtm', children: meta }, 'm')
-        ]
-      }, 'a'),
-      jsxs('div', {
-        className: 'sw-pob',
-        children: [
-          jsxs('div', {
-            className: 'sw-pol',
-            children: [
-              t('sw.proc.output'),
-              out.data?.output_truncated ? jsx('span', { children: ` · ${t('sw.proc.outputCut', out.data.output.length)}` }, 'x') : null
-            ]
-          }, 'l'),
-          body
-        ]
-      }, 'o')
-    ]
-  })
-}
-
-function ProcItem({ t, p, now, open, onToggle, storedId, onToast }) {
-  const time = p.status === 'running'
-    ? fmtDuration(p.started_at ? now - p.started_at : null, t)
-    : p.status === 'stopped' ? '—' : fmtDuration(p.duration_s, t)
-  const head = [
-    jsx(Mark, { t, status: p.status, label: t(`sw.proc.status.${p.status}`) }, 'm'),
-    jsx(Tip, { label: p.command, children: jsx('code', { className: 'sw-pn', children: commandLine(p.command) }) }, 'n'),
-    p.status === 'failed' && p.exit_code !== null && p.exit_code !== undefined
-      ? jsx('span', { className: 'sw-px', children: t('sw.proc.exit', p.exit_code) }, 'x')
-      : null,
-    jsx('span', { className: 'sw-wt', children: time }, 't'),
-    jsx('span', { className: 'sw-chev', children: ICON.chev(open) }, 'v')
-  ]
-  return jsxs('div', {
-    className: open ? 'sw-box sw-frame' : 'sw-cw', 'data-st': p.status,
-    children: [
-      jsx('button', {
-        type: 'button', className: open ? 'sw-pr sw-bl sw-bh is-open' : 'sw-pr sw-bl sw-card sw-acc', 'data-st': p.status,
-        'aria-expanded': open, onClick: onToggle, children: head
-      }, 'h'),
-      open ? jsx(ProcDetail, { t, p, storedId, onToast }, `d-${p.status}`) : null
-    ]
-  })
-}
-
-function ProcSection({ t, procs, now, storedId, openProc, toggleProc, onToast }) {
-  const unreadable = procs.data?.unreadable || 0
-  const rows = [...(procs.data?.processes || [])].reverse()
-  if (!rows.length && !unreadable && !procs.loading) return null
-  return jsxs('section', {
-    className: 'sw-procs', 'aria-labelledby': 'sw-procs-h',
-    children: [
-      jsxs('h3', {
-        className: 'sw-lab sw-plab', id: 'sw-procs-h',
-        children: [
-          jsx(Tip, { label: t('sw.proc.notSubagent'), children: jsxs('span', { className: 'sw-plt', tabIndex: 0, children: [jsx('span', { className: 'sw-pi', children: ICON.term() }, 'i'), t('sw.procs')] }) }, 'l'),
-          // Read failures carry the failed mark (the text keeps its reading colour for contrast).
-          unreadable ? jsxs('span', { className: 'sw-pu', children: [jsx('span', { className: 'sw-mk', 'data-st': 'failed', 'aria-hidden': 'true', children: MARKS.failed() }, 'm'), t('sw.proc.unreadable', unreadable)] }, 'u') : null
-        ]
-      }, 'h'),
-      procs.loading
-        ? jsx(Loader, { label: t('sw.procs') }, 'w')
-        : jsx('div', {
-          className: 'sw-plist',
-          children: rows.map(p => jsx(ProcItem, {
-            t, p, now, storedId, onToast, open: openProc.has(p.id), onToggle: () => toggleProc(p.id)
-          }, p.id))
-        }, 'l')
-    ]
-  })
-}
-
-const FILE_MARK = {
-  active: () => svg(jsx('circle', { cx: 8, cy: 8, r: 4.5, fill: 'currentColor' })),
-  write: () => svg(jsx('path', { d: 'M3 13l1-3.5 6.5-6.5 2.5 2.5L6.5 12z', fill: 'currentColor' })),
-  delete: () => svg(jsx('path', { d: 'M3.5 8h9', stroke: 'currentColor', strokeWidth: 2.2, strokeLinecap: 'round' })),
-  failed: () => svg(jsx('path', { d: 'M4.5 4.5l7 7M11.5 4.5l-7 7', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' })),
-  read: () => svg(jsx('circle', { cx: 8, cy: 8, r: 3.75, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6 }))
-}
-
-function FileTile({ t, f, who, heat, onToast }) {
-  const label = t(`sw.files.op.${f.state}`)
-  const counts = t('sw.files.counts', f.reads, f.writes, f.deletes, f.failed)
-  const copy = () => writeClip(f.path, t, onToast, t('sw.files.copied'))
-  const names = who.map(i => i.name).join(', ')
-  return jsx(Tip, {
-    label: `${f.path}\n${label}${counts ? ` · ${counts}` : ''}${names ? `\n${t('sw.files.by', names)}` : ''}`,
-    children: jsxs('button', {
-      type: 'button', className: 'sw-fir', 'data-op': f.state, onClick: copy,
-      style: { '--u': who[0]?.hue || CHAT_HUE, '--heat': `${heat}%` },
-      'aria-label': `${f.name}: ${label}${counts ? `, ${counts}` : ''}${names ? `, ${t('sw.files.by', names)}` : ''}`,
-      children: [
-        who.length ? jsx('span', { className: 'sw-sigs', children: who.slice(0, 2).map(i => jsx(Sig, { id: i }, i.letter)) }, 's') : null,
-        jsx('span', { className: 'sw-fim', 'aria-hidden': 'true', children: FILE_MARK[f.state]() }, 'm'),
-        jsx('span', { className: 'sw-fin', children: f.name }, 'n'),
-        jsx('span', { className: 'sw-fic', children: f.state === 'active' ? t('sw.files.now') : counts || label }, 'c')
-      ]
-    })
-  })
-}
-
-/** Who touched a file, as badges: its agents by the page's letters, the chat itself last. */
-export function fileWho(f, ids, chatId, other) {
-  const who = f.who && f.who.length ? f.who : f.state === 'active' ? [''] : []
-  const out = []
-  for (const w of who) {
-    const id = w ? ids.get(w) || other : chatId
-    if (!out.includes(id)) out.push(id)
-  }
-  return out
-}
-
-function FilesSection({ t, files, touching, ids, chatId, onToast }) {
-  const [showAll, setShowAll] = useState(false)
-  const data = files.data
-  const rows = fileGroups(data?.files, touching)
-  const unreadable = data?.unreadable || 0
-  if (!rows.length && !unreadable && !files.loading) return null
-  const shown = showAll ? rows : rows.slice(0, FILES_PAGE)
-  const other = { letter: t('sw.id.otherLetter'), hue: CHAT_HUE, name: t('sw.id.other') }
-  const most = Math.max(1, ...rows.map(f => f.reads + f.writes + f.deletes + f.failed))
-  return jsxs('section', {
-    className: 'sw-files', 'aria-labelledby': 'sw-files-h',
-    children: [
-      jsxs('h3', {
-        className: 'sw-lab sw-plab', id: 'sw-files-h',
-        children: [
-          jsx(Tip, { label: t('sw.files.tip'), children: jsxs('span', { className: 'sw-plt', tabIndex: 0, children: [jsx('span', { className: 'sw-pi', children: ICON.file() }, 'i'), t('sw.files.title')] }) }, 'l'),
-          rows.length ? jsx('span', { className: 'sw-labn', children: t('sw.files.touched', rows.length + (data?.more || 0)) }, 'n') : null,
-          unreadable ? jsxs('span', { className: 'sw-pu', children: [jsx('span', { className: 'sw-mk', 'data-st': 'failed', 'aria-hidden': 'true', children: MARKS.failed() }, 'm'), t('sw.files.unreadable', unreadable)] }, 'u') : null
-        ]
-      }, 'h'),
-      files.loading && !rows.length
-        ? jsx(Loader, { label: t('sw.files.title') }, 'w')
-        : jsx('div', {
-          className: 'sw-fil',
-          children: groupByDir(shown).map(g => jsxs('div', {
-            className: 'sw-fig',
-            children: [
-              jsx(Tip, { label: g.dir, children: jsx('div', { className: 'sw-fid', tabIndex: 0, children: dirLabel(g.dir, data?.cwd, t) }) }, 'd'),
-              jsx('div', {
-                className: 'sw-tiles',
-                children: g.rows.map(f => jsx(FileTile, {
-                  t, f, who: fileWho(f, ids, chatId, other), onToast,
-                  heat: Math.round(6 + 26 * ((f.reads + f.writes + f.deletes + f.failed) / most))
-                }, f.key))
-              }, 't')
-            ]
-          }, g.dir))
-        }, 'l'),
-      !showAll && rows.length > FILES_PAGE
-        ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setShowAll(true), children: t('sw.files.more', rows.length - FILES_PAGE) }, 'more')
-        : null,
-      data?.more ? jsx('p', { className: 'sw-fio', children: t('sw.files.notListed', data.more) }, 'nl') : null,
-      jsx('p', { className: 'sw-fio', children: t('sw.files.blind') }, 'b')
-    ]
-  })
 }
 
 // ── page ─────────────────────────────────────────────────────────────────────
@@ -1567,59 +1627,52 @@ function useWatchedChat(pageRef) {
   return { ...watched, held: Boolean(watched.storedId) && watched.storedId !== appStored }
 }
 
+const NO_ATOM = { get: () => null, listen: () => () => {} }
+
 export function Page() {
   const t = usePluginI18n(ID)
   const pageRef = useRef(null)
+  const [theme, setTheme] = useTheme()
   const watched = useWatchedChat(pageRef)
   const { runtimeId, storedId } = watched
+  const busyBy = useValue(host.state.busyBySession || NO_ATOM)
   const history = useHistory(storedId)
-  // Each card opens and closes on its own: opening one never folds another.
-  const [openBatch, toggleBatch, clearBatches, addBatches] = useOpenSet()
-  const [openWorker, setOpenWorker, clearWorkers, addWorkers] = useOpenSet()
+  const [tab, setTab] = useState('agents')
+  const [selected, setSelected] = useState(MAIN)
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const [runKey, setRunKey] = useState(null)
+  const [refocus, setRefocus] = useState(false)
   const [openProc, toggleProc, clearProcs] = useOpenSet()
-  const [focusBatch, setFocusBatch] = useState(null)
-  // A finished batch leaves the live deck for its stored copy (the deck while nothing runs, else
-  // Earlier) with what the user had open: each open worker detail stays open (live keys it by
-  // subagent id, stored by session id), its Earlier card opens, and focus moves along with it.
-  const onBatchEnded = ({ sessions, focused }) => {
-    const opened = [...sessions].filter(([sub]) => openWorker.has(sub)).map(([, sid]) => sid)
-    return Promise.resolve(history.reload()).then(data => {
-      const sids = new Set(sessions.values())
-      const moved = (data?.batches || []).find(b => b.workers.some(w => sids.has(w.session_id)))
-      if (!moved) return
-      if (opened.length) addWorkers(opened)
-      if (opened.length || focused) addBatches([batchKey(moved)])
-      if (focused) setFocusBatch(batchKey(moved))
-    })
-  }
+  // A finished batch leaves the live run for its stored copy (the last run): a selected worker stays
+  // selected (live keys it by subagent id, stored by session id) and keyboard focus moves along.
+  const onBatchEnded = ({ sessions, focused }) => Promise.resolve(history.reload()).then(() => {
+    const sid = sessions.get(selectedRef.current)
+    if (sid) setSelected(sid)
+    if (focused) setRefocus(true)
+  })
   const live = useLive(runtimeId, onBatchEnded)
   const procs = useProcesses(storedId)
   const files = useFiles(storedId)
-  const touching = useTouching(runtimeId, files.data?.cwd, files.reload)
-  const log = useLog(runtimeId)
-  const [showAll, setShowAll] = useState(false)
+  const { touching, tool } = useMainTools(runtimeId, files.data?.cwd, files.reload)
   const [toast, setToast] = useState(null)
   const procRows = procs.data?.processes || []
   const procsRunning = procRows.filter(p => p.status === 'running').length
   const now = useNow(live.batches.length > 0 || procsRunning > 0)
 
   useEffect(() => {
-    clearBatches()
-    clearWorkers()
     clearProcs()
-    setShowAll(false)
-    setFocusBatch(null)
+    setSelected(MAIN)
+    setRunKey(null)
+    setRefocus(false)
   }, [storedId])
-  // Runs after every render until the moved batch's stored copy is drawn (the live copy is dropped
-  // one step after history has it), then hands the focus once to its Earlier header, else to its
-  // open agent on the deck, else to its first agent.
+  // Runs after every render until the moved run is drawn, then hands the focus once to its selected unit.
   useEffect(() => {
-    if (!focusBatch) return
-    const el = [...(pageRef.current?.querySelectorAll('[data-batch]') || [])].find(e => e.getAttribute('data-batch') === focusBatch)
-    const header = el?.querySelector('button.sw-hb') || el?.querySelector('button.sw-unit.is-open') || el?.querySelector('button.sw-unit')
-    if (!header) return
-    header.focus()
-    setFocusBatch(null)
+    if (!refocus) return
+    const el = pageRef.current?.querySelector('button.sw-unit[aria-pressed=true], button.sw-cell[aria-pressed=true], button.sw-frow[aria-pressed=true]')
+    if (!el) return
+    el.focus()
+    setRefocus(false)
   })
   useEffect(() => {
     if (!toast) return undefined
@@ -1629,14 +1682,14 @@ export function Page() {
 
   const liveSessions = new Set(live.batches.flatMap(b => b.rows.map(r => r.child_session_id).filter(Boolean)))
   // subagent.list carries no child_session_id, so a batch still running on the backend is matched by
-  // state and time: while a live tree is drawn, a stored batch with an unfinished worker that started
-  // no earlier than the live tree (less LIVE_MATCH_S) IS that tree.
+  // state and time: while a live run is drawn, a stored batch with an unfinished worker that started
+  // no earlier than the live run (less LIVE_MATCH_S) IS that run.
   const liveStarts = live.batches.flatMap(b => b.rows.map(r => r.started_at)).filter(Number.isFinite)
   const liveFrom = (liveStarts.length ? Math.min(...liveStarts) : now) - LIVE_MATCH_S
   const isLiveStored = b => live.batches.length > 0 && b.started_at >= liveFrom && b.workers.some(w => w.status === 'running')
   const stored = history.data?.batches || []
   // The backend drops a worker from subagent.list the moment it finishes, so a half-done batch's
-  // finished workers exist only in state.db. They join the live tree; hiding the stored batch
+  // finished workers exist only in state.db. They join the live run; hiding the stored batch
   // without them turned '6 workers 5/6' into '1 worker 0/1'.
   const liveDoneGoals = live.batches.flatMap(b => b.rows).filter(r => TERMINAL.has(r.status)).map(r => String(r.goal || '').trim())
   const storedDone = stored.filter(isLiveStored).flatMap(b => b.workers)
@@ -1653,132 +1706,162 @@ export function Page() {
     .map(b => ({ ...b, workers: b.workers.filter(w => !liveSessions.has(w.session_id)) }))
     .filter(b => b.workers.length)
     .reverse()
-  // The deck shows the batch that runs now; with none running, the last one. Earlier lists the rest.
-  const decks = nowBatches.length
-    ? nowBatches.map(b => ({ id: b.id, live: true, units: liveUnits(b, now) }))
-    : past.length ? [{ id: batchKey(past[0]), live: false, units: storedUnits(past[0]) }] : []
-  const earlier = nowBatches.length ? past : past.slice(1)
-  const shown = showAll ? earlier : earlier.slice(0, HISTORY_PAGE)
-  const totals = {
-    batches: nowBatches.length + past.length,
-    workers: nowBatches.reduce((n, b) => n + b.rows.length, 0) + past.reduce((n, b) => n + b.workers.length, 0)
-  }
-  // One letter and colour per agent across the page: the deck first, then Earlier, newest first.
-  const ids = agentIds([
-    ...decks.map(d => d.units.map(u => ({ name: u.name, keys: [u.key, u.sid] }))),
-    ...earlier.map(b => b.workers.map(w => ({ name: workerName(w.goal), keys: [w.session_id] })))
-  ])
-  const chatId = { letter: t('sw.id.chat'), hue: CHAT_HUE, name: t('sw.id.chatName') }
-  const touched = touchedBy(files.data?.files)
-  const runningN = live.batches.reduce((n, b) => n + b.rows.filter(r => r.status === 'running').length, 0)
-  const procSection = storedId
-    ? jsx(ProcSection, { t, procs, now, storedId, openProc, toggleProc, onToast }, 'procs')
-    : null
-  // Keyed by chat: its "show all" folds again when the watched chat changes.
-  const filesSection = storedId
-    ? jsx(FilesSection, { t, files, touching, ids, chatId, onToast }, `files-${storedId}`)
-    : null
-  const lower = filesSection || log.length
-    ? jsxs('div', {
-      className: `sw-lower${log.length ? ' has-log' : ''}`,
-      children: [filesSection, log.length ? jsx(LogSection, { t, log, ids, chatId, now }, 'log') : null]
-    }, 'lower')
-    : null
+  const isLive = nowBatches.length > 0
+  // The run shown "now": the running one; with none running, the last one. The picker lists the rest.
+  const earlier = isLive ? past : past.slice(1)
+  const picked = runKey ? earlier.find(b => batchKey(b) === runKey) : null
+  const nowSubs = isLive
+    ? nowBatches.flatMap(b => liveUnits(b, now).map(u => ({ ...u, batch: b.id })))
+    : past.length ? storedUnits(past[0]) : []
+  const subs = picked ? storedUnits(picked) : nowSubs
+  const viewing = picked ? 'past' : isLive ? 'live' : 'last'
+  const calm = viewing === 'past'
+  const active = viewing === 'live' ? subs.filter(u => u.status === 'running' || u.status === 'queued').length : 0
+  const busy = Boolean(runtimeId && busyBy?.[runtimeId])
+  const mainAct = calm ? null : tool ? (tool.name === 'delegate_task' && active ? 'wait' : toolAct(tool.name)) : active ? 'wait' : busy || touching.size ? 'think' : null
+  const main = { key: MAIN, main: true, name: t('sw.main.name'), status: mainAct ? 'running' : 'idle', act: mainAct, rec: null }
+  const units = [main, ...subs]
+  const sel = units.find(u => u.key === selected) || main
+  const flash = useFlash(subs, !calm)
+  const byKey = new Map(subs.map(u => [u.key, u]))
 
-  let body
-  if (!storedId && !runtimeId) {
-    body = jsx(PanelEmpty, { icon: 'comment-discussion', title: t('sw.noChat.title'), description: t('sw.noChat.body') })
-  } else if (history.loading && !history.data && !live.batches.length) {
-    body = jsx(Loader, { label: t('sw.title') })
-  } else if (!live.batches.length && !past.length && history.error && procs.error && (files.error || !files.data?.files?.length)) {
-    body = jsx('p', { className: 'sw-hint', children: t('sw.err.hint') })
-  } else if (!live.batches.length && !past.length && !history.error) {
-    body = [
-      jsx(PanelEmpty, { icon: 'type-hierarchy-sub', title: t('sw.empty.title'), description: t('sw.empty.body') }, 'empty'),
-      lower,
-      procSection
-    ]
-  } else {
-    body = [
-      ...decks.map(d => jsx(Deck, { t, deck: d, now, ids, touched, openWorker, setOpenWorker, onToast }, d.id)),
-      lower,
-      earlier.length ? jsx('h3', { className: 'sw-lab', children: t('sw.earlier') }, 'el') : null,
-      ...shown.map(b => {
-        const key = batchKey(b)
-        return jsx(HistoryBatch, {
-          t, batch: b, ids, open: openBatch.has(key), onToggle: () => toggleBatch(key),
-          openWorker, setOpenWorker, onToast
-        }, key)
-      }),
-      !showAll && earlier.length > HISTORY_PAGE
-        ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setShowAll(true), children: t('sw.older', earlier.length - HISTORY_PAGE) }, 'more')
-        : null,
-      procSection
-    ]
+  const runOf = b => {
+    const units = storedUnits(b)
+    const times = b.workers.map(w => w.duration_s).filter(v => v !== null && v !== undefined)
+    const cost = sumCost(b.workers)
+    return {
+      key: batchKey(b),
+      name: t('sw.run.name', workerName(b.workers[0]?.goal), b.workers.length - 1),
+      statuses: units.map(u => u.status),
+      meta: t('sw.run.meta', fmtAgo(now - b.started_at, t), units.filter(u => u.status === 'completed').length, units.length, fmtCost(cost.usd, cost.status, t)),
+      ago: fmtAgo(now - b.started_at, t),
+      took: times.length ? fmtDuration(Math.max(...times), t) : ''
+    }
+  }
+  const nowCost = sumCost(nowSubs.map(u => u.rec))
+  const runs = {
+    now: isLive || past.length ? {
+      name: t(isLive ? 'sw.run.current' : 'sw.run.last'),
+      statuses: nowSubs.map(u => u.status),
+      meta: isLive
+        ? t('sw.run.liveMeta', nowSubs.filter(u => u.status === 'completed').length, nowSubs.length, fmtCost(nowCost.usd, nowCost.status, t))
+        : runOf(past[0]).meta
+    } : null,
+    earlier: earlier.map(runOf)
+  }
+  let view
+  if (picked) {
+    const r = runOf(picked)
+    view = { kind: 'past', key: r.key, name: r.name, meta: t('sw.run.past', r.ago, r.took) }
+  } else if (isLive) {
+    view = { kind: 'live', name: t('sw.run.current'), meta: t('sw.run.live', fmtAgo(now - (liveStarts.length ? Math.min(...liveStarts) : now), t)) }
+  } else if (past.length) {
+    const r = runOf(past[0])
+    view = { kind: 'last', name: t('sw.run.last'), meta: t('sw.run.lastMeta', r.ago, r.took) }
+  }
+  const pickRun = key => {
+    setRunKey(key === 'now' ? null : key)
+    setSelected(MAIN)
   }
 
   const errors = [
-    history.error ? t('sw.err.withDetail', t('sw.err.history'), history.error) : null,
-    live.error ? t('sw.err.withDetail', t('sw.err.live'), live.error) : null,
-    procs.error ? t('sw.err.withDetail', t('sw.err.procs'), procs.error) : null,
-    files.error ? t('sw.err.withDetail', t('sw.err.files'), files.error) : null
+    history.error ? t('sw.err.item', t('sw.err.history'), history.error) : null,
+    live.error ? t('sw.err.item', t('sw.err.live'), live.error) : null,
+    procs.error ? t('sw.err.item', t('sw.err.procs'), procs.error) : null,
+    files.error ? t('sw.err.item', t('sw.err.files'), files.error) : null
   ].filter(Boolean)
   const refreshAll = () => { history.reload(); procs.reload(); files.reload(); live.retry() }
-  // The header's tint tells one thing: a read failed (red), something runs (yellow), or neither.
-  // It used to fall back to green, so a page where nothing could be read looked all fine.
-  const headState = errors.length ? 'failed' : runningN || procsRunning ? 'running' : 'idle'
   const chatName = storedId ? history.data?.title || t('sw.chat.untitled', String(storedId).slice(-6)) : ''
+  const noChat = !storedId && !runtimeId
+  const loading = !noChat && history.loading && !history.data && !live.batches.length
+  const nothing = !isLive && !past.length && history.error && procs.error && (files.error || !files.data?.files?.length)
+  const swarm = subs.length > SWARM_AT
+
+  let body
+  if (noChat) {
+    body = jsxs('div', { className: 'sw-hint', children: [jsx('b', { children: t('sw.noChat.title') }, 't'), jsx('span', { children: t('sw.noChat.body') }, 'b'), jsx('span', { className: 'sw-cur', 'aria-hidden': 'true' }, 'c')] })
+  } else if (loading) {
+    body = jsxs('div', {
+      className: 'sw-skel', role: 'status', 'aria-label': t('sw.loading'),
+      children: [jsxs('div', { className: 'sw-sks', 'aria-hidden': 'true', children: [0, 1, 2].map(i => jsx('span', { className: 'sw-sk' }, i)) }, 's'), jsx('div', { className: 'sw-k', children: t('sw.loading') }, 'k')]
+    })
+  } else if (tab === 'commands') {
+    body = jsx(Commands, { t, theme, procs, now, storedId, openProc, toggleProc, onToast })
+  } else if (nothing) {
+    body = jsx('p', { className: 'sw-empty', children: t('sw.allFailed') })
+  } else {
+    const parentName = sel.parent ? byKey.get(sel.parent)?.name : ''
+    body = jsxs('div', {
+      className: 'sw-agents', role: 'tabpanel', id: 'sw-tab-agents', 'aria-labelledby': 'sw-tabb-agents',
+      children: [
+        view ? jsx(RunBar, { t, view, runs, onPick: pickRun, onBack: () => pickRun('now') }, 'run') : null,
+        jsx(Score, { t, subs }, 'score'),
+        swarm
+          ? jsx(Swarm, { t, theme, main, subs, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, `swarm-${view?.key || 'now'}`)
+          : subs.length
+            ? jsx(Units, { t, theme, units, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, 'units')
+            : jsxs('div', {
+              className: 'sw-solo',
+              children: [
+                jsx(Units, { t, theme, units: [main], selected: sel.key, onSelect: setSelected, flash, waitingOn: 0 }, 'u'),
+                jsx('p', { className: 'sw-nosub', children: t('sw.noSubagents') }, 'p')
+              ]
+            }, 'solo'),
+        sel.main
+          ? jsx(MainPanel, { t, main, files, touching: calm ? new Map() : touching, tool: calm ? null : tool, waitingOn: active, onToast }, 'focus-main')
+          : jsx(SubPanel, { t, u: sel, parentName, files, onToast }, `focus-${sel.key}`)
+      ]
+    })
+  }
+
+  const tabs = noChat || loading ? null : jsxs('div', {
+    className: 'sw-tabs', role: 'tablist', 'aria-label': t('sw.tabs.label'),
+    children: ['agents', 'commands'].map(id => jsxs('button', {
+      type: 'button', role: 'tab', id: `sw-tabb-${id}`, className: 'sw-tab', 'data-tab': id, 'aria-selected': tab === id,
+      'aria-controls': `sw-tab-${id}`, onClick: () => setTab(id),
+      children: [
+        t(`sw.tabs.${id}`),
+        id === 'commands' && (procsRunning || procs.error)
+          ? jsx(Tip, {
+            label: procs.error ? t('sw.countFailed') : t('sw.tabs.running', procsRunning),
+            children: jsx('span', { className: 'sw-tabn', role: 'img', 'aria-label': procs.error ? t('sw.countFailed') : t('sw.tabs.running', procsRunning), children: procs.error ? '—' : procsRunning })
+          }, 'n')
+          : null
+      ]
+    }, id))
+  }, 'tabs')
 
   return jsx(WatchedChat.Provider, { value: storedId, children: jsxs('div', {
-    className: 'sw-page', ref: pageRef,
+    className: 'sw-page', ref: pageRef, 'data-theme': theme,
     children: [
       jsx('style', { children: CSS }, 'css'),
       jsxs('div', {
-        className: 'sw-panel',
+        className: 'sw-panel', 'data-calm': calm ? 'true' : undefined, 'data-tab': tab,
         children: [
           jsxs('header', {
-            className: 'sw-hd sw-frame', 'data-st': headState,
+            className: 'sw-hd',
             children: [
-              jsx('span', { className: 'sw-hi', children: ICON.tree() }, 'i'),
+              jsx('h2', { className: 'sw-ht', children: theme === 'terminal' ? ID : t('sw.title') }, 't'),
               // Which chat this is: the page can hold a chat the app no longer has focused.
-              jsxs('div', {
-                className: 'sw-htw',
-                children: [
-                  jsx('h2', { className: 'sw-ht', children: t('sw.title') }, 't'),
-                  chatName
-                    ? jsxs('p', {
-                      className: 'sw-chat',
-                      children: [
-                        jsx('span', { className: 'sw-chatn', children: chatName }, 'n'),
-                        watched.held ? jsx(Tip, { label: t('sw.chat.heldTip'), children: jsx('span', { className: 'sw-held', tabIndex: 0, children: t('sw.chat.held') }) }, 'h') : null
-                      ]
-                    }, 'c')
-                    : null
-                ]
-              }, 'tw'),
-              // Counts and refresh are one group: on a narrow pane it drops under the title as a
-              // whole instead of squeezing the title or wrapping a pill onto two lines.
-              jsxs('div', {
-                className: 'sw-hs',
-                children: [
-                  // A count whose source failed reads —, never a 0 that looks like real data.
-                  jsx(Stat, { icon: ICON.stack, value: history.error ? '—' : totals.batches, label: history.error ? t('sw.countFailed') : t('sw.nBatches', totals.batches) }, 'sb'),
-                  jsx(Stat, { icon: ICON.bot, value: history.error ? '—' : totals.workers, label: history.error ? t('sw.countFailed') : t('sw.nWorkers', totals.workers) }, 'sw'),
-                  jsx(Stat, { icon: ICON.term, value: procs.error ? '—' : procRows.length, label: procs.error ? t('sw.countFailed') : t('sw.nProcs', procRows.length) }, 'sp'),
-                  // Everything that runs is counted: a running command tints the header too.
-                  runningN || procsRunning
-                    ? jsxs('span', { className: 'sw-pill', children: [MARKS.running(), t('sw.running', runningN, procsRunning)] }, 'p')
-                    : null,
-                  jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: refreshAll, disabled: !storedId }, 'r')
-                ]
-              }, 'hs')
+              chatName ? jsx('span', { className: 'sw-chatn', children: theme === 'terminal' ? `// ${chatName}` : chatName }, 'c') : null,
+              watched.held ? jsx(Tip, { label: t('sw.chat.heldTip'), children: jsx('span', { className: 'sw-held', tabIndex: 0, children: theme === 'terminal' ? `[${t('sw.chat.held')}]` : t('sw.chat.held') }) }, 'held') : null,
+              // The look toggle is always there: no chat or a pending read is no reason to hide it.
+              jsx('div', {
+                className: 'sw-tg', role: 'group', 'aria-label': t('sw.theme.label'),
+                children: THEMES.map(id => jsx('button', {
+                  type: 'button', className: 'sw-tgb', 'data-theme': id, 'aria-pressed': theme === id, onClick: () => setTheme(id), children: t(`sw.theme.${id}`)
+                }, id))
+              }, 'tg'),
+              noChat ? null : jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: refreshAll, disabled: !storedId }, 'r')
             ]
           }, 'h'),
+          tabs,
           errors.length
             ? jsxs('div', {
               className: 'sw-err', role: 'alert',
               children: [
-                ...errors.map(e => jsx(ErrorState, { title: e }, e)),
+                jsx('b', { className: 'sw-errt', children: t('sw.err.title') }, 't'),
+                jsx('ul', { children: errors.map(e => jsx('li', { children: e }, e)) }, 'l'),
                 // Recovery sits beside the failure, not only as an unlabeled icon in the header.
                 jsx('div', { className: 'sw-erra', children: jsx(IconButton, { label: t('sw.retry'), icon: ICON.refresh, onClick: refreshAll, disabled: !storedId, text: true }) }, 'retry')
               ]
@@ -1794,6 +1877,11 @@ export function Page() {
       }, 'panel')
     ]
   }) })
+}
+
+/** A stored batch's identity: its start alone can be shared by two batches; its first worker cannot. */
+function batchKey(b) {
+  return `${b.started_at}:${b.workers[0]?.session_id || ''}`
 }
 
 // ── progress: status-bar chip + pet line ─────────────────────────────────────
@@ -1917,9 +2005,10 @@ function useTracks() {
   }, [])
 }
 
-/** The focused chat's batch: finished/total, a bar, the cost so far. Opens the page on click. */
+/** The focused chat's batch: one cell per subagent, finished/total, failures, the cost so far. Opens the page on click. */
 function ProgressChip() {
   const t = usePluginI18n(ID)
+  const [theme] = useTheme()
   const runtimeId = useValue(host.state.focusedSessionId)
   useTracks()
   const track = runtimeId ? tracks.get(runtimeId) : null
@@ -1972,7 +2061,7 @@ function ProgressChip() {
     : t('sw.progress.tip', pr.finished, pr.total, pr.failed, pr.running, cost)
   const pct = pr.total ? Math.round((pr.finished / pr.total) * 100) : 0
   return jsxs('span', {
-    className: 'sw-sbw',
+    className: 'sw-sbw', 'data-theme': theme,
     children: [
       jsx('style', { children: CHIP_CSS }, 'css'),
       jsx(Tip, {
@@ -1992,291 +2081,328 @@ function ProgressChip() {
   })
 }
 
-const CHIP_CSS = `
+// The Terminal look's fixed phosphor palette. TERMINAL PALETTE START/END bound the ONLY colour
+// literals in this file: audit_static.py allows hex there and nowhere else, and only as custom
+// properties. Everything else reads these variables (Terminal) or the app's tokens (Cockpit).
+const TM_PALETTE = `
+/* TERMINAL PALETTE START */
+.sw-page[data-theme=terminal],.sw-sbw[data-theme=terminal]{--tm-bg:#060a06;--tm-raised:#0b140b;--tm-ink:#b8f5b0;--tm-hi:#eaffe6;--tm-name:#d6ffd0;
+ --tm-dim:#6f9f69;--tm-line:#1e3a1e;--tm-badline:#5a2020;--tm-run:#ffd166;--tm-bad:#ff6b6b;--tm-ok:#7dff7d;--tm-glow:#4cff4c;--tm-shade:#000000}
+/* TERMINAL PALETTE END */
+`
+
+// The chip sits in the app's status bar, outside the page: Cockpit takes the app's tokens, Terminal
+// its own palette (TM_PALETTE, the one block that may hold colour literals).
+const CHIP_CSS = `${TM_PALETTE}
 .sw-sbw{display:inline-flex;align-items:center}
-.sw-sb{display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 6px;border-radius:5px;border:0;background:transparent;
+.sw-sb{display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 6px;border-radius:3px;border:0;background:transparent;
  color:var(--ui-text-secondary);font:inherit;font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer;--sw-tint:var(--ui-yellow)}
-.sw-sb:hover{background:var(--ui-bg-tertiary);color:var(--ui-text-primary)}
-.sw-sb:focus-visible{outline:2px solid var(--ui-stroke-primary);outline-offset:1px}
+.sw-sb:hover{background:color-mix(in srgb,var(--ui-accent) 14%,transparent);color:var(--ui-text-primary)}
+.sw-sb:focus-visible{outline:2px solid var(--ui-accent);outline-offset:1px}
 .sw-sb[data-st=completed]{--sw-tint:var(--ui-green)}
 .sw-sb[data-st=failed]{--sw-tint:var(--ui-red)}
 .sw-sb[data-st=stopped],.sw-sb[data-st=queued]{--sw-tint:var(--ui-text-quaternary)}
 .sw-sbm{width:13px;height:13px;flex:none}
 .sw-sbm svg{width:100%;height:100%;display:block}
-.sw-sbbar{width:44px;height:5px;border-radius:3px;background:var(--ui-bg-tertiary);overflow:hidden;flex:none}
+.sw-sbbar{width:44px;height:5px;background:var(--ui-bg-tertiary);overflow:hidden;flex:none;transform:skewX(-20deg)}
 .sw-sbbar>i{display:block;height:100%;background:var(--sw-tint);transition:width .3s}
+.sw-sbw[data-theme=terminal] .sw-sb{background:var(--tm-bg);color:var(--tm-ink);font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;box-shadow:inset 0 0 0 1px var(--tm-line);--sw-tint:var(--tm-run)}
+.sw-sbw[data-theme=terminal] .sw-sb[data-st=completed]{--sw-tint:var(--tm-ok)}
+.sw-sbw[data-theme=terminal] .sw-sb[data-st=failed]{--sw-tint:var(--tm-bad)}
+.sw-sbw[data-theme=terminal] .sw-sb[data-st=stopped],.sw-sbw[data-theme=terminal] .sw-sb[data-st=queued]{--sw-tint:var(--tm-dim)}
+.sw-sbw[data-theme=terminal] .sw-sbm{display:none}
+.sw-sbw[data-theme=terminal] .sw-sbbar{transform:none;background:var(--tm-line)}
 .sw-sb .sw-spin{animation:sw-rot 1.1s linear infinite;transform-origin:50% 50%}
 @keyframes sw-rot{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.sw-sb .sw-spin{animation:none}.sw-sbbar>i{transition:none}}
 `
 
-const CSS = `
-.sw-page{height:100%;min-height:0;overflow:auto;padding:20px 24px;color:var(--ui-text-primary);font-size:12px}
-.sw-panel{position:relative;container-type:inline-size;
- --sw-mono:ui-monospace,"Cascadia Mono",Consolas,var(--dt-font-mono,monospace)}
-/* Docked beside the chat the worker name needs every pixel: a model chip cut to 'c…' says nothing. */
-@container (max-width:420px){.sw-panel .sw-model,.sw-panel .sw-strip{display:none}.sw-panel .sw-bl{gap:7px;padding:0 8px}.sw-panel .sw-now{max-width:72px}
- /* The hidden strip carried the push to the right; without it counts and times lost their column. */
- .sw-panel .sw-bl .sw-bc{margin-left:auto}
- /* With a cost chip the cost takes the push, and the count sits beside it. */
- .sw-panel .sw-bl .sw-bcost{margin-left:auto}.sw-panel .sw-bl .sw-bcost~.sw-bc{margin-left:0}}
-.sw-page svg{width:100%;height:100%;display:block}
-.sw-spin{animation:sw-rot 1.1s linear infinite;transform-origin:50% 50%}
+
+const CSS = `${TM_PALETTE}
+.sw-page{height:100%;min-height:0;overflow:auto;padding:16px 20px;font-size:12.5px;--mono:ui-monospace,"Cascadia Mono",Consolas,var(--dt-font-mono,monospace)}
+.sw-page[data-theme=cockpit]{--a:var(--ui-accent);--ink:var(--ui-text-primary);--dim:var(--ui-text-secondary);--bg:var(--dt-background);
+ --run:var(--ui-yellow);--ok:var(--ui-green);--bad:var(--ui-red);--idle:var(--ui-text-tertiary);--line:color-mix(in srgb,var(--a) 42%,transparent);--raised:color-mix(in srgb,var(--a) 8%,var(--bg))}
+.sw-page[data-theme=terminal]{--a:var(--tm-ok);--ink:var(--tm-ink);--dim:var(--tm-dim);--bg:var(--tm-bg);
+ --run:var(--tm-run);--ok:var(--tm-ok);--bad:var(--tm-bad);--idle:var(--tm-dim);--line:var(--tm-line);--raised:var(--tm-raised)}
+.sw-page [data-st=running]{--c:var(--run)}
+.sw-page [data-st=completed]{--c:var(--ok)}
+.sw-page [data-st=failed]{--c:var(--bad)}
+.sw-page [data-st=stopped],.sw-page [data-st=queued],.sw-page [data-st=idle]{--c:var(--idle)}
+.sw-panel{position:relative;container-type:inline-size;max-width:860px;margin:0 auto;padding:16px 18px 18px;color:var(--ink);background:var(--bg)}
+.sw-page[data-theme=cockpit] .sw-panel{background:radial-gradient(90% 60% at 50% 0%,color-mix(in srgb,var(--a) 12%,transparent),transparent 70%),var(--bg);
+ clip-path:polygon(16px 0,100% 0,100% calc(100% - 16px),calc(100% - 16px) 100%,0 100%,0 16px)}
+.sw-page[data-theme=cockpit] .sw-panel::before{content:"";position:absolute;inset:0;pointer-events:none;clip-path:inherit;box-shadow:inset 0 0 0 1px var(--line)}
+.sw-page[data-theme=terminal] .sw-panel{border-radius:8px;font:12.5px/1.6 var(--mono);overflow:hidden;box-shadow:inset 0 0 0 1px var(--line),inset 0 0 60px color-mix(in srgb,var(--tm-shade) 80%,transparent)}
+.sw-page[data-theme=terminal] .sw-panel::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:9;
+ background:repeating-linear-gradient(0deg,color-mix(in srgb,var(--tm-shade) 25%,transparent) 0 1px,transparent 1px 3px)}
+.sw-page :where(button){font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+.sw-page button:focus-visible,.sw-page [tabindex]:focus-visible{outline:2px solid var(--a);outline-offset:2px}
+.sw-page button:disabled{opacity:.5;cursor:default}
+.sw-k{margin:0;font:600 11.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.sw-page[data-theme=cockpit] .sw-k{color:color-mix(in srgb,var(--a) 55%,var(--ink))}
+.sw-page[data-theme=terminal] .sw-k{letter-spacing:0;text-transform:lowercase;font-weight:400}
+.sw-cur{display:none}
+.sw-page[data-theme=terminal] .sw-cur{display:inline-block;width:8px;height:14px;margin-left:4px;vertical-align:-2px;background:var(--ok);box-shadow:0 0 8px var(--ok);animation:sw-blink 1.06s steps(1) infinite}
+/* header */
+.sw-hd{display:flex;align-items:center;gap:10px;min-width:0}
+.sw-ht{flex:none;margin:0;font:700 13px var(--mono);letter-spacing:.2em;text-transform:uppercase;white-space:nowrap}
+.sw-page[data-theme=terminal] .sw-ht{letter-spacing:0;color:var(--tm-hi);text-shadow:0 0 8px var(--tm-glow)}
+.sw-chatn{min-width:0;flex:0 1 auto;font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-page[data-theme=terminal] .sw-chatn{text-transform:lowercase}
+.sw-held{flex:none;font:600 11.5px var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:0 6px;color:var(--ink);background:color-mix(in srgb,var(--a) 22%,var(--bg));box-shadow:inset 0 0 0 1px var(--a)}
+.sw-page[data-theme=terminal] .sw-held{background:none;color:var(--run);letter-spacing:0}
+.sw-tg{margin-left:auto;display:flex;flex:none;font:11.5px var(--mono);letter-spacing:.08em}
+.sw-tgb{padding:3px 8px;text-transform:uppercase;color:var(--dim);box-shadow:inset 0 0 0 1px var(--line)}
+.sw-tgb[aria-pressed=true]{color:var(--ink);background:color-mix(in srgb,var(--a) 22%,transparent)}
+.sw-page[data-theme=terminal] .sw-tgb{box-shadow:none;padding:0 6px}
+.sw-page[data-theme=terminal] .sw-tgb[aria-pressed=true]{color:var(--bg);background:var(--ink)}
+.sw-ib{display:inline-grid;place-items:center;width:26px;height:26px;color:var(--dim);box-shadow:inset 0 0 0 1px var(--line)}
+.sw-hd>.sw-ib{flex:none;margin-left:auto}
+.sw-hd>.sw-tg+.sw-ib{margin-left:0}
+.sw-ib svg{width:14px;height:14px}
+.sw-ib:hover{color:var(--ink);background:color-mix(in srgb,var(--a) 12%,transparent)}
+.sw-ib.is-text{display:inline-flex;gap:6px;width:auto;height:auto;padding:5px 10px;font:12px var(--mono);letter-spacing:.04em;color:var(--ink)}
+.sw-ib.is-pri{background:color-mix(in srgb,var(--a) 20%,transparent)}
+.sw-ib.is-busy{opacity:.7}
+.sw-ibi{display:inline-flex;width:13px;height:13px}
+.sw-ibi svg{width:100%;height:100%}
+.sw-page[data-theme=terminal] .sw-ib{box-shadow:none;color:var(--ok)}
+.sw-page[data-theme=terminal] .sw-ib.is-text::before{content:"["}
+.sw-page[data-theme=terminal] .sw-ib.is-text::after{content:"]"}
+.sw-page[data-theme=terminal] .sw-ib.is-text{padding:0;gap:4px;text-transform:lowercase;letter-spacing:0;color:var(--ok)}
+.sw-page[data-theme=terminal] .sw-ib.is-text .sw-ibi{display:none}
+.sw-page[data-theme=terminal] .sw-ib.is-pri{background:none}
+/* tabs */
+.sw-tabs{display:flex;gap:18px;margin:12px 0;border-bottom:1px solid color-mix(in srgb,var(--a) 25%,transparent)}
+.sw-tab{display:inline-flex;align-items:center;gap:6px;padding:6px 0;margin-bottom:-1px;font:12px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);border-bottom:2px solid transparent!important}
+.sw-tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--a)!important}
+.sw-tabn{padding:0 5px;font-size:11.5px;letter-spacing:0;background:var(--run);color:var(--bg)}
+.sw-page[data-theme=terminal] .sw-tabs{border-bottom-color:var(--line)}
+.sw-page[data-theme=terminal] .sw-tab{letter-spacing:0;text-transform:lowercase;border-bottom:0!important}
+.sw-page[data-theme=terminal] .sw-tab[aria-selected=true]{color:var(--tm-hi)}
+.sw-page[data-theme=terminal] .sw-tab[aria-selected=true]::before{content:"▸"}
+.sw-page[data-theme=terminal] .sw-tabn{background:none;color:var(--run)}
+.sw-page[data-theme=terminal] .sw-tabn::before{content:"("}
+.sw-page[data-theme=terminal] .sw-tabn::after{content:")"}
+/* alert, empty states */
+.sw-err{margin:0 0 12px;padding:10px 12px;font-size:12.5px;line-height:1.45;background:color-mix(in srgb,var(--bad) 10%,var(--bg));border-left:3px solid var(--bad)}
+.sw-err ul{margin:2px 0 8px;padding-left:16px;color:var(--ink)}
+.sw-page[data-theme=terminal] .sw-err{background:var(--bg);border:1px solid var(--tm-badline)}
+.sw-errt{font-weight:600}
+.sw-hint{display:flex;flex-direction:column;align-items:center;gap:4px;padding:26px 8px;text-align:center;color:var(--dim)}
+.sw-hint b{font:600 13px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink)}
+.sw-page[data-theme=terminal] .sw-hint{align-items:flex-start;text-align:left}
+.sw-page[data-theme=terminal] .sw-hint b{letter-spacing:0;text-transform:lowercase}
+.sw-page[data-theme=terminal] .sw-hint b::before{content:"> "}
+.sw-skel{display:flex;flex-direction:column;align-items:center;gap:12px;margin:18px 0 12px}
+.sw-sks{display:flex;gap:16px}
+.sw-sk{width:46px;height:52px;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:color-mix(in srgb,var(--a) 16%,var(--bg));animation:sw-skp 1.4s ease-in-out infinite}
+.sw-page[data-theme=terminal] .sw-sk{clip-path:none;width:120px;height:12px;background:var(--tm-line)}
+.sw-empty{margin:0;padding:6px 0;color:var(--dim)}
+/* run bar + picker */
+.sw-agents{position:relative}
+.sw-runb{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;color:var(--dim)}
+.sw-pick{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;color:var(--ink)!important;font:12px var(--mono)!important;letter-spacing:.06em;text-transform:uppercase;box-shadow:inset 0 0 0 1px var(--line)}
+.sw-pickv{display:inline-flex;width:12px;height:12px}.sw-pickv svg{width:100%;height:100%}
+.sw-page[data-theme=terminal] .sw-pick{padding:0;box-shadow:none;text-transform:lowercase;letter-spacing:0}
+.sw-page[data-theme=terminal] .sw-pick::before{content:"run:";color:var(--tm-hi)}
+.sw-ld{width:7px;height:7px;flex:none;background:var(--run);box-shadow:0 0 8px var(--run);transform:rotate(45deg);animation:sw-pulse 1.6s ease-in-out infinite}
+.sw-runm{min-width:0}
+.sw-back{margin-left:auto;font:12px var(--mono)!important;letter-spacing:.08em;text-transform:uppercase;color:var(--ink)!important;padding:3px 8px!important;box-shadow:inset 0 0 0 1px var(--a)}
+.sw-page[data-theme=terminal] .sw-back{box-shadow:none;text-transform:lowercase;letter-spacing:0;color:var(--ok)!important;padding:0!important}
+.sw-page[data-theme=terminal] .sw-back::before{content:"[← "}.sw-page[data-theme=terminal] .sw-back::after{content:"]"}
+.sw-menu{position:absolute;z-index:8;left:0;top:calc(100% + 6px);width:min(380px,100%);padding:6px;background:var(--raised);color:var(--ink);
+ box-shadow:0 10px 30px color-mix(in srgb,var(--bg) 70%,transparent),inset 0 0 0 1px var(--a)}
+.sw-mr{display:flex;align-items:center;gap:10px;width:100%;padding:7px 10px}
+.sw-mr:hover,.sw-mr.is-on{background:color-mix(in srgb,var(--a) 16%,transparent)}
+.sw-mrn{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-mrx{flex:none;font:11.5px var(--mono);color:var(--dim);white-space:nowrap}
+.sw-mr:hover .sw-mrx,.sw-mr.is-on .sw-mrx{color:var(--ink)}
+.sw-mh{padding:6px 10px 2px}
+.sw-mini{display:flex;gap:2px;flex:none}
+.sw-mini i{width:7px;height:7px;transform:skewX(-20deg);background:var(--c,var(--idle))}
+.sw-page[data-theme=terminal] .sw-mini{gap:0}
+.sw-page[data-theme=terminal] .sw-mini i{transform:none;width:8px;height:10px}
+.sw-more{display:block;margin:4px 0 0 14px;font:12px var(--mono)!important;letter-spacing:.06em;text-transform:uppercase;color:var(--ink)!important;text-decoration:underline;text-decoration-color:var(--a);text-underline-offset:3px}
+.sw-more.sw-inl{display:inline;margin:0 0 0 6px}
+.sw-page[data-theme=terminal] .sw-more{text-transform:lowercase;letter-spacing:0;text-decoration:none;color:var(--ok)!important}
+.sw-page[data-theme=terminal] .sw-more::before{content:"[+] "}
+/* score */
+.sw-score{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
+.sw-sseg{flex:1;min-width:120px}
+.sw-big{font:700 36px/1 var(--mono);text-shadow:0 0 18px color-mix(in srgb,var(--a) 60%,transparent);overflow:hidden}
+.sw-bign{display:inline-block;animation:sw-up .5s ease-out}
+.sw-big small{font-size:18px;color:var(--dim)}
+.sw-seg{display:flex;gap:3px;height:8px;margin:6px 0 5px}
+.sw-seg i{flex:1;max-width:60px;transform:skewX(-20deg);background:var(--c,var(--idle))}
+.sw-spent{text-align:right}
+.sw-money{display:block;font:700 19px var(--mono)}
+.sw-page[data-theme=terminal] .sw-big{font-size:24px;text-shadow:0 0 8px var(--tm-glow);color:var(--tm-hi)}
+.sw-page[data-theme=terminal] .sw-seg{gap:0;height:12px}
+.sw-page[data-theme=terminal] .sw-seg i{transform:none}
+.sw-page[data-theme=terminal] .sw-money{font-size:14px;color:var(--tm-hi)}
+/* units: Cockpit hexes */
+.sw-units{display:flex;justify-content:space-around;flex-wrap:wrap;row-gap:12px;margin:20px 0 4px}
+.sw-unit{width:96px;display:flex;flex-direction:column;align-items:center;gap:5px;text-align:center!important;padding:4px 0!important}
+.sw-hex{position:relative;width:60px;height:66px;display:grid;place-items:center;margin:8px 0 2px}
+.sw-ring{position:absolute;inset:-6px -3px;border-radius:50%;background:repeating-conic-gradient(var(--c) 0 8deg,transparent 8deg 15deg);
+ -webkit-mask:radial-gradient(circle,transparent 35px,var(--a) 36px 38px,transparent 39px);mask:radial-gradient(circle,transparent 35px,var(--a) 36px 38px,transparent 39px)}
+.sw-unit[data-st=running] .sw-ring{animation:sw-rot 9s linear infinite}
+.sw-unit[data-st=completed] .sw-ring,.sw-unit[data-st=failed] .sw-ring{background:var(--c)}
+.sw-unit[data-st=queued] .sw-ring,.sw-unit[data-st=idle] .sw-ring{opacity:.4}
+.sw-body{position:absolute;inset:3px 5px;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:linear-gradient(160deg,color-mix(in srgb,var(--c) 45%,var(--bg)),var(--bg) 78%)}
+.sw-body::after{content:"";position:absolute;inset:2px;clip-path:inherit;background:color-mix(in srgb,var(--c) 6%,var(--bg))}
+.sw-ic{position:relative;z-index:1;width:22px;height:22px;color:var(--ink);filter:drop-shadow(0 0 6px var(--c))}
+.sw-ic svg{width:100%;height:100%;display:block}
+.sw-maintag{position:absolute;top:-6px;right:-14px;z-index:2;font:700 11.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:0 4px;color:var(--ink);background:color-mix(in srgb,var(--a) 22%,var(--bg));box-shadow:inset 0 0 0 1px var(--a)}
+.sw-page[data-theme=terminal] .sw-maintag{background:var(--a);color:var(--bg);box-shadow:none}
+.sw-unit.is-sel .sw-hex::before{content:"";position:absolute;inset:-12px -18px -7px;border:1.5px solid var(--a);
+ -webkit-mask:conic-gradient(var(--a) 0 0) 0 0/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 100% 0/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 0 100%/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 100% 100%/14px 14px no-repeat;
+ mask:conic-gradient(var(--a) 0 0) 0 0/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 100% 0/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 0 100%/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 100% 100%/14px 14px no-repeat}
+.sw-un{max-width:100%;font-size:12.5px;font-weight:600;line-height:15px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
+.sw-us{font:11.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:color-mix(in srgb,var(--c) 55%,var(--ink));white-space:nowrap}
+.sw-unit[data-main][data-st=running] .sw-hex{animation:sw-breathe 2.8s ease-in-out infinite}
+.sw-unit.is-done .sw-ring{animation:sw-close .9s ease-out}
+.sw-unit.is-done .sw-hex{filter:drop-shadow(0 0 14px var(--ok))}
+.sw-unit.is-fail,.sw-frow.is-fail{animation:sw-shake .5s ease-in-out 2}
+.sw-unit.is-fail .sw-hex{filter:drop-shadow(0 0 14px var(--bad))}
+.sw-unit:hover .sw-un{color:var(--ink)}
+/* units: Terminal sprites */
+.sw-page[data-theme=terminal] .sw-units{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin:12px 0}
+.sw-page[data-theme=terminal] .sw-unit{width:auto;min-width:0;padding:8px 4px 6px!important;gap:2px;border:1px solid var(--line)}
+.sw-page[data-theme=terminal] .sw-unit.is-sel{border-color:var(--ok);box-shadow:0 0 12px color-mix(in srgb,var(--ok) 25%,transparent),inset 0 0 12px color-mix(in srgb,var(--ok) 12%,transparent)}
+.sw-spr{margin:0;font:12px/1.05 var(--mono);white-space:pre;color:var(--c)}
+.sw-page[data-theme=terminal] .sw-un{margin-top:4px;font:11.5px/1.3 var(--mono);color:var(--tm-name)}
+.sw-page[data-theme=terminal] .sw-us{letter-spacing:0;color:var(--c);animation:sw-type .6s steps(6,end)}
+.sw-page[data-theme=terminal] .sw-unit[data-main][data-st=running] .sw-spr{animation:sw-breathe 2.8s ease-in-out infinite}
+.sw-solo{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.sw-solo .sw-units{flex:none;margin:12px 0 4px}
+.sw-nosub{flex:1;min-width:160px;margin:0;color:var(--dim)}
+.sw-page[data-theme=terminal] .sw-solo .sw-units{grid-template-columns:120px}
+/* swarm */
+.sw-grp{margin-top:14px}
+.sw-gmain .sw-units,.sw-gmain{display:flex;justify-content:flex-start}
+.sw-gh{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.sw-gh em{font-style:normal;color:var(--ink);letter-spacing:0}
+.sw-fold{margin-left:auto;font:11.5px var(--mono)!important;letter-spacing:.06em;text-transform:uppercase;color:var(--ink)!important;text-decoration:underline;text-decoration-color:var(--a);text-underline-offset:3px}
+.sw-cellgrid{display:flex;flex-wrap:wrap;gap:6px}
+.sw-cell{width:30px;height:33px;display:grid!important;place-items:center;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:color-mix(in srgb,var(--c) 70%,var(--bg))!important}
+.sw-cell::after{content:"";width:26px;height:29px;clip-path:inherit;background:color-mix(in srgb,var(--c) 14%,var(--bg));grid-area:1/1}
+.sw-cell svg,.sw-cell .sw-glyph{grid-area:1/1;width:14px;height:14px;z-index:1;color:var(--ink)}
+.sw-cell.is-sel{background:var(--ink)!important}
+.sw-page[data-theme=terminal] .sw-cell{clip-path:none;width:22px;height:22px;background:none!important;border:1px solid var(--line)}
+.sw-page[data-theme=terminal] .sw-cell::after{display:none}
+.sw-page[data-theme=terminal] .sw-cell .sw-glyph{width:auto;height:auto;font:12px/1 var(--mono);color:var(--c)}
+.sw-page[data-theme=terminal] .sw-cell.is-sel{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent)!important}
+.sw-frow{display:flex;align-items:center;gap:10px;width:100%;padding:5px 10px!important;margin-bottom:4px;font-size:12.5px;border-left:3px solid var(--c)!important;background:color-mix(in srgb,var(--c) 8%,transparent)!important}
+.sw-frow.is-sel{box-shadow:inset 0 0 0 1px var(--a)}
+.sw-frn{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-frx{flex:none;font:11.5px var(--mono);color:var(--dim)}
+.sw-page[data-theme=terminal] .sw-frow{border-left:0!important;background:none!important;padding:0 0 0 12px!important;margin:0}
+/* focus panel */
+.sw-focus{position:relative;margin-top:18px;padding:14px 16px;background:color-mix(in srgb,var(--a) 5%,var(--bg))}
+.sw-page[data-theme=cockpit] .sw-focus{clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,14px 100%,0 calc(100% - 14px))}
+.sw-page[data-theme=cockpit] .sw-focus::before{content:"";position:absolute;inset:0;clip-path:inherit;box-shadow:inset 0 0 0 1px var(--line);pointer-events:none}
+.sw-page[data-theme=terminal] .sw-focus{background:var(--bg);border:1px solid var(--line);padding:8px 12px}
+.sw-page[data-theme=terminal] .sw-focus[data-st=failed]{border-color:var(--tm-badline)}
+.sw-ph{display:flex;align-items:center;gap:10px}
+.sw-ph::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,color-mix(in srgb,var(--a) 50%,transparent),transparent)}
+.sw-head{margin:8px 0 2px;font-size:16px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.sw-head code{font-family:var(--mono);text-shadow:0 0 10px var(--c,var(--run))}
+.sw-nowf{display:inline-block;animation:sw-slide .45s ease-out}
+.sw-page[data-theme=terminal] .sw-head{font-size:12.5px;color:var(--tm-hi)}
+.sw-page[data-theme=terminal] .sw-head::before{content:"> ";color:var(--dim)}
+.sw-meta{font-size:12.5px;color:var(--dim);overflow-wrap:anywhere}
+.sw-model{display:inline-block;max-width:100%;margin-top:4px;font:11.5px var(--mono);padding:1px 6px;box-shadow:inset 0 0 0 1px var(--line);color:var(--dim);white-space:nowrap}
+.sw-task{margin:10px 0 0;font-size:13px;line-height:1.45;color:var(--dim);overflow-wrap:anywhere;white-space:pre-line}
+.sw-task b{color:var(--ink)}
+.sw-ans{margin-top:12px;padding:10px 12px;background:color-mix(in srgb,var(--c) 8%,var(--bg));border-left:3px solid var(--c);font-size:13px;line-height:1.5}
+.sw-anst{white-space:pre-line;overflow-wrap:anywhere}
+.sw-page[data-theme=terminal] .sw-ans{background:none;border-left:0;padding:4px 0;font-size:12.5px}
+.sw-fsec{margin-top:14px}
+.sw-fsec>.sw-k{margin-bottom:4px}
+.sw-fr{display:grid!important;grid-template-columns:4px minmax(0,1fr) 100px 76px;gap:10px;align-items:center;width:100%;min-height:28px;font:12.5px var(--mono)!important;--c:var(--a)}
+.sw-fr[data-op=active]{--c:var(--run)}
+.sw-fr[data-op=failed]{--c:var(--bad)}
+.sw-fr[data-op=delete]{--c:var(--idle)}
+.sw-fr[data-op=read]{--c:color-mix(in srgb,var(--a) 45%,var(--idle))}
+.sw-fr:hover{background:color-mix(in srgb,var(--a) 10%,transparent)!important}
+.sw-fr.is-now{background:linear-gradient(90deg,color-mix(in srgb,var(--run) 18%,transparent),transparent)!important}
+.sw-fr.is-now .sw-fn{animation:sw-slide .45s ease-out}
+.sw-tick{height:16px;background:var(--c)}
+.sw-fnw{display:flex;align-items:baseline;gap:8px;min-width:0;overflow:hidden;white-space:nowrap}
+.sw-fn{flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.sw-fr[data-op=delete] .sw-fn{text-decoration:line-through}
+.sw-fd{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--dim)}
+.sw-fbar{height:5px;background:color-mix(in srgb,var(--a) 14%,transparent)}
+.sw-fbar i{display:block;height:100%;background:var(--c);box-shadow:0 0 8px var(--c)}
+.sw-fl{text-align:right;color:var(--dim);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-page[data-theme=terminal] .sw-fr{grid-template-columns:minmax(0,1fr) 72px;gap:8px;min-height:20px;padding-left:12px!important}
+.sw-page[data-theme=terminal] .sw-tick,.sw-page[data-theme=terminal] .sw-fbar{display:none}
+.sw-page[data-theme=terminal] .sw-fl{text-transform:lowercase;letter-spacing:0}
+.sw-page[data-theme=terminal] .sw-fr[data-op=failed] .sw-fl{color:var(--bad)}
+.sw-page[data-theme=terminal] .sw-fr.is-now{color:var(--run);background:none!important}
+.sw-fnote{margin:6px 0 0;font-size:12px;color:var(--dim)}
+.sw-note{margin:12px 0 0;font-size:12px;line-height:1.45;color:var(--dim)}
+.sw-page[data-theme=terminal] .sw-note::before{content:"# "}
+.sw-btns{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.sw-stats{margin-left:auto;font:11.5px var(--mono);color:var(--dim)}
+/* commands */
+.sw-why{margin:0 0 12px;color:var(--dim)}
+.sw-page[data-theme=terminal] .sw-why::before{content:"# "}
+.sw-cm{margin-bottom:6px}
+.sw-cmr{display:flex!important;align-items:center;gap:10px;width:100%;padding:9px 12px!important;font:12.5px var(--mono)!important;background:color-mix(in srgb,var(--c) 5%,transparent)!important;border-left:3px solid var(--c)!important}
+.sw-cmc{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit}
+.sw-cmx{flex:none;font-size:11.5px;letter-spacing:.06em;color:var(--dim);white-space:nowrap}
+.sw-cmd{width:8px;height:8px;flex:none;background:var(--c);transform:rotate(45deg)}
+.sw-cmt{flex:none;color:var(--c)}
+.sw-chev{display:inline-flex;width:12px;height:12px;flex:none;color:var(--dim)}
+.sw-chev svg{width:100%;height:100%}
+.sw-page .sw-spin{display:inline-block;width:11px;height:11px;flex:none;border-radius:50%;border:2px solid var(--run);border-right-color:transparent;animation:sw-rot 1s linear infinite;vertical-align:-1px;margin-right:6px}
+.sw-cmo{padding:10px 12px 12px 15px;border-left:3px solid var(--c);background:color-mix(in srgb,var(--c) 3%,var(--bg))}
+.sw-cmeta{font:11.5px var(--mono);letter-spacing:.06em;color:var(--dim);overflow-wrap:anywhere}
+.sw-cmnote{margin:6px 0 0;color:var(--dim)}
+.sw-cmerr{margin-top:6px;padding:8px 10px;background:color-mix(in srgb,var(--bad) 10%,var(--bg));border-left:3px solid var(--bad)}
+.sw-cmerr p{margin:0 0 6px}
+.sw-outl{margin-top:8px}
+.sw-out,.sw-pc{margin:6px 0 0;padding:8px 10px;max-height:240px;overflow:auto;background:var(--bg);font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:inset 0 0 0 1px var(--line)}
+.sw-pu{margin:8px 0 0;color:var(--dim)}
+.sw-pu::before{content:"⚠ ";color:var(--run)}
+.sw-page[data-theme=terminal] .sw-cmr{background:none!important;border-left:0!important;padding:2px 0!important}
+.sw-page[data-theme=terminal] .sw-cmx{letter-spacing:0;text-transform:lowercase}
+.sw-page[data-theme=terminal] .sw-cmo{border:1px solid var(--line);background:none;margin:4px 0 6px}
+.sw-page[data-theme=terminal] .sw-cmo[data-st=failed]{border-color:var(--tm-badline)}
+/* toast */
+.sw-live{position:absolute;right:20px;top:92px;z-index:10;pointer-events:none}
+.sw-toast{padding:8px 10px;font-size:12.5px;background:var(--raised);color:var(--ink);box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--a)}
+.sw-toast.is-bad{box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--bad)}
+/* narrow: docked beside the chat */
+@container (max-width:460px){
+ .sw-panel .sw-units{justify-content:flex-start;column-gap:2px}
+ .sw-panel .sw-unit{width:84px}
+ .sw-panel .sw-fr{grid-template-columns:4px minmax(0,1fr) 48px 64px;gap:8px}
+ .sw-panel .sw-fd{display:none}
+ .sw-panel .sw-big{font-size:30px}
+ .sw-panel .sw-tabs{gap:14px}
+ .sw-panel .sw-hd{flex-wrap:wrap;row-gap:6px}
+}
+@container (max-width:460px){.sw-page[data-theme=terminal] .sw-panel .sw-fr{grid-template-columns:minmax(0,1fr) 64px}}
+/* calm: an earlier run is history, not live — no glow, nothing moves */
+.sw-panel[data-calm] *,.sw-panel[data-calm] *::before,.sw-panel[data-calm] *::after{animation:none!important}
+.sw-panel[data-calm] .sw-ic{filter:none}
+.sw-panel[data-calm] .sw-big{text-shadow:none}
+/* motion */
 @keyframes sw-rot{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:reduce){.sw-spin{animation:none}}
-.sw-mk{width:15px;height:15px;flex:none;display:inline-block}
-.sw-hd{display:flex;align-items:center;flex-wrap:wrap;row-gap:8px;gap:10px;padding:10px 10px 10px 14px;margin:0 0 14px}
-.sw-hi{width:30px;height:30px;padding:6px;border-radius:8px;flex:none;color:var(--sw-tint);
- background:color-mix(in srgb,var(--sw-tint) 14%,transparent);border:1px solid color-mix(in srgb,var(--sw-tint) 30%,transparent)}
-.sw-htw{flex:1 1 150px;min-width:0;display:flex;flex-direction:column;gap:1px}
-.sw-ht{margin:0;font-size:14px;font-weight:600;white-space:nowrap}
-.sw-chat{margin:0;display:flex;align-items:center;gap:6px;min-width:0;font-size:11.5px;line-height:16px;color:var(--ui-text-secondary)}
-.sw-chatn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sw-held{flex:none;padding:0 5px;border-radius:4px;border:1px solid var(--ui-stroke-tertiary);line-height:14px;cursor:default}
-.sw-hs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:auto}
-.sw-stat{display:inline-flex;align-items:center;gap:5px;flex:none;white-space:nowrap;height:22px;padding:0 8px 0 6px;border-radius:99px;font-size:11.5px;
- color:var(--ui-text-secondary);background:var(--ui-bg-tertiary);font-variant-numeric:tabular-nums}
-.sw-stat svg{width:13px;height:13px}
-.sw-pill{display:inline-flex;align-items:center;gap:6px;flex:none;white-space:nowrap;height:22px;padding:0 9px 0 6px;border-radius:99px;font-size:11.5px;
- color:var(--ui-text-secondary);background:var(--ui-bg-tertiary)}
-.sw-pill svg{width:13px;height:13px}
-.sw-ib{width:26px;height:26px;padding:5px;border-radius:6px;color:var(--ui-text-secondary);background:transparent;
- border:1px solid var(--ui-stroke-tertiary);cursor:pointer;flex:none}
-.sw-ib:hover:not(:disabled){background:var(--ui-bg-tertiary);color:var(--ui-text-primary)}
-.sw-ib:disabled{opacity:.45;cursor:default}
-.sw-ib.is-text{width:auto;display:inline-flex;align-items:center;gap:6px;padding:0 9px 0 7px;font:inherit;font-size:12px;white-space:nowrap}
-.sw-ibi{width:14px;height:14px;flex:none}
-.sw-ib.is-busy{opacity:1;cursor:progress;background:var(--ui-bg-tertiary)}
-.sw-ib.is-busy svg{animation:sw-pulse 1s ease-in-out infinite}
-@keyframes sw-pulse{50%{opacity:.35}}
-@media (prefers-reduced-motion:reduce){.sw-ib.is-busy svg{animation:none}}
-/* The app removes every focus ring; a keyboard user still has to see where focus is. */
-.sw-ib:focus-visible,.sw-bl:focus-visible,.sw-nd:focus-visible,.sw-more:focus-visible,.sw-dtg:focus-visible,.sw-plt:focus-visible,
-.sw-stat:focus-visible,.sw-mk:focus-visible,.sw-held:focus-visible,.sw-bcost:focus-visible{
- outline:2px solid var(--ui-stroke-primary);outline-offset:1px}
-.sw-hint{margin:12px 6px;font-size:12px;line-height:18px;color:var(--ui-text-secondary)}
-.sw-err{margin:8px 0;padding:8px 10px;border-radius:8px;border:1px solid color-mix(in srgb,var(--ui-red) 45%,transparent);font-size:12px}
-.sw-erra{display:flex;justify-content:flex-end;margin-top:6px}
-.sw-bd{padding-bottom:12px}
-.sw-lab{margin:0;font-size:11.5px;font-weight:400;color:var(--ui-text-secondary);padding:14px 6px 6px}
-.sw-more{font-size:11.5px;color:var(--ui-text-secondary);padding:8px 6px 0;background:none;border:0;cursor:pointer}
-.sw-more:hover{color:var(--ui-text-primary)}
-.sw-strip{display:flex;gap:2px;margin-left:auto;flex:none}
-.sw-strip i{width:14px;height:5px;border-radius:2px;background:var(--t)}
-.sw-strip i[data-st=queued]{background:transparent;box-shadow:inset 0 0 0 1px var(--t)}
-.sw-bc,.sw-bt,.sw-wt{font-size:11.5px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
-.sw-bc{min-width:28px;text-align:right}
-.sw-bcost{font-size:11.5px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
-.sw-bt{min-width:52px;text-align:right}
-.sw-chev{width:14px;height:14px;color:var(--ui-text-quaternary);flex:none}
-.sw-box{margin:2px 0 8px;overflow:hidden}
-.sw-bl{width:100%;height:38px;display:flex;align-items:center;gap:9px;padding:0 10px;border-radius:8px;border:0;background:transparent;
- color:inherit;font:inherit;text-align:left;cursor:pointer}
-.sw-bl:hover{background:var(--ui-bg-secondary)}
-.sw-bh{border-radius:0;box-shadow:none}
-.sw-frame{position:relative;border:1px solid var(--ui-stroke-tertiary);border-radius:10px;background:var(--ui-bg-secondary);
- box-shadow:var(--shadow-sm);--sw-tint:var(--ui-text-tertiary)}
-/* The rail marks only what needs a look — running or failed. On every card it meant nothing. */
-.sw-frame[data-st=running]::after,.sw-frame[data-st=failed]::after{content:"";position:absolute;left:-1px;top:12px;bottom:12px;width:3px;
- border-radius:0 3px 3px 0;background:var(--sw-tint)}
-.sw-frame[data-st=completed]{--sw-tint:var(--ui-green)}
-.sw-frame[data-st=failed]{--sw-tint:var(--ui-red)}
-.sw-frame[data-st=stopped],.sw-frame[data-st=interrupted],.sw-frame[data-st=queued]{--sw-tint:var(--ui-text-quaternary)}
-.sw-frame[data-st=running]{--sw-tint:var(--ui-yellow)}
-.sw-frame .sw-bh{background:transparent}
-.sw-frame .sw-bh:hover{background:color-mix(in srgb,var(--ui-bg-tertiary) 60%,transparent)}
-.sw-acc{position:relative;box-shadow:var(--shadow-xs);transition:background .12s,border-color .12s}
-.sw-acc[data-st=running]::after,.sw-acc[data-st=failed]::after{content:"";position:absolute;left:-1px;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0}
-.sw-acc[data-st=failed]::after{background:var(--ui-red)}
-.sw-acc[data-st=running]::after{background:var(--ui-yellow)}
-/* Inside a framed box the frame already carries the tint: rows keep their mark, lose the rail and
-   the lift, so a frame holds one accent instead of one per row. */
-.sw-fw .sw-acc{box-shadow:none}
-.sw-fw .sw-acc::after{display:none}
-.sw-card{margin:0 0 6px;border:1px solid var(--ui-stroke-tertiary);background:var(--ui-bg-secondary)}
-.sw-card:hover,.sw-nd.sw-acc:hover{background:var(--ui-bg-tertiary);border-color:var(--ui-stroke-secondary)}
-.sw-bn{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.sw-bmore{font-size:11.5px;color:var(--ui-text-secondary);white-space:nowrap;flex:none}
-.sw-box .sw-bb{margin:4px 10px 10px 18px}
-.sw-box .sw-bb>.sw-nwrap:first-child::before{top:-4px}
-.sw-wn{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
-.sw-nl{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
-.sw-nl .sw-wn{flex:1 1 auto}
-.sw-model{font:11.5px var(--sw-mono);color:var(--ui-text-secondary);border:1px solid var(--ui-stroke-tertiary);
- border-radius:4px;padding:0 5px;line-height:15px;white-space:nowrap;flex:0 0 auto}
-.sw-now{font:11.5px var(--sw-mono);color:var(--ui-text-secondary);background:var(--ui-bg-tertiary);
- border-radius:4px;padding:1px 6px;flex:0 1 auto;min-width:0;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sw-dt{display:flex;flex-direction:column;gap:6px;margin:6px 0 2px 22px;padding-left:18px}
-.sw-br{position:relative;min-width:0}
-.sw-br::before{content:"";position:absolute;left:-18px;top:14px;width:17px;border-top:1px solid var(--ui-stroke-secondary)}
-.sw-br::after{content:"";position:absolute;left:-18px;top:-6px;bottom:0;border-left:1px solid var(--ui-stroke-secondary)}
-.sw-br:last-child::after{bottom:auto;height:20px}
-.sw-dtg{padding:8px 10px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
-.sw-dtg>span{font-size:12px;line-height:18px;color:var(--ui-text-secondary);display:-webkit-box;-webkit-line-clamp:3;
- -webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
-.sw-dta{display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:4px 6px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
-.sw-dtm{flex:1 1 120px;min-width:0;margin-left:4px;font-size:11.5px;line-height:16px;color:var(--ui-text-secondary);overflow-wrap:anywhere}
-.sw-fw{position:relative;display:flex;flex-direction:column;gap:6px;margin:14px 0 0 22px;padding-left:18px}
-.sw-fw>.sw-nwrap::before{content:"";position:absolute;left:-18px;top:-6px;bottom:0;border-left:1px solid var(--ui-stroke-secondary)}
-.sw-fw>.sw-nwrap:first-child::before{top:-14px}
-.sw-fw>.sw-nwrap:last-child::before{bottom:calc(100% - 18px)}
-.sw-sub{margin-top:6px}
-.sw-nwrap{position:relative}
-.sw-nd{position:relative;width:100%;display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;border-radius:8px;
- border:1px solid var(--ui-stroke-tertiary);background:var(--ui-bg-secondary);color:inherit;font:inherit;text-align:left;cursor:pointer}
-.sw-nd::before{content:"";position:absolute;left:-19px;top:50%;width:18px;border-top:1px solid var(--ui-stroke-secondary)}
-.sw-nd:hover,.sw-nd.is-open{background:var(--ui-bg-tertiary)}
-.sw-fw .sw-nd,.sw-fw .sw-card{background:var(--ui-bg-quaternary)}
-.sw-fw .sw-nd:hover,.sw-fw .sw-nd.is-open,.sw-fw .sw-card:hover{background:var(--ui-bg-secondary)}
-.sw-nd[data-st=running]{border-color:color-mix(in srgb,var(--ui-yellow) 45%,var(--ui-stroke-tertiary))}
-.sw-nd[data-st=queued]{border-style:dashed;background:transparent}
-.sw-live{position:sticky;bottom:8px}
-.sw-toast{margin:8px auto 0;width:max-content;max-width:100%;padding:6px 12px;border-radius:8px;font-size:12px;
- background:var(--ui-bg-tertiary);border:1px solid var(--ui-stroke-tertiary)}
-.sw-toast.is-bad{border-color:color-mix(in srgb,var(--ui-red) 55%,transparent)}
-.sw-procs{margin-top:6px}
-.sw-plab{display:flex;align-items:center;gap:8px}
-.sw-plt{display:inline-flex;align-items:center;gap:6px;cursor:default}
-.sw-pi{width:13px;height:13px;flex:none}
-.sw-pu{margin-left:auto;display:inline-flex;align-items:center;gap:5px;color:var(--ui-text-secondary)}
-.sw-pu .sw-mk{width:13px;height:13px}
-.sw-plist{display:flex;flex-direction:column;gap:6px}
-.sw-pr::before{display:none}
-.sw-plist>.sw-box{margin:0}
-/* A command's piece hangs off the rail like a worker row: connector at the first line. */
-.sw-leaf{position:relative;min-width:0}
-.sw-leaf::before{content:"";position:absolute;left:-19px;top:18px;width:18px;border-top:1px solid var(--ui-stroke-secondary)}
-.sw-pn{font:11.5px var(--sw-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
-.sw-px{font-size:11.5px;color:var(--ui-text-secondary);white-space:nowrap;flex:none}
-.sw-pc,.sw-po{margin:0;padding:8px 10px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary);
- font:11.5px/16px var(--sw-mono);color:var(--ui-text-secondary);white-space:pre-wrap;word-break:break-word;overflow:auto}
-.sw-pc{max-height:98px}
-/* The output leaf is a card like its siblings; the text inside it needs no second box. */
-.sw-pob{display:flex;flex-direction:column;gap:4px;padding:6px 10px 8px;border-radius:5px;background:var(--ui-bg-quinary);border:1px solid var(--ui-stroke-tertiary)}
-.sw-pob .sw-po{padding:0;border:0;border-radius:0;background:transparent;max-height:180px}
-.sw-pol{font-size:11.5px;color:var(--ui-text-secondary)}
-.sw-po-note{font-size:12px;line-height:18px;color:var(--ui-text-secondary)}
-.sw-fio{margin:0 6px 8px;font-size:11.5px;line-height:16px;color:var(--ui-text-secondary)}
-.sw-fid{font:11.5px/18px var(--sw-mono);color:var(--ui-text-secondary);padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
- border-radius:4px;cursor:default}
-/* ── command deck: the batch as a party — one big score, a unit per agent, a live log ── */
-.sw-lab{font-size:11.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
-.sw-labn{font-size:12px;font-weight:600;letter-spacing:0;text-transform:none;color:var(--ui-text-primary)}
-.sw-deck{position:relative;overflow:hidden;margin:0 0 18px;padding:18px 20px 20px;border-radius:14px;
- background:radial-gradient(120% 90% at 18% 0%,color-mix(in srgb,var(--ui-blue) 13%,transparent),transparent 62%),
-  radial-gradient(90% 80% at 100% 100%,color-mix(in srgb,var(--ui-yellow) 6%,transparent),transparent 60%),var(--ui-bg-secondary);
- box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ui-blue) 26%,var(--ui-stroke-tertiary)),var(--shadow-sm)}
-.sw-deck::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.6;
- background:linear-gradient(color-mix(in srgb,var(--ui-blue) 9%,transparent) 1px,transparent 1px) 0 0/100% 28px,
-  linear-gradient(90deg,color-mix(in srgb,var(--ui-blue) 9%,transparent) 1px,transparent 1px) 0 0/28px 100%;
- -webkit-mask-image:radial-gradient(80% 70% at 35% 25%,currentColor,transparent);mask-image:radial-gradient(80% 70% at 35% 25%,currentColor,transparent)}
-.sw-scan{position:absolute;left:0;right:0;top:-110px;height:110px;pointer-events:none;
- background:linear-gradient(transparent,color-mix(in srgb,var(--ui-blue) 8%,transparent),transparent)}
-.sw-deck[data-st=running] .sw-scan{animation:sw-scan 6s linear infinite}
-@keyframes sw-scan{to{top:100%}}
-.sw-score{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:12px 22px}
-.sw-big{display:flex;align-items:center;gap:10px;flex:none}
-.sw-bign{font-size:46px;font-weight:800;line-height:1;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
-.sw-deck[data-st=running] .sw-bign{text-shadow:0 0 22px color-mix(in srgb,var(--ui-yellow) 35%,transparent)}
-.sw-bign small{font-size:26px;font-weight:700;color:var(--ui-text-secondary)}
-.sw-bigl{font-size:13px;line-height:1.25;color:var(--ui-text-secondary);max-width:96px}
-.sw-energy{flex:1 1 180px;min-width:0;display:flex;flex-direction:column;gap:8px}
-.sw-cells{display:flex;gap:5px;height:14px}
-.sw-cells i{flex:1;max-width:120px;border-radius:4px;background:var(--t);box-shadow:0 0 12px color-mix(in srgb,var(--t) 50%,transparent);--t:var(--ui-text-quaternary)}
-.sw-cells i[data-st=completed]{--t:var(--ui-green)}
-.sw-cells i[data-st=failed]{--t:var(--ui-red)}
-.sw-cells i[data-st=running]{--t:var(--ui-yellow);background:linear-gradient(90deg,color-mix(in srgb,var(--ui-yellow) 30%,transparent),var(--ui-yellow),color-mix(in srgb,var(--ui-yellow) 30%,transparent));
- background-size:200% 100%;animation:sw-flow 1.3s linear infinite}
-.sw-cells i[data-st=queued]{background:transparent;box-shadow:inset 0 0 0 1.5px var(--ui-stroke-secondary)}
-@keyframes sw-flow{to{background-position:-200% 0}}
-.sw-legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums}
-.sw-legend b{color:var(--ui-text-primary);font-weight:700}
-.sw-money{display:flex;flex-direction:column;align-items:flex-end;margin-left:auto;flex:none;border-radius:6px}
-.sw-money .sw-bcost{font-size:24px;font-weight:800;color:var(--ui-text-primary)}
-.sw-moneyl{font-size:12px;color:var(--ui-text-secondary)}
-.sw-party{position:relative;display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:12px;margin-top:20px}
-.sw-party .sw-unit{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:2px;height:auto;min-height:188px;min-width:0;
- padding:16px 10px 12px;border-radius:12px;text-align:center;border:1px solid color-mix(in srgb,var(--u) 30%,transparent);
- background:linear-gradient(180deg,color-mix(in srgb,var(--u) 15%,transparent),transparent 78%)}
-.sw-party .sw-unit::before{display:none}
-.sw-party .sw-unit:hover,.sw-party .sw-unit.is-open{border-color:color-mix(in srgb,var(--u) 65%,transparent);
- background:linear-gradient(180deg,color-mix(in srgb,var(--u) 24%,transparent),transparent 82%)}
-.sw-party .sw-unit.is-open{box-shadow:0 0 0 1px color-mix(in srgb,var(--u) 60%,transparent),0 0 18px color-mix(in srgb,var(--u) 25%,transparent)}
-.sw-party .sw-unit[data-st=queued]{border-style:dashed}
-.sw-from{position:absolute;top:7px;left:9px;font-size:11.5px;color:var(--ui-text-secondary)}
-.sw-orb{--o:var(--ui-text-quaternary);position:relative;width:62px;height:62px;flex:none;border-radius:50%;display:grid;place-items:center;margin-bottom:10px;
- background:radial-gradient(circle,color-mix(in srgb,var(--u) 36%,transparent),transparent 72%)}
-.sw-orb[data-st=running]{--o:var(--ui-yellow)}
-.sw-orb[data-st=completed]{--o:var(--ui-green)}
-.sw-orb[data-st=failed]{--o:var(--ui-red)}
-.sw-orb::before{content:"";position:absolute;inset:0;border-radius:50%;border:3px solid color-mix(in srgb,var(--o) 30%,transparent)}
-.sw-orb[data-st=completed]::before,.sw-orb[data-st=failed]::before{border-color:var(--o);box-shadow:0 0 16px color-mix(in srgb,var(--o) 55%,transparent)}
-.sw-orb[data-st=queued]::before{border-style:dashed;border-color:var(--ui-stroke-secondary)}
-.sw-orb[data-st=running]::after{content:"";position:absolute;inset:0;border-radius:50%;border:3px solid transparent;border-top-color:var(--o);
- border-right-color:var(--o);filter:drop-shadow(0 0 5px var(--o));animation:sw-rot 1.4s linear infinite}
-.sw-unit[data-st=failed] .sw-orb{animation:sw-glitch 2.6s steps(1) infinite}
-@keyframes sw-glitch{0%,92%{transform:none}94%{transform:translateX(-2px)}96%{transform:translateX(2px)}98%{transform:none}}
-.sw-orbl{font-size:21px;font-weight:800;line-height:1;text-shadow:0 0 12px var(--u)}
-.sw-orb .sw-mk{position:absolute;right:-3px;bottom:-3px;width:20px;height:20px;padding:2px;border-radius:50%;background:var(--ui-bg-secondary)}
-.sw-party .sw-unit .sw-wn{flex:none;max-width:100%;font-size:14px;font-weight:700;line-height:19px;white-space:normal;overflow-wrap:anywhere;
- display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
-.sw-us{font-size:12px;line-height:16px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}
-.sw-party .sw-unit .sw-model{margin-top:4px;max-width:100%;height:auto;white-space:normal;overflow-wrap:anywhere;text-align:center}
-.sw-ua{margin-top:8px;display:flex;flex-direction:column;align-items:center;gap:1px;max-width:100%;min-width:0;font-size:12.5px;line-height:17px}
-.sw-uv{color:var(--ui-text-secondary)}
-.sw-ut{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text-primary)}
-.sw-party .sw-ut.sw-now{font:12px/17px var(--sw-mono);background:none;padding:0;border-radius:0;max-width:100%}
-.sw-unit[data-st=running] .sw-ut.sw-now::after{content:"";display:inline-block;width:6px;height:12px;margin-left:2px;vertical-align:-2px;
- background:var(--ui-yellow);animation:sw-blink 1s steps(1) infinite}
+@keyframes sw-breathe{50%{transform:scale(1.05);opacity:.86}}
+@keyframes sw-close{from{transform:scale(1.18);opacity:.4}}
+@keyframes sw-shake{20%{transform:translateX(-4px)}40%{transform:translateX(4px)}60%{transform:translateX(-3px)}80%{transform:translateX(2px)}}
+@keyframes sw-up{from{transform:translateY(60%);opacity:0}}
+@keyframes sw-slide{from{transform:translateX(-10px);opacity:0}}
+@keyframes sw-type{from{clip-path:inset(0 100% 0 0)}}
 @keyframes sw-blink{50%{opacity:0}}
-.sw-unitds{position:relative;display:flex;flex-direction:column;gap:10px;margin-top:12px}
-.sw-unitd{padding:10px 12px;border-radius:10px;background:color-mix(in srgb,var(--ui-bg-primary) 55%,transparent);border:1px solid var(--ui-stroke-tertiary)}
-.sw-unitdh{display:flex;align-items:center;gap:8px;min-width:0;font-size:12.5px;font-weight:600}
-.sw-unitdh>span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sw-unitd .sw-dt{margin:6px 0 0 4px}
-.sw-sig{display:inline-grid;place-items:center;min-width:20px;height:20px;padding:0 4px;flex:none;border-radius:6px;font-size:11.5px;font-weight:800;line-height:1;
- color:var(--ui-text-primary);background:color-mix(in srgb,var(--u) 26%,var(--ui-surface-background));
- box-shadow:0 0 0 1px color-mix(in srgb,var(--u) 65%,transparent),0 0 10px color-mix(in srgb,var(--u) 30%,transparent)}
-.sw-lower{display:grid;grid-template-columns:minmax(0,1fr);gap:4px 24px}
-@container (min-width:640px){.sw-panel .sw-lower.has-log{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr)}}
-.sw-log{list-style:none;margin:0;padding:0 6px;display:flex;flex-direction:column;gap:2px}
-.sw-ev{display:grid;grid-template-columns:38px auto minmax(0,1fr);align-items:center;gap:8px;min-height:30px;font-size:12.5px}
-.sw-ev:first-child{animation:sw-pop .5s ease-out}
-@keyframes sw-pop{from{transform:translateY(-6px);opacity:0}}
-.sw-evt{font-size:11.5px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}
-.sw-evw{display:inline-flex;border-radius:6px}
-.sw-evx{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sw-evx code{font:12px var(--sw-mono)}
-.sw-ev[data-st=completed] .sw-evx::before,.sw-ev[data-st=failed] .sw-evx::before,.sw-ev[data-st=stopped] .sw-evx::before{content:"";display:inline-block;width:8px;height:8px;
- margin-right:7px;border-radius:50%;vertical-align:0;background:var(--ui-green);box-shadow:0 0 8px var(--ui-green)}
-.sw-ev[data-st=failed] .sw-evx::before{background:var(--ui-red);box-shadow:0 0 8px var(--ui-red)}
-.sw-ev[data-st=stopped] .sw-evx::before{background:var(--ui-text-quaternary);box-shadow:none}
-.sw-files{margin-top:0;min-width:0}
-.sw-fil{display:flex;flex-direction:column;gap:10px}
-.sw-fig{display:flex;flex-direction:column;gap:6px}
-.sw-tiles{display:flex;flex-wrap:wrap;gap:8px}
-/* A file is a tile in the colour of the agent that touched it first; a brighter tile was touched more. */
-.sw-fir{position:relative;display:inline-flex;align-items:center;gap:8px;max-width:100%;min-width:0;height:38px;padding:0 12px 0 8px;border-radius:10px;border:0;
- background:color-mix(in srgb,var(--u) var(--heat),var(--ui-bg-secondary));box-shadow:0 0 0 1px color-mix(in srgb,var(--u) 40%,var(--ui-stroke-tertiary));
- color:inherit;font:inherit;text-align:left;cursor:pointer;overflow:hidden;--sw-ft:var(--ui-text-tertiary)}
-.sw-fir:hover{box-shadow:0 0 0 1.5px color-mix(in srgb,var(--u) 75%,transparent)}
-.sw-fir[data-op=write]{--sw-ft:var(--ui-orange)}
-.sw-fir[data-op=delete],.sw-fir[data-op=failed]{--sw-ft:var(--ui-red)}
-.sw-fir[data-op=failed]{box-shadow:0 0 0 1.5px var(--ui-red),0 0 14px color-mix(in srgb,var(--ui-red) 30%,transparent)}
-.sw-fir[data-op=delete] .sw-fin{text-decoration:line-through;text-decoration-color:var(--ui-red)}
-.sw-fir[data-op=active]{--sw-ft:var(--ui-yellow);box-shadow:0 0 0 1.5px var(--ui-yellow),0 0 22px color-mix(in srgb,var(--ui-yellow) 40%,transparent)}
-/* The file being touched now: a band of light sweeps across its tile. */
-.sw-fir[data-op=active]::after{content:"";position:absolute;inset:0;pointer-events:none;transform:translateX(-100%);
- background:linear-gradient(100deg,transparent 20%,color-mix(in srgb,var(--ui-yellow) 32%,transparent) 50%,transparent 80%);animation:sw-shim 1.4s ease-in-out infinite}
-@keyframes sw-shim{to{transform:translateX(100%)}}
-.sw-sigs{display:inline-flex;gap:3px;flex:none}
-.sw-fim{width:12px;height:12px;flex:none;color:var(--sw-ft)}
-.sw-fin{font:600 12.5px var(--sw-mono);min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sw-fic{flex:none;font-size:11.5px;color:var(--ui-text-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
-@container (max-width:420px){.sw-panel .sw-fic{display:none}.sw-panel .sw-party{grid-template-columns:repeat(2,minmax(0,1fr))}.sw-panel .sw-bign{font-size:38px}}
-.sw-fir:focus-visible,.sw-fid:focus-visible,.sw-money:focus-visible,.sw-evw:focus-visible{outline:2px solid var(--ui-stroke-primary);outline-offset:2px}
-@media (prefers-reduced-motion:reduce){.sw-scan,.sw-cells i,.sw-orb,.sw-orb::after,.sw-unit .sw-orb,.sw-ut::after,.sw-ev,.sw-fir[data-op=active]::after{animation:none!important}
- .sw-fir[data-op=active]::after{display:none}}
+@keyframes sw-pulse{50%{opacity:.45}}
+@keyframes sw-skp{50%{opacity:.5}}
+@media (prefers-reduced-motion:reduce){.sw-page *,.sw-page *::before,.sw-page *::after{animation:none!important;transition:none!important}}
 `
 
 function navLabel() {
@@ -2289,6 +2415,8 @@ export default {
   name: 'Subagent Watch',
   register(ctx) {
     ctxRef = ctx
+    // The kept look is read again from this ctx's storage.
+    themeNow = null
     ctx.i18n?.register?.(BUNDLES)
     ctx.register({ id: 'page', area: 'routes', data: { path: ROUTE }, render: () => jsx(Page, {}) })
     ctx.register({ id: 'nav', area: 'sidebar.nav', data: { path: ROUTE, label: navLabel(), codicon: 'type-hierarchy-sub' } })

@@ -10,9 +10,14 @@
  *   reported  `chip` (ink on its own tone) and `quiet` (the host's faint ladder, owned by the theme).
  * It also fails on any ERROR the page logs in the engine, and on a clipped status label.
  *
+ * COVERAGE: the preview must hold all eleven screens of the approved design in BOTH looks (Cockpit and
+ * Terminal) — a screen missing in either look is RED, so a dropped frame cannot pass quietly. Every
+ * frame of both looks is measured; the narrow (380 px) frames must not scroll sideways either.
+ *
  * Usage (from tests/):  node preview.mjs && <electron> shot.cjs preview.html preview.png
  *   <electron> = $HERMES_ELECTRON, or <core>/apps/desktop/node_modules/electron/dist/electron(.exe)
- * Output: the PNG, <out>.measure.json and <out>.contrast.json beside it (both git-ignored).
+ * Output: one PNG per look — <out> (Cockpit, the one the README shows) and <out>-terminal.png — plus
+ * <out>.measure.json and <out>.contrast.json beside them (both git-ignored).
  */
 const { app, BrowserWindow } = require('electron')
 const fs = require('fs')
@@ -21,7 +26,10 @@ const path = require('path')
 const [htmlArg, outArg] = process.argv.slice(2)
 const htmlPath = htmlArg || path.join(__dirname, 'preview.html')
 const outPath = outArg || path.join(__dirname, 'preview.png')
-const WIDTH = 690
+const WIDTH = 1340 // two 640 px columns, Cockpit and Terminal, side by side
+const SHOT_WIDTH = 690 // one look per PNG
+const SCREENS = 11
+const LOOKS = ['cockpit', 'terminal']
 
 app.disableHardwareAcceleration()
 
@@ -132,7 +140,7 @@ const PREPARE = `(() => {
   textRows.sort((a, b) => a.ratio - b.ratio)
   const gated = textRows.filter(x => x.pass !== null)
   // A status label or a duration that clips its own text is a layout bug, not a style choice.
-  const clipped = [...document.querySelectorAll('.sw-meta, .sw-time, .sw-pt, .sw-bt, .sw-st')]
+  const clipped = [...document.querySelectorAll('.sw-meta, .sw-us, .sw-cmx, .sw-mrx, .sw-fl, .sw-sbn')]
     .filter(el => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow !== 'ellipsis')
     .map(el => (el.className + ' [' + (el.textContent || '').slice(0, 24) + ']'))
   // LAYOUT: nothing inside a frame may be wider than the frame (a horizontal scrollbar on the page),
@@ -157,7 +165,7 @@ const PREPARE = `(() => {
       }
     }
     // A box can keep its size while its text spills out of it: measure the TEXT, not the box.
-    for (const pill of hd.querySelectorAll('.sw-stat, .sw-pill')) {
+    for (const pill of hd.querySelectorAll('.sw-held, .sw-tg')) {
       // Text nodes only: the icon sits on its own baseline and is not a second line.
       const lines = new Set()
       const walk = document.createTreeWalker(pill, NodeFilter.SHOW_TEXT)
@@ -166,7 +174,7 @@ const PREPARE = `(() => {
         range.selectNodeContents(n)
         for (const r of range.getClientRects()) if (r.width > 0) lines.add(Math.round(r.top))
       }
-      if (lines.size > 1) overlaps.push('header pill wraps onto ' + lines.size + ' lines: [' + pill.textContent + ']')
+      if (lines.size > 1) overlaps.push('header tag wraps onto ' + lines.size + ' lines: [' + pill.textContent + ']')
     }
     for (const el of hd.querySelectorAll('.sw-ht')) {
       const cs = getComputedStyle(el)
@@ -178,8 +186,12 @@ const PREPARE = `(() => {
   // A model chip is never cut: its whole text (model and reasoning effort) fits in its box.
   const chips = [...document.querySelectorAll('.swp-frame .sw-model')]
     .filter(el => getComputedStyle(el).display !== 'none')
-    .map(el => ({ text: el.textContent, docked: !!el.closest('.is-docked'), cut: el.scrollWidth > el.clientWidth }))
+    .map(el => ({ text: el.textContent, narrow: !!el.closest('.is-narrow'), cut: el.scrollWidth > el.clientWidth }))
+  // Which screen is drawn in which look (preview.mjs tags every frame).
+  const coverage = [...document.querySelectorAll('.swp-wrap[data-screen][data-look]')]
+    .map(el => el.dataset.look + ':' + el.dataset.screen)
   return {
+    coverage,
     chips,
     frames: document.querySelectorAll('.swp-frame').length,
     overflow,
@@ -214,12 +226,23 @@ app.whenReady().then(async () => {
   const measured = await win.webContents.executeJavaScript(PREPARE)
   measured.console = problems
   fs.writeFileSync(outPath.replace(/\.png$/i, '.measure.json'), JSON.stringify(measured, null, 1))
-  const height = await win.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight) + 20')
-  win.setContentSize(WIDTH, Math.min(6000, height))
-  await new Promise(r => setTimeout(r, 900))
-  const image = await win.webContents.capturePage()
-  fs.writeFileSync(outPath, image.toPNG())
-  console.log('PNG:', outPath, fs.statSync(outPath).size, 'bytes · content height', height, '· frames', measured.frames)
+  // One PNG per look: the other column is hidden, the window narrowed to one column.
+  const shots = []
+  for (const look of LOOKS) {
+    const file = look === 'cockpit' ? outPath : outPath.replace(/\.png$/i, `-${look}.png`)
+    await win.webContents.executeJavaScript(`(() => { let s = document.getElementById('swp-only'); if (!s) { s = document.createElement('style'); s.id = 'swp-only'; document.head.appendChild(s) }
+      s.textContent = '.swp-col:not([data-col=${look}]){display:none}'; return 0 })()`)
+    win.setContentSize(SHOT_WIDTH, 900)
+    await new Promise(r => setTimeout(r, 300))
+    const height = await win.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight) + 20')
+    win.setContentSize(SHOT_WIDTH, Math.min(16000, height))
+    await new Promise(r => setTimeout(r, 900))
+    const image = await win.webContents.capturePage()
+    fs.writeFileSync(file, image.toPNG())
+    shots.push(file)
+    console.log('PNG:', file, fs.statSync(file).size, 'bytes · content height', height, height > 16000 ? '(cut at 16000)' : '')
+  }
+  console.log('frames', measured.frames)
 
   const ct = measured.contrast
   fs.writeFileSync(outPath.replace(/\.png$/i, '.contrast.json'), JSON.stringify(ct, null, 1))
@@ -234,10 +257,15 @@ app.whenReady().then(async () => {
       + ` (${row.klass}) ink ${row.ink} a${row.inkAlpha} on ${row.fill}`)
   }
   if (!ct.rows.length) red.push('no text node was measured')
-  if (measured.frames !== 6) red.push(`expected 6 preview frames, found ${measured.frames}`)
+  for (const look of LOOKS) {
+    for (let s = 1; s <= SCREENS; s++) {
+      if (!measured.coverage.includes(`${look}:${s}`)) red.push(`screen ${s} is missing in the ${look} look`)
+    }
+  }
+  if (measured.frames < SCREENS * LOOKS.length) red.push(`expected at least ${SCREENS * LOOKS.length} preview frames, found ${measured.frames}`)
   for (const c of measured.chips.filter(c => c.cut)) red.push(`model chip cut: [${c.text}]`)
-  if (!measured.chips.some(c => c.docked && / · medium$/.test(c.text))) {
-    red.push(`no uncut model chip with its effort at 480 px (${measured.chips.filter(c => c.docked).map(c => c.text).join(' | ') || 'none'})`)
+  if (!measured.chips.some(c => / · medium$/.test(c.text))) {
+    red.push(`no uncut model chip with its effort (${measured.chips.map(c => c.text).join(' | ') || 'none'})`)
   }
   for (const o of measured.overflow) red.push(`horizontal overflow: ${o}`)
   for (const o of measured.overlaps) red.push(`header: ${o}`)
@@ -251,6 +279,6 @@ app.whenReady().then(async () => {
     app.exit(1)
     return
   }
-  console.log(`SHOT GATE: GREEN — ${ct.classes.gated} gated text node(s) at or above WCAG AA, nothing clipped, engine errors 0`)
+  console.log(`SHOT GATE: GREEN — ${SCREENS} screens × ${LOOKS.length} looks (${measured.frames} frames), ${ct.classes.gated} gated text node(s) at or above WCAG AA, nothing clipped, engine errors 0`)
   app.quit()
 }).catch(e => { console.error('ERROR:', e); app.exit(1) })

@@ -5,56 +5,59 @@
  *
  * Locks:
  *   1. Registration: a `routes` page + a `sidebar.nav` entry with a resolved label; never a pane.
- *   2. Session scoping: only `subagent.*` events whose session_id is the FOCUSED runtime id land;
- *      `subagent.list` is called with that id; switching chats clears the live tree.
- *   3. Statuses: queued / running / completed / failed / stopped each draw their own mark; a queued
- *      or failed worker never draws the green "done" mark.
- *   4. Live tree: one root per delegation, nested children by parent_id, a merge node.
- *   5. History: batches newest first, collapsed; a batch opens to its workers; a worker opens a
- *      detail with its answer; a stopped worker shows "—" for time, never a duration.
- *   6. Copy reads /output for THAT worker's session id and writes the clipboard; open calls
- *      host.openSession with the child session id.
- *   7. Failures are visible: a failing history read and three failing list polls both render an
- *      alert; nothing is swallowed.
- *   8. A finished live batch leaves "Now" and history is reloaded.
+ *   2. Session scoping: only `subagent.*` / `tool.*` events whose session_id is the FOCUSED runtime id
+ *      land; `subagent.list` is called with that id; switching chats clears the live run, folds open
+ *      command rows and selects the main agent.
+ *   3. Statuses never mislabel: queued / running / completed / failed / stopped each draw their own
+ *      icon; a queued or failed unit never draws the done check.
+ *   4. Live run: the main agent first, nested workers right after their parent, a unit's icon is what
+ *      it does now (edit / read / run / waiting), the main agent waits on its subagents.
+ *   6. Copy answer reads /output for THAT worker's session id; Open its chat calls host.openSession
+ *      with the child session id; copy has a busy state; empty output is "Nothing to copy".
+ *   7. Failures are visible: one alert lists each failing source (history, live polls, commands,
+ *      files) with Try again; a count whose source failed reads "—", never 0.
+ *   8. A finished live run reloads history and stays as the last run (no empty flash), keeping the
+ *      selected subagent and the keyboard focus; a run still listed by subagent.list is not re-added.
+ *   9. Commands tab: read for the STORED chat id, newest first, a status per row, exit code on a failed
+ *      row, "—" for a stopped one; an opened row shows exit code, cwd, the full command, the output
+ *      tail and Copy output; running (no read yet), loading, unreadable (alert + Try again), printed
+ *      nothing, no receipt; unreadable records counted; polled.
  *  10. Refresh after live polls gave up resets the failure count and polling resumes.
- *  11. A clipboard rejection on either copy button is a "Copy failed" toast, never an unhandled rejection.
- *  12. Status marks and header counts carry an aria-label (the Tip's text); counts whose source
- *      failed read "—", not 0; count labels are singular for one.
- *  13. Round 2: a crashed running batch stays under Earlier; a chat switch drops the old chat's
- *      errors; a finished batch still listed is not re-added; commands show a loader; a batch of
- *      several workers says "+N more"; copy has a busy state; headings, focus rings, focusable
- *      tooltip triggers, reading tokens, a mounted live region; shared-prefix names stay distinct.
- *  14. Round 4: a worker's model chip shows the model and its reasoning effort, never shrinks to a
- *      stub (the name ellipsizes), and its tooltip names the full model id and effort.
- *  15. The watched chat: the app names the MAIN chat as focused once a zone that is not a chat is
- *      clicked, so a click inside the panel (or on another page's route-tile tab) keeps the chat the
- *      page shows; a click on a chat, in the Sessions sidebar, or anywhere else follows the app.
- *   9. Background commands: read for the STORED chat id, newest first, one mark per status, exit
- *      code on a failed row, "—" for a stopped one; a row opens the full command + output tail read
- *      for that chat; a running command asks for no output; unreadable records and a failed read
- *      are shown; a chat with no commands draws no section.
- *  17. 1.4.0 cost: a worker's detail and each batch header show Hermes' recorded cost (~ estimate,
- *      billed, subscription); an unpriced worker is never $0; a live complete frame's cost joins the
- *      live batch; a 0 in a frame (subscription or unpriced) is not shown as a price.
- *  18. 1.4.0 progress: a status-bar chip for the FOCUSED chat's batch (finished/total, a bar, the
- *      cost so far) that ignores other chats, picks up a batch already running via subagent.list,
- *      ends a worker the list dropped, lingers then goes, says when its poll stopped, and opens
- *      the page; with a pet on screen the same progress is a line in its bubble (none without).
- *  16. 1.3.0: the header names the watched chat (and says when it is held), its tint is failed /
- *      running / idle and its pill counts workers and commands; a toggled card keeps focus; a
- *      queued worker not yet listed stays queued; a stale snapshot never revives a finished worker;
- *      a finished batch stays in Now until history has it, then keeps its open detail and focus
- *      under Earlier; a checkpoint-only command asks for no output; a cut command says so; empty
- *      output is not "Copied"; a dead chat's failed poll does not count against the new chat.
- *  19. 1.5.0 files: the page's pathKey gives the backend's key for every shared vector
- *      (path_vectors.json); files are read for the STORED chat id and grouped by folder (the chat's
- *      folder by name, its sub-folders relative); each state draws its own mark; a row copies its
- *      path; the section says what it cannot see; a file tool call in the FOCUSED chat makes its row
- *      shimmer (a relative path joins the chat's folder; a file not yet recorded appears at the top),
- *      another chat's call does not; a finished call reloads the list and the shimmer lingers, then
- *      ends; a V4A patch or a mirrored worker row shimmers nothing; unreadable calls, files past the
- *      list and a failed read are shown; a chat with no files draws no section.
+ *  11. A clipboard rejection on any copy button is a "Copy failed" toast, never an unhandled rejection.
+ *  15. The watched chat: a click inside the page (or on another page's route tile) keeps the chat the
+ *      page shows and marks it held; a click on a chat, in the Sessions sidebar, or elsewhere follows.
+ *  16. Live races: a queued worker not yet listed stays queued; a stale snapshot never revives a
+ *      finished worker; a dead chat's failed poll does not count against the new chat.
+ *  17. Cost: the score shows what the subagents spent (~ estimate, billed, subscription apart, never
+ *      $0 for unpriced); a live complete frame's cost joins the run.
+ *  18. Progress chip in the status bar (1.6.0 behaviour) + the pet line; the chip takes the look.
+ *  19. Files: pathKey agrees with the backend on every path_vectors.json case; files are read for the
+ *      STORED chat id; the main agent's panel lists Changed (EDIT ×n / FAILED / DELETED, a bar per
+ *      count) and Only read (first rows + Show N more); a row copies its full path; the panel says
+ *      what it cannot see; a subagent's files come from /files who/editors; the main agent's live
+ *      file calls are the 'Working on now' rows (the 1.6.0 shimmer), scoped to the focused chat,
+ *      lingering, reloading the list; unreadable calls and files past the list are said.
+ *  20. Looks: Cockpit by default; the toggle switches to Terminal (ASCII sprites, [OK ] tags) and back,
+ *      and keeps the choice in ctx.storage; a kept look is read back; a storage that throws, a value
+ *      that is not a look, or no storage at all falls back to Cockpit and the toggle still works.
+ *  21. Units: the main agent is the first unit, tagged MAIN and selected by default; no letter badges.
+ *  22. Run picker: this run plus earlier runs (mini cells, time ago, done/total, cost, paged with
+ *      "Show N older runs"); an earlier run is shown calmly with Back to now; Escape closes it.
+ *  23. A selected subagent: task (Show all), model chip (tooltip = full id + effort), its answer,
+ *      tools · tokens · cost.
+ *  24. Edge states: no chat selected, a loading skeleton, a chat with no subagents (main agent unit +
+ *      what subagents are + its files or none yet).
+ *  25. More than 8 subagents: the swarm (40-subagent fixture) — main agent on top, Failed by name,
+ *      Working cells (tooltip, click selects), Waiting and Done collapsed behind Show; units wrap.
+ *  26. Reduced motion stops every page animation; the motion moments exist (ring close, shake, count
+ *      up, slide, breathe, retyped tag, cursor blink); text never below 11.5px; focus rings; focusable
+ *      tooltip triggers; reading tokens; a mounted live region.
+ *
+ * Removed in 1.7.0 with the features they locked: agent letters (agentLetters / baseLetters, the
+ * letter badges on tiles and in the log), the live log section, the Earlier list (now the run picker,
+ * lock 22), the separate FILES section with its folder groups and tiles (now the focus panel, lock
+ * 19), the header pill/count chips and tint, the batch tree / framed cards and their CSS rules, and
+ * "an opened failed command does not repeat its exit code" (the approved design shows it).
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -80,7 +83,7 @@ function atom(v) {
   const subs = new Set()
   return { get: () => v, set: n => { v = n; subs.forEach(f => f()) }, listen: f => { subs.add(f); return () => subs.delete(f) } }
 }
-export const atoms = { focusedSessionId: atom('rt-1'), focusedStoredSessionId: atom('st-1') }
+export const atoms = { focusedSessionId: atom('rt-1'), focusedStoredSessionId: atom('st-1'), busyBySession: atom({}) }
 export const pet = { visible: atom(false), said: [], cleared: [] }
 export function useValue(a) { return useSyncExternalStore(a.listen, a.get) }
 
@@ -148,6 +151,23 @@ let procUnreadable = 1
 let procOutputFails = false
 let clipRejects = false
 let filesFails = false
+// ctx.storage as the app gives it (sync get/set over localStorage); `storageFails` makes both throw.
+const kept = new Map()
+let storageFails = false
+const storage = {
+  get: (key, fallback) => { if (storageFails) throw new Error('storage gone'); return kept.has(key) ? kept.get(key) : fallback },
+  set: (key, value) => { if (storageFails) throw new Error('storage gone'); kept.set(key, value) },
+  remove: key => { kept.delete(key) }
+}
+// 40 subagents in one stored run: 3 failed, 1 stopped, 6 working, 10 waiting, 20 done.
+const SWARM_ST = [...Array(3).fill('failed'), 'stopped', ...Array(6).fill('running'), ...Array(10).fill('queued'), ...Array(20).fill('completed')]
+const SWARM = {
+  session_id: 'st-swarm', title: 'Big sweep',
+  batches: [{ started_at: Date.now() / 1000 - 600, workers: SWARM_ST.map((status, i) => ({
+    session_id: `sw-${i}`, goal: `Sweep 'unit-${String(i).padStart(2, '0')}'`, status, duration_s: status === 'running' || status === 'queued' || status === 'stopped' ? null : 30 + i,
+    tool_calls: 2, tokens: 1000, cost_usd: 0.01, cost_status: 'estimated', summary: status === 'completed' ? 'ok' : ''
+  })) }]
+}
 const FILES = {
   'st-f': {
     cwd: 'D:\\Proj',
@@ -176,7 +196,10 @@ const PROCS = {
   ],
   'st-2': [],
   // The app closed under this one: checkpointed, no receipt, so there is no output to ask for.
-  'st-4': [{ id: 'proc_gone', command: 'x'.repeat(4000), command_truncated: true, cwd: '/w', status: 'stopped', started_at: 10, duration_s: null, exit_code: null, has_output: false }]
+  'st-4': [
+    { id: 'proc_gone', command: 'x'.repeat(4000), command_truncated: true, cwd: '/w', status: 'stopped', started_at: 10, duration_s: null, exit_code: null, has_output: false },
+    { id: 'proc_quiet', command: 'true', cwd: '/w', status: 'completed', started_at: 20, duration_s: 1, exit_code: 0 }
+  ]
 }
 const deepFreeze = o => { Object.values(o).forEach(v => v && typeof v === 'object' && deepFreeze(v)); return Object.freeze(o) }
 const HISTORY = {
@@ -208,7 +231,9 @@ const HISTORY = {
 deepFreeze(HISTORY)
 deepFreeze(PROCS)
 deepFreeze(FILES)
+deepFreeze(SWARM)
 const ctx = {
+  storage,
   pet: {
     visible: stub.pet.visible,
     say: (text, opts) => { stub.pet.said.push([text, opts]); return () => {} },
@@ -228,6 +253,9 @@ const ctx = {
     if (path.startsWith('/children')) {
       if (holds.children) await holds.children
       if (historyFails) throw new Error('backend 503')
+      const sid = new URLSearchParams(path.split('?')[1]).get('session_id')
+      if (sid === 'st-swarm') return SWARM
+      if (sid === 'st-empty') return { session_id: sid, title: 'Quiet chat', batches: [] }
       return { ...HISTORY, batches: [...HISTORY.batches, ...extraBatches] }
     }
     if (path.startsWith('/output')) {
@@ -249,6 +277,7 @@ const ctx = {
     if (path.startsWith('/process_output')) {
       if (procOutputFails) throw new Error('output 503')
       const q = new URLSearchParams(path.split('?')[1])
+      if (q.get('process_id') === 'proc_quiet') return { id: 'proc_quiet', command: 'true', output: '', output_truncated: false }
       return { id: q.get('process_id'), command: `FULL ${q.get('process_id')}`, output: `tail of ${q.get('process_id')} in ${q.get('session_id')}`, output_truncated: true }
     }
     throw new Error(`unexpected ${path}`)
@@ -258,6 +287,7 @@ const ctx = {
 // async act: an event can start a history reload whose promise settles after the handler returns;
 // a sync act would let that state update land outside act and React would warn.
 const emit = (type, session_id, payload) => act(async () => { for (const fn of listeners.get(type) || []) fn({ type, session_id, payload }) })
+const quiet = async fn => { const w = console.warn; console.warn = () => {}; try { return await fn() } finally { console.warn = w } }
 
 // 1. registration
 mod.default.register(ctx)
@@ -281,9 +311,49 @@ check(mod.fmtDuration(4000, (k, ...a) => `${k}:${a.join('/')}`) === 'sw.units.hm
 check(mod.modelLabel('anthropic/claude-opus-5-5') === 'claude-opus-5-5', 'model label drops the provider')
 check(mod.batchState(['completed', 'queued']) === 'queued' && mod.batchState(['completed', 'failed']) === 'failed', 'batch state never reads done while one is not')
 const tr = stub.usePluginI18n('subagent-watch')
-check(tr('sw.nBatches', 1) === '1 batch' && tr('sw.nBatches', 2) === '2 batches', `batch count is singular for one (${tr('sw.nBatches', 1)})`)
-check(tr('sw.nProcs', 1) === '1 background command' && tr('sw.nProcs', 3) === '3 background commands', `command count is singular for one (${tr('sw.nProcs', 1)})`)
-check(tr('sw.nWorkers', 1) === '1 worker' && tr('sw.nWorkers', 2) === '2 workers', `worker count is singular for one (${tr('sw.nWorkers', 1)})`)
+check(tr('sw.tabs.running', 1) === '1 command running' && tr('sw.tabs.running', 2) === '2 commands running', `command count is singular for one (${tr('sw.tabs.running', 1)})`)
+check(tr('sw.proc.unreadable', 1) === '1 record could not be read and is not listed' && tr('sw.proc.unreadable', 2).startsWith('2 records'),
+  `unreadable count is singular for one (${tr('sw.proc.unreadable', 1)})`)
+check(tr('sw.run.older', 1) === 'Show 1 older run' && tr('sw.run.older', 3) === 'Show 3 older runs', `older-run count is singular for one (${tr('sw.run.older', 1)})`)
+check(mod.fmtCost(1.25, 'estimated') === '~$1.25' && mod.fmtCost(0.38, 'actual') === '$0.38' && mod.fmtCost(0, 'included') === 'subscription'
+  && mod.fmtCost(0, 'unknown') === '' && mod.fmtCost(null, 'estimated') === '' && mod.fmtCost(0.001, 'estimated') === '<$0.01',
+  'cost format: ~ estimate, billed as is, subscription named, unpriced empty, sub-cent marked')
+{
+  const s = mod.sumCost([{ cost_usd: 1, cost_status: 'actual' }, { cost_usd: 0.5, cost_status: 'estimated' }, { cost_usd: 0, cost_status: 'included' }, { cost_status: 'unknown' }, {}])
+  check(s.usd === 1.5 && s.status === 'estimated' && s.priced === 2 && s.included === 1 && s.unknown === 2,
+    `a sum counts subscription and unpriced workers apart, one estimate makes it an estimate (${JSON.stringify(s)})`)
+  check(mod.sumCost([{ cost_usd: 0, cost_status: 'included' }]).status === 'included' && mod.sumCost([{}]).usd === null,
+    'all-subscription reads subscription; nothing priced is null, not 0')
+}
+check(mod.fmtAgo(30) === 'just now' && mod.fmtAgo(300) === '5m ago' && mod.fmtAgo(7200) === '2h ago' && mod.fmtAgo(90000) === 'yesterday' && mod.fmtAgo(3 * 86400) === '3d ago',
+  'time ago reads just now, minutes, hours, yesterday, days')
+check(['edit', 'read', 'run', 'think'].every(act => mod.unitIcon({ status: 'running', act }) === act)
+  && mod.unitIcon({ status: 'completed' }) === 'ok' && mod.unitIcon({ status: 'failed' }) === 'bad' && mod.unitIcon({ status: 'stopped' }) === 'stop'
+  && mod.unitIcon({ status: 'queued' }) === 'wait' && mod.unitIcon({ status: 'idle' }) === 'idle',
+  'a unit icon is its activity while it runs, else its end: queued is never done, failed never done')
+check(mod.toolAct('patch') === 'edit' && mod.toolAct('write_file') === 'edit' && mod.toolAct('read_file') === 'read' && mod.toolAct('terminal') === 'run'
+  && mod.toolAct('delegate_task') === 'wait' && mod.toolAct('mcp_x') === 'think',
+  'a tool reads as edit pencil, read eye, run prompt, waiting on subagents, or plain working')
+{
+  const g = mod.swarmGroups(['failed', 'stopped', 'running', 'queued', 'completed', 'completed'].map((status, i) => ({ key: i, status })))
+  check(g.failed.length === 2 && g.running.length === 1 && g.queued.length === 1 && g.completed.length === 2, 'swarm groups: failed (with stopped), working, waiting, done')
+}
+{
+  const files = [
+    { key: 'a', who: ['', 'w1'], editors: ['w1'], writes: 1 },
+    { key: 'b', who: ['w1'], editors: [], reads: 1, last_op: 'read' },
+    { key: 'c', who: [''], editors: [], writes: 0, failed: 1, last_op: 'write', last_failed: true }
+  ]
+  const w1 = mod.agentFiles(files, 'w1'), me = mod.agentFiles(files, '')
+  check(w1.changed.map(f => f.key).join() === 'a' && w1.read.map(f => f.key).join() === 'b' && me.changed.map(f => f.key).join() === 'c' && me.read.map(f => f.key).join() === 'a',
+    `an agent's files come from who/editors: changed by it, only read by it, a failed change nobody made is its own (${JSON.stringify([w1, me].map(x => [x.changed.length, x.read.length]))})`)
+}
+check(['edit', 'read', 'run', 'think', 'wait', 'ok', 'bad', 'stop', 'idle'].every(i => mod.sprite(i).split('\n').length === 3 && !/[A-Za-z]/.test(mod.sprite(i))),
+  'Terminal sprites are a three-line box with a glyph, never a letter')
+check(mod.slugName('Pact weapon marker') === 'pact-weapon-marker' && mod.commandLine('\n  npm test\nmore') === 'npm test',
+  'Terminal names are slugs; a command row shows its first non-empty line')
+check(mod.shortTarget('D:\\Proj\\src\\a.py') === 'src/a.py' && mod.shortTarget('npm test\nmore') === 'npm test' && mod.shortTarget('a b/c') === 'a b/c',
+  'a tool target: a path keeps its last two parts, a command its first line')
 
 // mount
 // The app's own focus tracker (store.ts trackActiveTreeGroup) is a window capture listener registered
@@ -306,308 +376,342 @@ await act(async () => { root.render(React.createElement(route.render)) })
 await tick(10)
 const q = s => host.querySelector(s)
 const qa = s => [...host.querySelectorAll(s)]
+const units = () => qa('.sw-agents button.sw-unit')
+const unitNamed = name => units().find(u => u.querySelector('.sw-un')?.textContent === name)
+const tab = id => q(`[role=tab][data-tab=${id}]`)
+const toTab = id => act(async () => { tab(id).click() })
+const refresh = async () => { await act(async () => { q('.sw-hd .sw-ib').click() }); await tick(10) }
 
-// 16. the header says which chat it watches and what its tint means
-check(q('.sw-chatn')?.textContent === 'Refactor fleet routing' && !q('.sw-held'), `the header names the watched chat (${q('.sw-chat')?.textContent})`)
-check(q('.sw-hd')?.dataset.st === 'running' && q('.sw-pill')?.textContent === '1 command running',
-  `a running command tints the header and is counted in its pill (${q('.sw-hd')?.dataset.st}, ${q('.sw-pill')?.textContent})`)
-check(q('.sw-pu .sw-mk[data-st=failed]') !== null, 'unreadable records carry the failed mark')
-{
-  const cssNow = q('style')?.textContent || ''
-  const frame = cssNow.match(/\.sw-frame\{[^}]*\}/)?.[0] || ''
-  check(!/gradient/.test(frame) && !/\.sw-frame::after/.test(cssNow) && !/\.sw-acc::after\{content/.test(cssNow)
-    && /\.sw-frame\[data-st=running\]::after,\.sw-frame\[data-st=failed\]::after\{content/.test(cssNow)
-    && /\.sw-acc\[data-st=running\]::after,\.sw-acc\[data-st=failed\]::after\{content/.test(cssNow),
-  'cards are flat and only running or failed ones carry the status rail')
-  check(/@container \(max-width:420px\)\{[\s\S]*?\.sw-bl \.sw-bc\{margin-left:auto\}/.test(cssNow), 'below 420 px the counts keep their right-hand column')
-}
+// 16 + 20. header, look, tabs
+check(q('.sw-page')?.dataset.theme === 'cockpit' && q('.sw-tgb[data-theme=cockpit]')?.getAttribute('aria-pressed') === 'true'
+  && q('.sw-tgb[data-theme=terminal]')?.getAttribute('aria-pressed') === 'false', 'the page opens in the Cockpit look, its toggle pressed')
+check(q('h2.sw-ht')?.textContent === 'Subagents' && q('.sw-chatn')?.textContent === 'Refactor fleet routing' && !q('.sw-held'),
+  `the header has the title and names the watched chat (${q('.sw-chatn')?.textContent})`)
+check(tab('agents')?.getAttribute('aria-selected') === 'true' && tab('commands')?.getAttribute('aria-selected') === 'false',
+  'two tabs, Agents first and selected')
+check(q('.sw-tabn')?.textContent === '1' && q('.sw-tabn')?.getAttribute('aria-label') === '1 command running' && q('.sw-tabn')?.dataset.tip === '1 command running',
+  `the Commands tab badge counts running commands, named by its tooltip (${q('.sw-tabn')?.textContent})`)
 
-// 5. history
-const bls = qa('.sw-hb')
-check(bls.length === 2, `two history batches drawn (${bls.length})`)
-check(qa('.sw-hd .sw-stat').map(e => e.textContent).join(',') === '3,5,4', `header counts batches, workers and commands (${qa('.sw-hd .sw-stat').map(e => e.textContent)})`)
-check(bls[0].textContent.includes('design judge') || bls[0].textContent.includes('Act as a strict'), 'newest batch first')
-check(bls[1].querySelector('.sw-bn')?.textContent === 'alpha-panel' && bls[1].querySelector('.sw-bmore')?.textContent === '+1 more',
-  `a batch of several workers is not labelled as its first worker alone (${bls[1].querySelector('.sw-bn')?.textContent} ${bls[1].querySelector('.sw-bmore')?.textContent})`)
-check(!bls[0].querySelector('.sw-bmore'), 'a one-worker batch carries no "+N more"')
-// 17. cost on the batch header: priced workers summed, a subscription one counted, none priced -> nothing
+// 21. units: the main agent first and selected, icons not letters, statuses never mislabelled
 {
-  const chip = bls[1].querySelector('.sw-bcost')
-  check(chip?.textContent === '~$1.50' && /1 priced/.test(chip?.dataset.tip || '') && /1 in a subscription/.test(chip?.dataset.tip || ''),
-    `a batch header shows its summed cost with the breakdown (${chip?.textContent} | ${chip?.dataset.tip})`)
-  check(!bls[0].querySelector('.sw-bcost'), 'a batch with no priced worker shows no cost (never $0)')
+  const u = units()
+  check(u.length === 3 && u[0].dataset.main === 'true' && u[0].getAttribute('aria-pressed') === 'true' && u[0].querySelector('.sw-maintag')?.textContent === 'main',
+    `the main agent is the first unit, tagged MAIN and selected (${u.map(x => x.getAttribute('aria-label'))})`)
+  check(u.slice(1).map(x => x.querySelector('.sw-un').textContent).join() === 'docs-writer,wiki-watchdog', 'then one unit per subagent of the last run')
+  check(u[1].dataset.st === 'completed' && u[1].dataset.icon === 'ok' && u[2].dataset.st === 'failed' && u[2].dataset.icon === 'bad',
+    'a done unit draws the check, a failed one the cross')
+  check(q('.sw-focus')?.dataset.kind === 'main', 'the focus panel shows the main agent by default')
+  check(u.every(x => x.querySelector('.sw-ic svg')) && !q('.sw-sig, .sw-orbl, .sw-letter')
+    && !qa('.sw-page *').some(e => !e.children.length && /^[A-Z]\d?$/.test(e.textContent.trim())),
+  'no letter badges anywhere: every unit icon is a drawing')
 }
-check(mod.fmtCost(1.25, 'estimated') === '~$1.25' && mod.fmtCost(0.38, 'actual') === '$0.38' && mod.fmtCost(0, 'included') === 'subscription'
-  && mod.fmtCost(0, 'unknown') === '' && mod.fmtCost(null, 'estimated') === '' && mod.fmtCost(0.001, 'estimated') === '<$0.01',
-  'cost format: ~ estimate, billed as is, subscription named, unpriced empty, sub-cent marked')
-{
-  const s = mod.sumCost([{ cost_usd: 1, cost_status: 'actual' }, { cost_usd: 0.5, cost_status: 'estimated' }, { cost_usd: 0, cost_status: 'included' }, { cost_status: 'unknown' }, {}])
-  check(s.usd === 1.5 && s.status === 'estimated' && s.priced === 2 && s.included === 1 && s.unknown === 2,
-    `a sum counts subscription and unpriced workers apart, one estimate makes it an estimate (${JSON.stringify(s)})`)
-  check(mod.sumCost([{ cost_usd: 0, cost_status: 'included' }]).status === 'included' && mod.sumCost([{}]).usd === null,
-    'all-subscription reads subscription; nothing priced is null, not 0')
-}
-check(q('h2.sw-ht')?.textContent === 'Subagents' && qa('h3.sw-lab').map(e => e.textContent).join('|').includes('Earlier'),
-  `the title and section labels are headings (${qa('h2, h3').map(e => e.tagName + ':' + e.textContent).join('|')})`)
+check(q('.sw-bign')?.textContent === '1' && q('.sw-big small')?.textContent === '/2'
+  && qa('.sw-score .sw-seg i').map(i => i.dataset.st).join() === 'completed,failed',
+  `the score counts finished subagents of all, one cell per subagent (${q('.sw-big')?.textContent})`)
+check(q('.sw-money')?.textContent === '~$0.08' && q('.sw-money')?.tabIndex === 0 && /1 priced/.test(q('.sw-money')?.dataset.tip || '') && /1 not priced/.test(q('.sw-money')?.dataset.tip || ''),
+  `the score shows what the subagents spent, a focusable chip with the breakdown (${q('.sw-money')?.dataset.tip})`)
 const css = q('style')?.textContent || ''
-for (const cls of ['sw-ib', 'sw-bl', 'sw-nd', 'sw-more']) {
-  check(new RegExp(`\\.${cls}:focus-visible[^{]*\\{[^}]*outline:\\s*2px`).test(css) || new RegExp(`\\.${cls}:focus-visible[\\s\\S]*?\\{[^}]*outline:\\s*2px`).test(css),
-    `.${cls} draws a visible focus ring (the app removes every ring)`)
-}
+check(/\.sw-page button:focus-visible[^{]*\{[^}]*outline:2px/.test(css), 'buttons draw a visible focus ring (the app removes every ring)')
 check(qa('[data-tip]').filter(e => !e.closest('button')).every(e => e.tabIndex === 0),
   `every tooltip trigger outside a button is focusable (${qa('[data-tip]').filter(e => !e.closest('button') && e.tabIndex !== 0).map(e => e.className)})`)
-check(!/var\(--ui-text-tertiary\)/.test(css.match(/\.sw-bc,\.sw-bt,\.sw-wt\{[^}]*\}/)?.[0] || 'var(--ui-text-tertiary)')
-  && !/--ui-text-tertiary/.test(css.match(/\.sw-now\{[^}]*\}/)?.[0] || '--ui-text-tertiary') && !/--ui-text-tertiary/.test(css.match(/\.sw-model\{[^}]*\}/)?.[0] || '--ui-text-tertiary'),
-  'times, counts, tool and model chips use a reading token (tertiary measured 4.0-4.2:1 < 4.5)')
-check(!/font(-size)?:\s*(10(\.\d+)?|11)px/.test(css), `no text below 11.5px (${(css.match(/font(-size)?:\s*(10(\.\d+)?|11)px/g) || []).join(' ')})`)
-check(/\.sw-fw \.sw-acc::after\{display:none\}/.test(css) && /\.sw-fw \.sw-acc\{box-shadow:none\}/.test(css),
-  'rows inside a frame drop their own rail and lift: one accent per frame')
-check(!qa('.sw-mk[data-st=completed] path, .sw-mk[data-st=failed] path').some(e => /destructive/.test(e.getAttribute('stroke') || '')),
-  'the check and cross marks are not inked with the destructive token')
+{
+  const small = []
+  for (const decl of css.match(/font(-size)?:[^;}]*/g) || []) {
+    for (const n of decl.match(/(?<![\d./])\d+(\.\d+)?px/g) || []) if (parseFloat(n) < 11.5) small.push(decl)
+  }
+  check(!small.length, `no text below 11.5px (${small.join(' | ')})`)
+}
+check(/--dim:var\(--ui-text-secondary\)/.test(css) && !/tertiary/.test(css.match(/\.sw-model\{[^}]*\}/)?.[0] || 'tertiary')
+  && !/tertiary/.test(css.match(/\.sw-meta\{[^}]*\}/)?.[0] || 'tertiary'),
+  'times, counts and model chips use a reading token (tertiary measured 4.0-4.2:1 < 4.5)')
 check(q('.sw-live[role=status]') !== null && !q('.sw-live').textContent, 'the toast live region is mounted before any toast (so it is announced)')
 check(stub.calls.request.some(([m, p]) => m === 'subagent.list' && p.session_id === 'rt-1'), 'subagent.list asked with the focused runtime id')
-check(qa('.sw-hd .sw-stat').every(e => e.getAttribute('aria-label') && e.getAttribute('aria-label') === e.dataset.tip),
-  `header counts carry an aria-label equal to their tooltip (${qa('.sw-hd .sw-stat').map(e => e.getAttribute('aria-label'))})`)
-bls[1].focus()
-await act(async () => { bls[1].click() })
-check(bls[1].isConnected && document.activeElement === bls[1] && bls[1].getAttribute('aria-expanded') === 'true',
-  `opening an Earlier batch keeps focus on its header (${document.activeElement?.tagName}.${document.activeElement?.className})`)
-document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true })) // focus inside the page holds its chat; let it go
-const rows = qa('.sw-wr')
-check(rows.length === 2, 'batch opens to its two workers')
-check(rows[1].textContent.includes('—') && !/\d+[smh]/.test(rows[1].querySelector('.sw-wt').textContent), 'stopped worker shows — and no duration')
-check(rows[1].querySelector('.sw-mk').dataset.st === 'stopped', 'stopped worker draws the stopped mark')
-// M3: the chip shows the model with its reasoning effort, never a stub, and names both in its tooltip.
-const chip0 = rows[0].querySelector('.sw-model'), chip1 = rows[1].querySelector('.sw-model')
-check(chip0?.textContent === 'claude-opus-5-5 · medium', `an Earlier worker's chip shows model and effort (${chip0?.textContent})`)
-check(chip1?.textContent === 'claude-opus-5-5', `a worker without an effort shows the model alone (${chip1?.textContent})`)
-check(/anthropic\/claude-opus-5-5/.test(chip0?.dataset.tip || '') && /medium/.test(chip0?.dataset.tip || ''),
-  `the chip's tooltip names the full model id and the effort (${chip0?.dataset.tip})`)
-const modelRule = css.match(/\.sw-model\{[^}]*\}/)?.[0] || ''
-const nameRule = css.match(/\.sw-wn\{[^}]*\}/)?.[0] || ''
-check(/flex:0 0 auto/.test(modelRule) && !/text-overflow:ellipsis/.test(modelRule)
-  && /text-overflow:ellipsis/.test(nameRule) && /min-width:0/.test(nameRule),
-  `the model chip never shrinks to a stub; the worker name takes the ellipsis (${modelRule})`)
-check(/@container \(max-width:420px\)\{[^}]*\.sw-model/.test(css), 'the chip is still hidden below 420 px')
-await act(async () => { rows[0].click() })
-check(q('.sw-dt') && !q('.sw-dt p') && /tokens/.test(q('.sw-dtm')?.textContent || ''), 'worker detail is actions + stats only, no answer text')
-check(q('.sw-dtm')?.textContent === '40 tools · 120k tokens · ~$1.50', `the detail adds tools, tokens and the estimated cost, not the row's duration (${q('.sw-dtm')?.textContent})`)
-check(qa('.sw-dt .sw-ib.is-text').map(b => b.textContent).join('|') === 'Copy full output|Open session', 'the detail actions are labelled buttons, not bare icons')
-check(q('.sw-dtg')?.textContent === "Polish 'alpha-panel' visuals" && q('.sw-dt').firstElementChild?.querySelector('.sw-dtg') !== null, 'worker detail shows its goal above the actions')
-check([...q('.sw-dt').children].every(c => c.classList.contains('sw-br')), 'every piece of an opened detail hangs on its own tree branch, no outer frame')
-check(!rows[0].querySelector('.sw-goal'), 'history row has no goal line')
 
-// 9. background commands: listed for the stored chat, marked by status, detail reads the output
-check(rest.includes('/processes?session_id=st-1'), 'background commands read for the stored chat id')
-const prs = qa('.sw-pr')
-check(prs.length === 4, `four background commands drawn (${prs.length})`)
-check(prs[0].dataset.st === 'running' && prs.map(p => p.dataset.st).join(',') === 'running,stopped,failed,completed', `newest command first (${prs.map(p => p.dataset.st)})`)
-check(prs.map(p => p.querySelector('.sw-mk').dataset.st).join(',') === 'running,stopped,failed,completed', 'each command draws its own status mark')
-check(qa('.sw-mk').length > 0 && qa('.sw-mk').filter(m => m.getAttribute('aria-hidden') !== 'true').every(m => m.getAttribute('role') === 'img' && m.getAttribute('aria-label') && m.getAttribute('aria-label') === m.dataset.tip),
-  'every status mark has an accessible name equal to its tooltip')
-check(prs[3].querySelector('.sw-pn').textContent === 'npm test' && prs[3].querySelector('.sw-pn').dataset.tip === 'npm test\n--watch=false', 'row shows the first line, tooltip the whole command')
-check(prs[2].querySelector('.sw-px')?.textContent === 'exit 1', 'failed command shows its exit code')
-check(!prs[3].querySelector('.sw-px'), 'a successful command shows no exit badge')
-check(prs[1].querySelector('.sw-wt').textContent === '—', 'a stopped command shows — and no duration')
-check(/^1m 0[5-9]s$/.test(prs[0].querySelector('.sw-wt').textContent), `running command counts its elapsed time (${prs[0].querySelector('.sw-wt').textContent})`)
-check(prs[3].querySelector('.sw-wt').textContent === '42s', 'finished command shows its duration')
-check(qa('.sw-hd .sw-stat')[2]?.textContent === '4', 'header counts background commands')
-check(q('.sw-pu')?.textContent === '1 record could not be read', 'unreadable records are reported, not hidden')
-check(q('.sw-plt')?.dataset.tip?.includes('not subagents'), 'section says these are not subagents')
-// An opened command is re-drawn as a framed box, so each click finds the row afresh.
-const pr = i => qa('.sw-pr')[i]
-const bad = pr(2)
-bad.focus()
-await act(async () => { pr(2).click() })
-await tick(5)
-check(bad.isConnected && document.activeElement === bad, 'opening a command keeps focus on its row')
-document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true })) // focus inside the page holds its chat; let it go
-check(!/exit 1/.test(q('.sw-plist .sw-box .sw-dtm')?.textContent || 'exit 1'), `an opened failed command does not repeat its exit code (${q('.sw-plist .sw-box .sw-dtm')?.textContent})`)
-check(rest.includes('/process_output?session_id=st-1&process_id=proc_bad'), 'opening a command reads its output for THIS chat')
-check(q('.sw-po')?.textContent === 'tail of proc_bad in st-1' && q('.sw-pc')?.textContent === 'FULL proc_bad', 'detail shows the full command and the output tail')
-check(q('.sw-pol')?.textContent.includes('last'), 'a cut output says it is the end only')
-await act(async () => { q('.sw-plist .sw-box .sw-ib').click() })
-await tick(5)
-check(clip.at(-1) === 'FULL proc_bad', 'copy command copies the full command')
-clipRejects = true
-let unhandled = 0
-const onUnhandled = () => { unhandled++ }
-process.on('unhandledRejection', onUnhandled)
-await act(async () => { q('.sw-plist .sw-box .sw-ib').click() })
-await tick(5)
-check(q('.sw-toast.is-bad')?.textContent === 'Copy failed' && !unhandled, `a rejected clipboard on copy command toasts "Copy failed" (${q('.sw-toast')?.textContent}, unhandled ${unhandled})`)
-clipRejects = false
-// A failed output read is shown inside the opened row, never swallowed into an empty box.
-await act(async () => { pr(2).click() })
-procOutputFails = true
-await act(async () => { pr(2).click() })
-await tick(5)
-check(q('.sw-plist')?.textContent.includes('Could not read the command output: output 503'), 'a failed command-output read is shown')
-procOutputFails = false
-await act(async () => { pr(2).click() })
-await act(async () => { pr(2).click() })
-await tick(5)
-const outReads = rest.filter(p => p.startsWith('/process_output')).length
-check(q('.sw-plist > .sw-box.sw-frame > .sw-bh.sw-pr') && [...q('.sw-plist > .sw-box > .sw-fw').children].every(c => c.firstElementChild?.classList.contains('sw-leaf')),
-  'an opened command is laid out like an opened batch: framed box, header as root, pieces on the rail')
-await act(async () => { qa('.sw-pr')[0].click() })
-await tick(5)
-check(q('.sw-po-note')?.textContent.includes('when the command finishes') && rest.filter(p => p.startsWith('/process_output')).length === outReads, 'a running command asks for no output yet')
-const procPolls = rest.filter(p => p.startsWith('/processes')).length
-await tick(3100)
-check(rest.filter(p => p.startsWith('/processes')).length > procPolls, 'background commands are polled')
+// 20. the look toggle switches and keeps the choice in ctx.storage
+await act(async () => { q('.sw-tgb[data-theme=terminal]').click() })
+check(q('.sw-page')?.dataset.theme === 'terminal' && q('.sw-tgb[data-theme=terminal]')?.getAttribute('aria-pressed') === 'true' && kept.get('theme') === 'terminal',
+  `the toggle switches to Terminal and keeps it in ctx.storage (${kept.get('theme')})`)
+check(units().length === 3 && units().every(u => u.querySelector('pre.sw-spr')) && !q('.sw-hex')
+  && units().map(u => u.querySelector('.sw-us').textContent).join() === '[IDLE],[OK ],[ERR]',
+  `Terminal draws ASCII sprite boxes with status tags (${units().map(u => u.querySelector('.sw-us')?.textContent)})`)
+check(/TERMINAL PALETTE START/.test(css) && /\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-ok\)/.test(css), 'Terminal paints from its own palette block')
+await act(async () => { q('.sw-tgb[data-theme=cockpit]').click() })
+check(q('.sw-page')?.dataset.theme === 'cockpit' && kept.get('theme') === 'cockpit' && units().every(u => u.querySelector('.sw-hex')),
+  'and back to Cockpit hex units')
 
-// 6. copy + open
-const [copyBtn, openBtn] = qa('.sw-bb .sw-dt .sw-ib')
+// 22. the run picker: the last run now, earlier runs on demand, Back to now
+await act(async () => { q('.sw-pick').click() })
+{
+  const items = qa('.sw-menu [role=menuitem]')
+  check(q('.sw-pick')?.getAttribute('aria-expanded') === 'true' && items.length === 3 && items[0].dataset.run === 'now' && items[0].classList.contains('is-on'),
+    `the picker lists this run then the earlier ones (${items.map(i => i.textContent).join(' | ')})`)
+  check(items[1].querySelector('.sw-mrn')?.textContent === 'Act as a strict design judge' && items[2].querySelector('.sw-mrn')?.textContent === 'alpha-panel +1',
+    'earlier runs newest first, named by their first subagent and how many more')
+  check([...items[2].querySelectorAll('.sw-mini i')].map(i => i.dataset.st).join() === 'completed,stopped'
+    && /1\/2/.test(items[2].querySelector('.sw-mrx')?.textContent || '') && /~\$1\.50/.test(items[2].querySelector('.sw-mrx')?.textContent || '')
+    && /ago/.test(items[2].querySelector('.sw-mrx')?.textContent || ''),
+  `each earlier run: mini status cells, time ago, done/total, cost (${items[2].querySelector('.sw-mrx')?.textContent})`)
+  await act(async () => { items[2].click() })
+}
+check(!q('.sw-menu') && q('.sw-panel')?.dataset.calm === 'true' && q('.sw-back')?.textContent === 'Back to now' && q('.sw-pick')?.textContent === 'alpha-panel +1' && !q('.sw-ld'),
+  'an earlier run is shown calmly (no live glow) with Back to now')
+check(units().map(u => u.querySelector('.sw-un').textContent).join() === 'Main agent,alpha-panel,beta-panel' && unitNamed('beta-panel')?.dataset.icon === 'stop'
+  && !/\d+[smh]/.test(unitNamed('beta-panel')?.dataset.tip || ''),
+  `its units: the main agent, then its subagents; a stopped one shows no duration (${unitNamed('beta-panel')?.dataset.tip})`)
+check(q('.sw-money')?.textContent === '~$1.50' && /1 in a subscription/.test(q('.sw-money')?.dataset.tip || ''), 'its score shows its own cost, a subscription worker counted apart')
+// 23. a selected subagent: task, model, answer, files, copy, open
+await act(async () => { unitNamed('alpha-panel').click() })
+{
+  const f = q('.sw-focus')
+  check(f?.dataset.kind === 'sub' && unitNamed('alpha-panel').getAttribute('aria-pressed') === 'true' && f.querySelector('.sw-head')?.textContent === "Polish 'alpha-panel' visuals"
+    && /Done in 5m 12s/.test(f.querySelector('.sw-meta')?.textContent || ''),
+  `selecting a subagent shows it in the one focus panel (${f?.querySelector('.sw-meta')?.textContent})`)
+  check(f.querySelector('.sw-model')?.textContent === 'claude-opus-5-5 · medium' && /anthropic\/claude-opus-5-5/.test(f.querySelector('.sw-model')?.dataset.tip || '')
+    && /medium/.test(f.querySelector('.sw-model')?.dataset.tip || '') && f.querySelector('.sw-model')?.tabIndex === 0,
+  `the model chip shows model · effort, its tooltip the full id (${f.querySelector('.sw-model')?.dataset.tip})`)
+  check(f.querySelector('.sw-task')?.textContent.includes("Polish 'alpha-panel' visuals") && f.querySelector('.sw-anst')?.textContent === 'Alpha answer paragraph.',
+    'it shows its task and its answer')
+  check(f.querySelector('.sw-stats')?.textContent === '40 tools · 120k tokens · ~$1.50', `tools, tokens and cost (${f.querySelector('.sw-stats')?.textContent})`)
+  check(qa('.sw-focus .sw-btns .sw-ib.is-text').map(b => b.textContent).join('|') === 'Copy answer|Open its chat', 'labelled actions, not bare icons')
+}
+const [copyBtn, openBtn] = qa('.sw-focus .sw-btns .sw-ib')
 const releaseOut = hold('output')
 await act(async () => { copyBtn.click() })
 await tick(5)
 check(copyBtn.getAttribute('aria-busy') === 'true' && copyBtn.getAttribute('aria-label') === 'Copying…' && copyBtn.disabled,
-  `copy shows a busy state while it reads (${copyBtn.getAttribute('aria-label')}, busy ${copyBtn.getAttribute('aria-busy')})`)
+  `copy shows a busy state while it reads (${copyBtn.getAttribute('aria-label')})`)
 await act(async () => { releaseOut() })
 await tick(5)
-check(copyBtn.getAttribute('aria-label') === 'Copy full output' && copyBtn.getAttribute('aria-busy') !== 'true', 'copy leaves its busy state when done')
-check(rest.includes('/output?session_id=st-1&worker_id=c-a') && clip.at(-1) === 'FULL OUTPUT of c-a for st-1', 'copy reads that worker\'s full output, for THIS chat, into the clipboard')
+check(copyBtn.getAttribute('aria-label') === 'Copy answer' && copyBtn.getAttribute('aria-busy') !== 'true', 'copy leaves its busy state when done')
+check(rest.includes('/output?session_id=st-1&worker_id=c-a') && clip.at(-1) === 'FULL OUTPUT of c-a for st-1', "copy reads that worker's full output, for THIS chat, into the clipboard")
+let unhandled = 0
+const onUnhandled = () => { unhandled++ }
+process.on('unhandledRejection', onUnhandled)
 clipRejects = true
 await act(async () => { copyBtn.click() })
 await tick(5)
-check(q('.sw-toast.is-bad')?.textContent === 'Copy failed' && !unhandled, `a rejected clipboard on copy output toasts "Copy failed" (${q('.sw-toast')?.textContent})`)
+check(q('.sw-toast.is-bad')?.textContent === 'Copy failed' && !unhandled, `a rejected clipboard on Copy answer toasts "Copy failed" (${q('.sw-toast')?.textContent})`)
 clipRejects = false
-process.off('unhandledRejection', onUnhandled)
 await act(async () => { openBtn.click() })
-check(stub.calls.opened[0] === 'c-a', 'open goes to the child session')
+check(stub.calls.opened[0] === 'c-a', 'Open its chat goes to the child session')
+await act(async () => { unitNamed('beta-panel').click() })
+check(q('.sw-focus .sw-model')?.textContent === 'claude-opus-5-5' && /Stopped/.test(q('.sw-focus .sw-meta')?.textContent || ''),
+  'a worker without an effort shows the model alone; a stopped one says so')
+await act(async () => { q('.sw-back').click() })
+check(!q('.sw-panel')?.dataset.calm && q('.sw-pick')?.textContent === 'Last run' && !q('.sw-back') && q('.sw-focus')?.dataset.kind === 'main',
+  'Back to now returns to the current run, the main agent selected')
+// many runs: the picker pages them
+extraBatches = Array.from({ length: 10 }, (_, i) => ({ started_at: 100 + i, workers: [{ session_id: `old-${i}`, goal: `Old 'run-${i}'`, status: 'completed', duration_s: 5, tool_calls: 1, tokens: 0, summary: '' }] }))
+await refresh()
+await act(async () => { q('.sw-pick').click() })
+{
+  const n = qa('.sw-menu [role=menuitem]').length
+  check(n === 9 && q('.sw-menu .sw-more')?.textContent === 'Show 4 older runs', `the picker lists 8 earlier runs and offers the rest (${n} | ${q('.sw-menu .sw-more')?.textContent})`)
+  await act(async () => { q('.sw-menu .sw-more').click() })
+  check(qa('.sw-menu [role=menuitem]').length === 13, 'Show older runs lists them all')
+}
+await act(async () => { document.body.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+check(!q('.sw-menu'), 'Escape closes the picker')
+// a long task is cut, Show all opens it
+extraBatches = [{ started_at: 2600, workers: [{ session_id: 'c-long', goal: `Write the 'long-task' ${'detail '.repeat(40)}`, status: 'completed', duration_s: 9, tool_calls: 1, tokens: 0, summary: 'ok' }] }]
+await refresh()
+await act(async () => { unitNamed('long-task').click() })
+{
+  const short = q('.sw-focus .sw-task')?.textContent || ''
+  await act(async () => { q('.sw-focus .sw-task .sw-more').click() })
+  check(short.endsWith('…Show all') && (q('.sw-focus .sw-task')?.textContent || '').length > short.length,
+    `a long task is cut with Show all (${short.slice(-20)})`)
+}
+extraBatches = []
+await refresh()
 
-// 6b. cards open independently: opening another batch and worker folds nothing
-await act(async () => { qa('.sw-wr')[1].click() })
-check(qa('.sw-bb .sw-dt').length === 2, 'opening a second worker keeps the first one open')
-await act(async () => { qa('.sw-hb')[0].click() })
-check(qa('.sw-box:not(:has(.sw-pr)) > .sw-bb').length === 2 && qa('.sw-bb .sw-dt').length === 2, 'opening another batch keeps the first batch and its workers open')
+// 9. Commands tab
+await toTab('commands')
+check(tab('commands')?.getAttribute('aria-selected') === 'true' && q('.sw-why')?.textContent.includes('not subagents'), 'the Commands tab says these are not subagents')
+check(rest.includes('/processes?session_id=st-1'), 'background commands read for the stored chat id')
+const prs = () => qa('.sw-cmr')
+check(prs().length === 4 && prs().map(p => p.dataset.st).join() === 'running,stopped,failed,completed', `newest command first, each with its status (${prs().map(p => p.dataset.st)})`)
+check(prs()[3].querySelector('.sw-cmc')?.textContent === 'npm test' && prs()[3].querySelector('.sw-cmc')?.dataset.tip === 'npm test\n--watch=false',
+  'row shows the first line, tooltip the whole command')
+check(/exit 1/.test(prs()[2].querySelector('.sw-cmx')?.textContent || '') && !/exit/.test(prs()[3].querySelector('.sw-cmx')?.textContent || ''),
+  'a failed command shows its exit code; a successful one no exit badge')
+check(prs()[1].querySelector('.sw-cmx')?.textContent.endsWith('—') && !/\d+s$/.test(prs()[1].querySelector('.sw-cmx')?.textContent || ''), 'a stopped command shows — and no duration')
+check(/1m 0[5-9]s$/.test(prs()[0].querySelector('.sw-cmx')?.textContent || ''), `running command counts its elapsed time (${prs()[0].querySelector('.sw-cmx')?.textContent})`)
+check(prs()[3].querySelector('.sw-cmx')?.textContent.endsWith('42s'), 'finished command shows its duration')
+check(q('.sw-pu')?.textContent === '1 record could not be read and is not listed', 'unreadable records are reported, not hidden')
+{
+  const bad = prs()[2]
+  bad.focus()
+  await act(async () => { bad.click() })
+  await tick(5)
+  check(bad.isConnected && document.activeElement === bad && bad.getAttribute('aria-expanded') === 'true', 'opening a command keeps focus on its row')
+  await act(async () => { document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true })) }) // focus inside the page holds its chat; let it go
+}
+check(rest.includes('/process_output?session_id=st-1&process_id=proc_bad'), 'opening a command reads its output for THIS chat')
+check(q('.sw-cmo .sw-out')?.textContent === 'tail of proc_bad in st-1' && q('.sw-cmo .sw-pc')?.textContent === 'FULL proc_bad'
+  && /exit 1/.test(q('.sw-cmo .sw-cmeta')?.textContent || '') && /in \/w/.test(q('.sw-cmo .sw-cmeta')?.textContent || ''),
+  `an opened row shows exit code, cwd, the full command and the output tail (${q('.sw-cmo .sw-cmeta')?.textContent})`)
+check(/last/.test(q('.sw-cmo .sw-outl')?.textContent || ''), 'a cut output says it is the end only')
+{
+  const btn = label => qa('.sw-cmo .sw-btns .sw-ib').find(b => b.textContent === label)
+  await act(async () => { btn('Copy output').click() })
+  await tick(5)
+  check(clip.at(-1) === 'tail of proc_bad in st-1', 'Copy output copies the output')
+  await act(async () => { btn('Copy command').click() })
+  await tick(5)
+  check(clip.at(-1) === 'FULL proc_bad', 'Copy command copies the full command')
+  clipRejects = true
+  await act(async () => { btn('Copy command').click() })
+  await tick(5)
+  check(q('.sw-toast.is-bad')?.textContent === 'Copy failed' && !unhandled, `a rejected clipboard on copy command toasts "Copy failed" (unhandled ${unhandled})`)
+  clipRejects = false
+}
+process.off('unhandledRejection', onUnhandled)
+await act(async () => { prs()[2].click() })
+procOutputFails = true
+await quiet(async () => { await act(async () => { prs()[2].click() }); await tick(5) })
+check(/Could not read its output: output 503/.test(q('.sw-cmerr[role=alert]')?.textContent || '') && q('.sw-cmerr .sw-ib')?.textContent === 'Try again',
+  'an unreadable output is an alert with Try again')
+procOutputFails = false
+await act(async () => { q('.sw-cmerr .sw-ib').click() })
+await tick(5)
+check(q('.sw-cmo .sw-out')?.textContent === 'tail of proc_bad in st-1' && !q('.sw-cmerr'), 'Try again reads the output again')
+{
+  const outReads = rest.filter(p => p.startsWith('/process_output')).length
+  await act(async () => { prs()[0].click() })
+  await tick(5)
+  check(/when the command finishes/.test(q('.sw-cmo[data-st=running] .sw-cmnote')?.textContent || '') && rest.filter(p => p.startsWith('/process_output')).length === outReads,
+    'a running command asks for no output yet and says when it is shown')
+  check(qa('.sw-cmo').length === 2, `opening one command keeps the others open (${qa('.sw-cmo').length} open)`)
+}
+{
+  const procPolls = rest.filter(p => p.startsWith('/processes')).length
+  await tick(3100)
+  check(rest.filter(p => p.startsWith('/processes')).length > procPolls, 'background commands are polled')
+}
+await toTab('agents')
 
-// 2 + 3 + 4. live tree, scoped
-await emit('subagent.spawn_requested', 'rt-OTHER', { subagent_id: 'x1', delegation_id: 'd9', goal: 'foreign', task_index: 0 })
+// 2 + 3 + 4. live run, scoped to the focused chat
+await emit('subagent.spawn_requested', 'rt-OTHER', { subagent_id: 'x1', delegation_id: 'd9', goal: "Do 'foreign'", task_index: 0 })
 await emit('subagent.tool', 'rt-OTHER', { subagent_id: 'x1', tool_name: 'read_file', tool_preview: 'foreign.txt' })
-check(!q('.sw-fl'), 'events from another chat are ignored')
+check(!unitNamed('foreign') && q('.sw-pick')?.textContent === 'Last run', 'events from another chat are ignored')
 await emit('subagent.spawn_requested', 'rt-1', { subagent_id: 's1', delegation_id: 'd1', goal: "Build 'one'", task_index: 0 })
 await emit('subagent.spawn_requested', 'rt-1', { subagent_id: 's2', delegation_id: 'd1', goal: "Build 'two'", task_index: 1 })
 await emit('subagent.spawn_requested', 'rt-1', { subagent_id: 's3', delegation_id: 'd1', goal: "Build 'three'", task_index: 2 })
 await emit('subagent.start', 'rt-1', { subagent_id: 's1', delegation_id: 'd1', goal: "Build 'one'", child_session_id: 'k1', model: 'anthropic/claude-opus-5-5' })
 await emit('subagent.start', 'rt-1', { subagent_id: 's1a', parent_id: 's1', delegation_id: 'd1', goal: "Nested 'one-a'", depth: 1 })
+await emit('subagent.start', 'rt-1', { subagent_id: 's2', delegation_id: 'd1', goal: "Build 'two'" })
 await emit('subagent.tool', 'rt-1', { subagent_id: 's1', tool_name: 'terminal', tool_preview: 'npm test' })
-await emit('subagent.complete', 'rt-1', { subagent_id: 's2', status: 'error', summary: 'boom', duration_seconds: 12, cost_usd: 0.42 })
 stub.state.list['rt-1'] = [
   { subagent_id: 's1', delegation_id: 'd1', status: 'running', goal: "Build 'one'" },
   { subagent_id: 's1a', parent_id: 's1', delegation_id: 'd1', status: 'running', goal: "Nested 'one-a'" },
+  { subagent_id: 's2', delegation_id: 'd1', status: 'running', goal: "Build 'two'" },
   { subagent_id: 's3', delegation_id: 'd1', status: 'queued', goal: "Build 'three'" }
 ]
-await tick(3100) // let one subagent.list poll reconcile the tree (wire status -> mark mapping)
-check(qa('.sw-fl').length === 1, 'one live root per delegation')
-const liveStart = Date.now() / 1000
-extraBatches = [{ started_at: liveStart - 1, workers: [{ session_id: 'k9', goal: "Build 'one'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' }] }]
-await act(async () => q('.sw-hd .sw-ib').click())
-await tick(10)
-check(qa('.sw-hb').length === 3, 'a stored batch still running is not repeated under Earlier while live (every stored batch is under Earlier while one runs)')
-// Its finished workers are gone from subagent.list, so the live tree must take them from state.db.
-extraBatches = [{ started_at: liveStart - 1, workers: [
-  { session_id: 'k9', goal: "Build 'one'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' },
-  { session_id: 'k10', goal: "Build 'done-early'", status: 'completed', duration_s: 40, tool_calls: 3, tokens: 0, summary: 'ok' }
-] }]
-await act(async () => q('.sw-hd .sw-ib').click())
-await tick(10)
-check(qa('.sw-fl .sw-nd').some(n => n.textContent.includes('done-early') && n.querySelector('.sw-mk').dataset.st === 'completed'),
-  'a worker that finished before the rest stays in the live tree, done')
-check(!qa('.sw-hb').some(b => b.textContent.includes('done-early')), 'that finished worker is not also under Earlier')
-check(!qa('.sw-fl .sw-nd').some(n => n.textContent.includes("Build 'one'") && n.dataset.st === 'completed'), 'a live worker is not duplicated from state.db')
-// A stored batch that still reads running but started long before the live tree is not the live
-// tree (a crashed run, or another generation): it stays under Earlier.
-extraBatches = [{ started_at: 3000, workers: [{ session_id: 'k8', goal: "Old 'crashed-run'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' }] }]
-await act(async () => q('.sw-hd .sw-ib').click())
-await tick(10)
-check(qa('.sw-hb').length === 4 && qa('.sw-hb').some(b => b.textContent.includes('crashed-run')),
-  `a running stored batch that is not the live one stays under Earlier (${qa('.sw-hb').length})`)
-extraBatches = []
-await act(async () => q('.sw-hd .sw-ib').click())
-await tick(10)
-const nodes = qa('.sw-fl .sw-nd')
-const byName = n => nodes.find(x => x.querySelector('.sw-wn').textContent === n)
-check(nodes.length === 4, `four live nodes incl. the nested one (${nodes.length})`)
-check(byName('one-a')?.querySelector('.sw-from')?.textContent === 'from O' && nodes.indexOf(byName('one-a')) === nodes.indexOf(byName('one')) + 1,
-  `nested worker sits right after its parent and names it by letter (${byName('one-a')?.querySelector('.sw-from')?.textContent})`)
-check(byName('one')?.querySelector('.sw-mk').dataset.st === 'running', 'running mark')
-check(byName('one')?.querySelector('.sw-model')?.textContent === 'claude-opus-5-5', 'live node shows its model')
-check(!byName('one')?.querySelector('.sw-goal'), 'live node has no goal line')
-check(byName('three')?.querySelector('.sw-mk').dataset.st === 'queued' && byName('three').textContent.includes('waiting'), 'queued is queued, not done')
-check(byName('two')?.querySelector('.sw-mk').dataset.st === 'failed', 'failed is red, not done')
-check(byName('one')?.querySelector('.sw-uv')?.textContent === 'running a command' && byName('one')?.querySelector('.sw-now')?.textContent === 'npm test'
-  && byName('one')?.querySelector('.sw-now')?.dataset.tip === 'npm test',
-  `running unit says what it does now and on what (${byName('one')?.querySelector('.sw-ua')?.textContent})`)
-check(q('.sw-fl .sw-bign')?.textContent === '0/4' && q('.sw-fl .sw-bigl')?.textContent === 'agents finished'
-  && q('.sw-fl .sw-legend')?.textContent.startsWith('2 working1 failed or stopped1 waiting'),
-  `the deck's score counts finished agents and names the rest (${q('.sw-fl .sw-bign')?.textContent} | ${q('.sw-fl .sw-legend')?.textContent})`)
-check(qa('.sw-fl .sw-cells i').map(i => i.dataset.st).join(',') === nodes.map(n => n.dataset.st).join(','), 'one energy cell per agent, in its status')
-check(q('.sw-fl .sw-bcost')?.textContent === '~$0.42' && q('.sw-fl .sw-money')?.tabIndex === 0,
-  `a live batch shows the cost its finished workers reported, as a focusable chip (${q('.sw-fl .sw-bcost')?.textContent})`)
-const logRows = qa('.sw-log .sw-ev')
-check(logRows.length === 4 && logRows[0].querySelector('.sw-evx')?.textContent === 'failed' && logRows[0].querySelector('.sw-sig')?.textContent === 'T'
-  && logRows.some(r => r.querySelector('.sw-evx')?.textContent === 'running a command npm test' && r.querySelector('.sw-sig')?.textContent === 'O')
-  && logRows[0].querySelector('.sw-evt')?.textContent === 'now',
-  `the live log lists this chat's events newest first (start, tool, end; not a spawn request), each with its agent's letter (${logRows.map(r => r.textContent).join(' | ')})`)
-check(!logRows.some(r => r.textContent.includes('foreign')) && qa('.sw-log .sw-ev').length <= 6, "another chat's events stay out of the log")
-check(q('.sw-pill')?.textContent === '2 workers · 1 command running', `header counts running workers AND commands (${q('.sw-pill')?.textContent})`)
+await tick(3100) // let one subagent.list poll reconcile the run (wire status -> status mapping)
+await emit('subagent.complete', 'rt-1', { subagent_id: 's2', status: 'error', summary: 'boom', duration_seconds: 12, cost_usd: 0.42 })
+check(unitNamed('two')?.classList.contains('is-fail'), 'a unit that fails plays the failure moment (it shakes red)')
+const liveNames = () => units().map(u => `${u.querySelector('.sw-un').textContent}=${u.dataset.st}`).join(',')
+check(liveNames() === 'Main agent=running,one=running,one-a=running,two=failed,three=queued',
+  `the live run: main agent first, a nested worker right after its parent, each in its own status (${liveNames()})`)
+check(q('.sw-pick')?.textContent === 'Current run' && q('.sw-ld') && !q('.sw-panel')?.dataset.calm, 'a live run is the current run, with its live mark')
+check(unitNamed('one')?.dataset.icon === 'run' && /running a command npm test/.test(unitNamed('one')?.dataset.tip || '') && unitNamed('three')?.dataset.icon === 'wait',
+  `a running unit's icon is what it does now, its tooltip on what (${unitNamed('one')?.dataset.tip})`)
+check(units()[0].getAttribute('aria-label') === 'Main agent: waiting on 3' && units()[0].dataset.icon === 'wait',
+  `the main agent waits on its working and waiting subagents (${units()[0].getAttribute('aria-label')})`)
+check(q('.sw-bign')?.textContent === '0' && q('.sw-big small')?.textContent === '/4' && qa('.sw-score .sw-seg i').map(i => i.dataset.st).join() === 'running,running,failed,queued',
+  `the score: none finished of four, one cell per subagent in its status (${q('.sw-big')?.textContent})`)
+check(q('.sw-money')?.textContent === '~$0.42', `a live run shows the cost its finished workers reported (${q('.sw-money')?.textContent})`)
+await act(async () => { unitNamed('one').click() })
+check(q('.sw-focus .sw-model')?.textContent === 'claude-opus-5-5' && /running a command npm test/.test(q('.sw-focus .sw-meta')?.textContent || ''),
+  `a live subagent's panel says what it does now (${q('.sw-focus .sw-meta')?.textContent})`)
+await act(async () => { unitNamed('one-a').click() })
+check(/started by one/.test(q('.sw-focus .sw-meta')?.textContent || ''), 'a nested worker names the worker that started it')
+await act(async () => { units()[0].click() })
+check(/Waiting on 3 subagents/.test(q('.sw-focus .sw-head')?.textContent || ''), `the main agent's panel says it waits on them (${q('.sw-focus .sw-head')?.textContent})`)
+{
+  const liveStart = Date.now() / 1000
+  extraBatches = [{ started_at: liveStart - 1, workers: [{ session_id: 'k9', goal: "Build 'one'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' }] }]
+  await refresh()
+  await act(async () => { q('.sw-pick').click() })
+  check(qa('.sw-menu [role=menuitem]').length === 4, `a stored run still running is the live one, not repeated among earlier runs (${qa('.sw-menu [role=menuitem]').length})`)
+  await act(async () => { q('.sw-pick').click() })
+  extraBatches = [{ started_at: liveStart - 1, workers: [
+    { session_id: 'k9', goal: "Build 'one'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' },
+    { session_id: 'k10', goal: "Build 'done-early'", status: 'completed', duration_s: 40, tool_calls: 3, tokens: 0, summary: 'ok' }
+  ] }]
+  await refresh()
+  check(unitNamed('done-early')?.dataset.st === 'completed', 'a worker that finished before the rest stays in the live run, done')
+  check(units().filter(u => u.querySelector('.sw-un').textContent === 'one').length === 1, 'a live worker is not duplicated from state.db')
+  await act(async () => { q('.sw-pick').click() })
+  check(!qa('.sw-menu [role=menuitem]').some(i => i.textContent.includes('done-early')), 'that finished worker is not also an earlier run')
+  await act(async () => { q('.sw-pick').click() })
+  // A stored batch that still reads running but started long before the live run is not the live run.
+  extraBatches = [{ started_at: 3000, workers: [{ session_id: 'k8', goal: "Old 'crashed-run'", status: 'running', duration_s: null, tool_calls: 0, tokens: 0, summary: '' }] }]
+  await refresh()
+  await act(async () => { q('.sw-pick').click() })
+  check(qa('.sw-menu [role=menuitem]').some(i => i.textContent.includes('crashed-run')), 'a running stored run that is not the live one stays among earlier runs')
+  await act(async () => { q('.sw-pick').click() })
+  extraBatches = []
+  await refresh()
+}
+// a finish plays its moment and the score counts up
+await emit('subagent.complete', 'rt-1', { subagent_id: 's3', status: 'completed', duration_seconds: 3 })
+check(unitNamed('three')?.classList.contains('is-done') && q('.sw-bign')?.textContent === '1', 'a unit that finishes plays the done moment and the score counts up')
+await tick(1500)
+check(!q('.sw-unit.is-done, .sw-unit.is-fail'), 'the moments end')
 
-// 8. finishing the batch moves it out of "Now" and reloads history
+// 8. finishing the run reloads history; it stays as the last run
 const before = rest.filter(p => p.startsWith('/children')).length
 stub.state.list['rt-1'] = []
-for (const id of ['s1', 's1a', 's3']) await emit('subagent.complete', 'rt-1', { subagent_id: id, status: 'completed' })
+for (const id of ['s1', 's1a']) await emit('subagent.complete', 'rt-1', { subagent_id: id, status: 'completed' })
 await tick(10)
-check(!q('.sw-fl'), 'finished batch leaves Now')
-check(qa('.sw-log .sw-ev').length === 6 && qa('.sw-log .sw-ev')[0].textContent.includes('finished'),
-  `the live log keeps the newest six (${qa('.sw-log .sw-ev').length})`)
-check(rest.filter(p => p.startsWith('/children')).length > before, 'history reloaded when a batch finishes')
-// The backend can still list a finished batch's workers for a while: they must not come back.
+check(q('.sw-pick')?.textContent === 'Last run' && !q('.sw-ld'), 'a finished run is no longer live')
+check(rest.filter(p => p.startsWith('/children')).length > before, 'history reloaded when a run finishes')
 stub.state.list['rt-1'] = ['s1', 's1a', 's3'].map(id => ({ subagent_id: id, delegation_id: 'd1', status: 'completed', goal: id }))
-const settled = rest.filter(p => p.startsWith('/children')).length
-await tick(3100)
-await tick(3100)
-check(!q('.sw-fl') && rest.filter(p => p.startsWith('/children')).length === settled,
-  `a finished batch still listed by subagent.list is not re-added nor reloaded again (${settled} -> ${rest.filter(p => p.startsWith('/children')).length})`)
+{
+  const settled = rest.filter(p => p.startsWith('/children')).length
+  await tick(3100)
+  await tick(3100)
+  check(q('.sw-pick')?.textContent === 'Last run' && rest.filter(p => p.startsWith('/children')).length === settled,
+    'a finished run still listed by subagent.list is not re-added nor reloaded again')
+}
 stub.state.list['rt-1'] = []
 
-// 2. switching chats clears live state
-await emit('subagent.start', 'rt-1', { subagent_id: 'z1', delegation_id: 'dz', goal: 'z' })
-check(!!q('.sw-fl'), 'live again before the switch')
-if (!q('.sw-pr.is-open')) await act(async () => { qa('.sw-pr')[1].click() })
-check(qa('.sw-pr.is-open').length > 0, 'a card is open before the switch')
+// 2. switching chats clears live state, folds open rows, selects the main agent
+await emit('subagent.start', 'rt-1', { subagent_id: 'z1', delegation_id: 'dz', goal: "Do 'zed'" })
+check(q('.sw-pick')?.textContent === 'Current run', 'live again before the switch')
+await act(async () => { unitNamed('zed').click() })
+await toTab('commands')
+await act(async () => { prs()[1].click() })
+check(q('.sw-cmo'), 'a command row is open before the switch')
 await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
 await tick(10)
-check(!q('.sw-fl'), 'switching chats clears the live tree')
-// Back to the first chat: the cards opened there must come back folded, not as the old chat left them.
+check(rest.includes('/children?session_id=st-2') && rest.includes('/processes?session_id=st-2') && !prs().length && q('.sw-cmds .sw-empty')?.textContent === 'No background commands in this chat.',
+  'history and commands re-read for the new chat; none -> it says so')
 await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
 await tick(10)
-check(qa('.sw-pr').length > 0 && !qa('.sw-acc.is-open, .sw-pr.is-open, .sw-box').length, 'switching chats folds every open card')
-await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
-await tick(10)
-check(rest.includes('/children?session_id=st-2'), 'history re-read for the new chat')
-check(rest.includes('/processes?session_id=st-2') && !qa('.sw-pr').length && !q('.sw-procs'), 'commands re-read for the new chat; none -> no section')
+check(prs().length === 4 && !q('.sw-cmo'), 'switching chats folds every open row')
+await toTab('agents')
+check(!unitNamed('zed') && q('.sw-focus')?.dataset.kind === 'main', 'switching chats clears the live run and selects the main agent')
 
-// 7. failures are visible
+// 7. failures are visible: one alert lists each
 historyFails = true
 stub.state.listFails = true
 procFails = true
-await act(async () => { stub.atoms.focusedSessionId.set('rt-3'); stub.atoms.focusedStoredSessionId.set('st-3') })
-await tick(20)
-check(q('[role=alert]')?.textContent.includes('Could not read earlier batches: backend 503'), 'history failure is shown')
-check(q('[role=alert]')?.textContent.includes('Could not read background commands: procs 503'), 'background command failure is shown')
-const origWarn = console.warn
-console.warn = () => {}
-for (let i = 0; i < 3; i++) await tick(3100)
-console.warn = origWarn
-check(q('[role=alert]')?.textContent.includes('Live updates stopped'), 'three failed polls are shown')
-const stats = qa('.sw-hd .sw-stat')
-check(stats.map(e => e.textContent).join(',') === '—,—,—' && stats.every(e => /could not be read/.test(e.getAttribute('aria-label') || '')),
-  `counts whose source failed read — , not 0 (${stats.map(e => e.textContent)})`)
-check(q('[role=alert] .sw-ib.is-text')?.textContent === 'Try again' && q('.sw-hd')?.dataset.st === 'failed',
-  `the alert carries a Try again button and the header turns red (${q('.sw-hd')?.dataset.st})`)
-check(/Try again/.test(q('.sw-bd')?.textContent || ''), `the all-failed view says what to do, not a blank body (${q('.sw-bd')?.textContent})`)
+await quiet(async () => {
+  await act(async () => { stub.atoms.focusedSessionId.set('rt-3'); stub.atoms.focusedStoredSessionId.set('st-3') })
+  await tick(20)
+  for (let i = 0; i < 3; i++) await tick(3100)
+})
+{
+  const items = qa('.sw-err[role=alert] li').map(li => li.textContent)
+  check(items.includes('earlier runs — backend 503') && items.includes('background commands — procs 503') && items.includes('live updates stopped — gateway down'),
+    `one alert lists each source that failed (${items.join(' | ')})`)
+}
+check(q('.sw-err .sw-ib.is-text')?.textContent === 'Try again' && /Try again/.test(q('.sw-bd')?.textContent || ''),
+  'the alert carries Try again and the empty view says what to do')
+check(q('.sw-tabn')?.textContent === '—' && /could not be read/.test(q('.sw-tabn')?.getAttribute('aria-label') || ''), 'a count whose source failed reads —, not 0')
 
 // 10. Refresh restarts live polling that gave up
 stub.state.listFails = false
@@ -615,108 +719,100 @@ const listCalls = () => stub.calls.request.filter(([m, p]) => m === 'subagent.li
 const gaveUp = listCalls()
 await tick(3100)
 check(listCalls() === gaveUp, 'polling has stopped after three failures')
-await act(async () => q('.sw-hd .sw-ib').click())
-await tick(3100)
-check(listCalls() > gaveUp && !q('[role=alert]')?.textContent.includes('Live updates stopped'), `Refresh resumes live polling (${gaveUp} -> ${listCalls()})`)
+await quiet(async () => { await refresh(); await tick(3100) })
+check(listCalls() > gaveUp && !(q('[role=alert]')?.textContent || '').includes('live updates stopped'), `Refresh resumes live polling (${gaveUp} -> ${listCalls()})`)
 
-// Switching from a failing chat to a healthy one: the old chat's error must not ride along while
-// the new chat's reads are still in flight; the commands section shows it is loading.
+// A chat switch drops the old chat's errors; the first read shows a loading skeleton, commands a loader.
 historyFails = false
 procFails = false
 const releaseChildren = hold('children')
 const releaseProcs = hold('processes')
 await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
 await tick(10)
-check(!(q('[role=alert]')?.textContent || '').includes('earlier batches'), `a chat switch drops the previous chat's history error (${q('[role=alert]')?.textContent})`)
-check(!(q('[role=alert]')?.textContent || '').includes('background commands'), 'a chat switch drops the previous chat\'s command error')
+check(!(q('[role=alert]')?.textContent || '').includes('earlier runs') && !(q('[role=alert]')?.textContent || '').includes('background commands'),
+  `a chat switch drops the previous chat's errors (${q('[role=alert]')?.textContent})`)
+check(q('.sw-skel[role=status]') && !q('[role=tablist]'), 'a chat whose first read is pending shows a loading skeleton')
 await act(async () => { releaseChildren() })
 await tick(10)
-check(q('.sw-procs [data-slot=loader]') !== null, 'background commands show a loading state while their first read is pending')
+await toTab('commands')
+check(q('.sw-cmds .sw-cmwait') !== null, 'background commands show a loading state while their first read is pending')
 await act(async () => { releaseProcs() })
 await tick(10)
-check(!q('.sw-procs [data-slot=loader]') && qa('.sw-pr').length === 4, 'the loading state gives way to the commands')
+check(!q('.sw-cmds .sw-cmwait') && prs().length === 4, 'the loading state gives way to the commands')
 
 // 15. the watched chat survives clicks that are not a chat switch
 const pointer = el => el.dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
-const chatTab = (id) => { const el = document.createElement('div'); el.setAttribute('data-tree-tab', id); document.body.appendChild(el); return el }
+const chatTab = id => { const el = document.createElement('div'); el.setAttribute('data-tree-tab', id); document.body.appendChild(el); return el }
 await act(async () => { pointer(document.body) })
 await tick(10)
-check(qa('.sw-pr').length === 4, `watching the first chat before the clicks (${qa('.sw-pr').length})`)
+check(prs().length === 4, `watching the first chat before the clicks (${prs().length})`)
 let mark = rest.length
-// A click on a panel row: the app, inside that click, now reports the main chat (st-2) as focused.
 await act(async () => {
   appFocusNext = ['rt-2', 'st-2']
-  pointer(q('.sw-hb'))
+  pointer(q('.sw-cmr'))
 })
 await tick(10)
-check(!rest.slice(mark).some(p => p.includes('session_id=st-2')) && qa('.sw-pr').length === 4,
-  `a click inside the panel keeps the watched chat (${rest.slice(mark).join(' ')})`)
-check(q('.sw-held')?.textContent === 'held' && /Click a chat/.test(q('.sw-held')?.dataset.tip || ''), 'a held chat is marked as held in the header')
-// A click on a chat tab is a real switch: the page follows the app's focused chat.
+check(!rest.slice(mark).some(p => p.includes('session_id=st-2')) && prs().length === 4, `a click inside the page keeps the watched chat (${rest.slice(mark).join(' ')})`)
+check(q('.sw-held')?.textContent === 'held' && /Click a chat/.test(q('.sw-held')?.dataset.tip || '') && q('.sw-held')?.tabIndex === 0, 'a held chat is marked as held in the header')
 mark = rest.length
 await act(async () => { pointer(chatTab('session-tile:st-2')) })
 await tick(10)
-check(rest.slice(mark).includes('/processes?session_id=st-2') && !qa('.sw-pr').length,
-  `a click on a chat moves the panel to that chat (${rest.slice(mark).join(' ')})`)
-// A click on another page's tab (a route tile, e.g. Approvals) is held like a click inside the panel.
+check(rest.slice(mark).includes('/processes?session_id=st-2') && !prs().length, `a click on a chat moves the page to that chat (${rest.slice(mark).join(' ')})`)
 mark = rest.length
 await act(async () => {
   appFocusNext = ['rt-1', 'st-1']
   pointer(chatTab('route-tile:/approvals'))
 })
 await tick(10)
-check(!rest.slice(mark).some(p => p.includes('session_id=st-1')) && !qa('.sw-pr').length,
-  `a click on another page's tab keeps the watched chat (${rest.slice(mark).join(' ')})`)
-// A switch the user makes elsewhere is followed: outside every zone, and from the Sessions sidebar.
+check(!rest.slice(mark).some(p => p.includes('session_id=st-1')) && !prs().length, "a click on another page's tab keeps the watched chat")
 await act(async () => { pointer(document.body) })
 await tick(10)
-check(qa('.sw-pr').length === 4, 'a click outside the panel follows the focused chat again')
+check(prs().length === 4, 'a click outside the page follows the focused chat again')
 check(!q('.sw-held'), 'following the app again drops the held marker')
 await act(async () => {
   pointer(chatTab('sessions'))
   stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2')
 })
 await tick(10)
-check(!qa('.sw-pr').length, 'a chat picked in the Sessions sidebar is followed')
-await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
-await tick(10)
+check(!prs().length, 'a chat picked in the Sessions sidebar is followed')
 
-// 16b. a checkpoint-only command (the app closed under it) and a cut command
+// 16b. a checkpoint-only command (the app closed under it), a cut command, a command that printed nothing
 await act(async () => { stub.atoms.focusedSessionId.set('rt-4'); stub.atoms.focusedStoredSessionId.set('st-4') })
 await tick(10)
 mark = rest.length
-await act(async () => { qa('.sw-pr')[0].click() })
+await act(async () => { prs()[1].click() })
 await tick(5)
-check(!rest.slice(mark).some(p => p.startsWith('/process_output')) && q('.sw-po-note')?.textContent === 'No output was recorded.' && !q('.sw-plist [data-slot=error-state]'),
-  `a command with no receipt asks for no output and reads "No output was recorded." (${rest.slice(mark).join(' ')})`)
-check(/first 4000 characters/.test(q('.sw-plist .sw-box .sw-dtm')?.textContent || ''), `a cut command says it is cut (${q('.sw-plist .sw-box .sw-dtm')?.textContent})`)
+check(!rest.slice(mark).some(p => p.startsWith('/process_output')) && q('.sw-cmo .sw-cmnote')?.textContent === 'No output was recorded.',
+  'a command with no receipt asks for no output and says none was recorded')
+check(/first 4000 characters/.test(q('.sw-cmo .sw-cmeta')?.textContent || ''), `a cut command says it is cut (${q('.sw-cmo .sw-cmeta')?.textContent})`)
+await act(async () => { prs()[1].click() })
+await act(async () => { prs()[0].click() })
+await tick(5)
+check(q('.sw-cmo .sw-cmnote')?.textContent === 'It printed nothing.', 'a command that printed nothing says so')
+await toTab('agents')
 
 // 16c. live races: a queued worker before Hermes lists it, a stale snapshot after a complete, and
-// the hand-off of a finished batch to Earlier. Refresh polls subagent.list at once, so the checks do
-// not wait out the 3 s interval.
+// the hand-off of a finished run to its stored copy.
 const pollNow = async () => { await act(async () => { q('.sw-hd .sw-ib').click() }); await tick(5) }
 stub.state.list['rt-4'] = []
-// Hermes sends spawn_requested before it stamps the delegation id or registers the worker.
 await emit('subagent.spawn_requested', 'rt-4', { subagent_id: 'q1', goal: "Queue 'qa-one'", task_index: 0 })
 await emit('subagent.spawn_requested', 'rt-4', { subagent_id: 'q2', goal: "Queue 'qa-two'", task_index: 1 })
 await pollNow()
-const liveMarks = () => qa('.sw-fl .sw-nd').map(n => `${n.querySelector('.sw-wn').textContent}=${n.dataset.st}`).sort().join(',')
-check(liveMarks() === 'qa-one=queued,qa-two=queued', `a queued worker subagent.list does not show yet stays queued (${liveMarks()})`)
+const subMarks = () => units().filter(u => !u.dataset.main).map(u => `${u.querySelector('.sw-un').textContent}=${u.dataset.st}`).sort().join(',')
+check(subMarks() === 'qa-one=queued,qa-two=queued', `a queued worker subagent.list does not show yet stays queued (${subMarks()})`)
 await emit('subagent.start', 'rt-4', { subagent_id: 'q1', delegation_id: 'dq', goal: "Queue 'qa-one'", child_session_id: 'kq1' })
 await emit('subagent.start', 'rt-4', { subagent_id: 'q2', delegation_id: 'dq', goal: "Queue 'qa-two'", child_session_id: 'kq-empty' })
 stub.state.list['rt-4'] = [['q1', "Queue 'qa-one'"], ['q2', "Queue 'qa-two'"]].map(([id, goal]) => ({ subagent_id: id, delegation_id: 'dq', status: 'running', goal }))
 await pollNow()
-check(liveMarks() === 'qa-one=running,qa-two=running', `once started both run in the live tree (${liveMarks()})`)
+check(subMarks() === 'qa-one=running,qa-two=running', `once started both run (${subMarks()})`)
 await emit('subagent.complete', 'rt-4', { subagent_id: 'q1', status: 'completed', duration_seconds: 4 })
-await pollNow() // the registry still lists q1 as running until Hermes' cleanup unregisters it
-check(liveMarks() === 'qa-one=completed,qa-two=running', `a stale snapshot never revives a finished worker (${liveMarks()})`)
+await pollNow()
+check(subMarks() === 'qa-one=completed,qa-two=running', `a stale snapshot never revives a finished worker (${subMarks()})`)
 stub.state.list['rt-4'] = [{ subagent_id: 'q2', delegation_id: 'dq', status: 'running', goal: "Queue 'qa-two'" }]
 await pollNow()
-check(liveMarks() === 'qa-one=completed,qa-two=running', `a finished worker the list drops stays done, not stopped (${liveMarks()})`)
-// Open q2's detail, keep focus in the batch, then finish it while the history read is pending.
-const q2 = () => qa('.sw-fl .sw-nd').find(n => n.textContent.includes('qa-two'))
-await act(async () => { q2().click() })
-q2().focus()
+check(subMarks() === 'qa-one=completed,qa-two=running', `a finished worker the list drops stays done, not stopped (${subMarks()})`)
+await act(async () => { unitNamed('qa-two').click() })
+unitNamed('qa-two').focus()
 extraBatches = [{ started_at: 5000, workers: [
   { session_id: 'kq1', goal: "Queue 'qa-one'", status: 'completed', duration_s: 4, tool_calls: 1, tokens: 0, summary: 'a' },
   { session_id: 'kq-empty', goal: "Queue 'qa-two'", status: 'completed', duration_s: 6, tool_calls: 1, tokens: 0, summary: '' }
@@ -725,52 +821,62 @@ const releaseHand = hold('children')
 stub.state.list['rt-4'] = []
 await emit('subagent.complete', 'rt-4', { subagent_id: 'q2', status: 'completed', duration_seconds: 6 })
 await tick(10)
-check(!!q('.sw-fl') && !q('[data-slot=panel-empty]'), 'a finished batch stays in Now while history is still loading (no empty flash)')
+check(q('.sw-pick')?.textContent === 'Current run' && unitNamed('qa-two'), 'a finished run stays the current run while history is still loading (no empty flash)')
 await act(async () => { releaseHand() })
 await tick(20)
-const moved = qa('[data-batch]').find(el => el.textContent.includes('qa-one') && !el.classList.contains('sw-fl'))
-const movedOpen = moved?.querySelector('button.sw-unit.is-open')
-check(!q('.sw-fl') && moved?.classList.contains('sw-deck') && moved.querySelector('.sw-bigl')?.textContent === 'finished in the last run',
-  'the finished batch stays on the deck as the last run, from its stored copy')
-check(moved?.querySelectorAll('.sw-dt').length === 1 && movedOpen?.textContent.includes('qa-two'), 'the worker detail that was open stays open')
-check(!!movedOpen && document.activeElement === movedOpen, `focus follows the batch to its open agent (${document.activeElement?.className})`)
-// Copying an empty output says so instead of "Copied".
-const clipBefore = clip.length
-if (moved?.querySelector('.sw-dt .sw-ib')) await act(async () => { moved.querySelector('.sw-dt .sw-ib').click() })
-await tick(5)
-check(clip.length === clipBefore && (q('.sw-toast.is-bad')?.textContent || '').startsWith('Nothing to copy'), `empty output is not "Copied" (${q('.sw-toast')?.textContent})`)
+{
+  const sel = q('.sw-agents button.sw-unit[aria-pressed=true]')
+  check(q('.sw-pick')?.textContent === 'Last run' && subMarks() === 'qa-one=completed,qa-two=completed', 'the finished run stays as the last run, from its stored copy')
+  check(sel?.querySelector('.sw-un')?.textContent === 'qa-two' && q('.sw-focus')?.dataset.kind === 'sub', 'the subagent that was selected stays selected')
+  check(!!sel && document.activeElement === sel, `focus follows the run to its selected unit (${document.activeElement?.className})`)
+}
+{
+  const clipBefore = clip.length
+  await act(async () => { q('.sw-focus .sw-btns .sw-ib').click() })
+  await tick(5)
+  check(clip.length === clipBefore && (q('.sw-toast.is-bad')?.textContent || '').startsWith('Nothing to copy'), `empty output is not "Copied" (${q('.sw-toast')?.textContent})`)
+}
 extraBatches = []
 
 // 16d. a failed poll of the chat the page has left does not count against the new chat
-document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true })) // focus inside the page holds its chat; let it go
+await act(async () => { document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true })) })
 stub.state.list['rt-5'] = []
 let releaseList
 stub.state.listHold = new Promise(r => { releaseList = r })
 stub.state.listFails = true
 await act(async () => { stub.atoms.focusedSessionId.set('rt-5'); stub.atoms.focusedStoredSessionId.set('st-2') })
-await tick(10) // rt-5's first poll is now pending
+await tick(10)
 await act(async () => { stub.atoms.focusedSessionId.set('rt-6'); stub.atoms.focusedStoredSessionId.set('st-2') })
 await tick(10)
 stub.state.listHold = null
-const warn0 = console.warn
-console.warn = () => {}
-await act(async () => { releaseList() })
-await tick(10)
-await tick(3100) // the new chat's own failures: the first poll at mount + this one = 2 of 3
-const afterTwo = (q('[role=alert]')?.textContent || '').includes('Live updates stopped')
-await tick(3100)
-console.warn = warn0
-check(!afterTwo && (q('[role=alert]')?.textContent || '').includes('Live updates stopped'),
-  `the new chat gets its own three tries (stopped after two: ${afterTwo})`)
+let afterTwo
+await quiet(async () => {
+  await act(async () => { releaseList() })
+  await tick(10)
+  await tick(3100)
+  afterTwo = (q('[role=alert]')?.textContent || '').includes('live updates stopped')
+  await tick(3100)
+})
+check(!afterTwo && (q('[role=alert]')?.textContent || '').includes('live updates stopped'), `the new chat gets its own three tries (stopped after two: ${afterTwo})`)
 stub.state.listFails = false
 
+// 24. a chat with no subagents: the main agent alone, what subagents are, its files or none yet
+await act(async () => { stub.atoms.focusedSessionId.set('rt-e'); stub.atoms.focusedStoredSessionId.set('st-empty') })
+await tick(10)
+check(q('.sw-solo') && units().length === 1 && units()[0].dataset.main === 'true' && q('.sw-nosub')?.textContent === 'Subagents appear here when the main agent hands work off to a helper.',
+  'a chat with no subagents shows the main agent and says when subagents appear')
+check(q('.sw-focus')?.dataset.kind === 'main' && q('.sw-focus [data-sec=none] .sw-empty')?.textContent === 'No files read or changed in this chat yet.' && !q('.sw-runb'),
+  'its focus panel says no files yet; there is no run to pick')
+check(q('.sw-score')?.getAttribute('aria-label') === 'No subagents yet', 'the score says there are none yet')
+// 25. more than SWARM_AT live subagents: the swarm, the main agent on top waiting on them
+for (let i = 0; i < 12; i++) await emit('subagent.spawn_requested', 'rt-e', { subagent_id: `e${i}`, goal: `Spawn 'eq-${i}'`, task_index: i })
+check(q('.sw-swarm') && !q('.sw-swarm ~ .sw-units') && q('.sw-gmain .sw-unit')?.getAttribute('aria-label') === 'Main agent: waiting on 12',
+  `past 8 subagents the units become a swarm, the main agent on top waiting on them (${q('.sw-gmain .sw-unit')?.getAttribute('aria-label')})`)
+
 // empty chat
-historyFails = false
-stub.state.listFails = false
-procFails = false
 await act(async () => { stub.atoms.focusedSessionId.set(null); stub.atoms.focusedStoredSessionId.set(null) })
 await tick(10)
-check(q('[data-slot=panel-empty]')?.textContent.includes('No chat selected'), 'no chat -> empty state')
+check(q('.sw-hint')?.textContent.includes('No chat selected') && !q('[role=tablist]'), 'no chat -> it says so')
 
 await act(async () => root.unmount())
 
@@ -792,10 +898,11 @@ const said0 = stub.pet.said.length
 for (const id of ['p1', 'p2', 'p3']) await emit('subagent.spawn_requested', 'rt-9', { subagent_id: id, goal: id })
 await tick(5)
 check(chip()?.querySelector('.sw-sbn')?.textContent === '0/3' && chip()?.dataset.st === 'queued', `three queued workers read 0/3 (${chip()?.querySelector('.sw-sbn')?.textContent})`)
+check(chipHost.querySelector('.sw-sbw')?.dataset.theme === 'cockpit', 'the chip takes the chosen look')
 check(stub.pet.said.length === said0, 'no pet on screen -> nothing is said')
 await emit('subagent.spawn_requested', 'rt-OTHER', { subagent_id: 'o1', goal: 'other chat' })
 await tick(5)
-check(chip()?.querySelector('.sw-sbn')?.textContent === '0/3', 'another chat\'s worker is not counted')
+check(chip()?.querySelector('.sw-sbn')?.textContent === '0/3', "another chat's worker is not counted")
 await act(async () => { stub.pet.visible.set(true) })
 await emit('subagent.start', 'rt-9', { subagent_id: 'p1' })
 await emit('subagent.complete', 'rt-9', { subagent_id: 'p1', status: 'completed', cost_usd: 1.2 })
@@ -812,8 +919,8 @@ check(lastSaid?.[0] === 'Subagents 1/3 done · ~$1.20' && lastSaid?.[1]?.id === 
 const saidN = stub.pet.said.length
 await emit('subagent.tool', 'rt-9', { subagent_id: 'p2', tool_name: 'terminal' })
 stub.state.list['rt-9'] = [{ subagent_id: 'p2', status: 'running', goal: 'p2' }]
-await tick(3100) // and one subagent.list poll that changes nothing
-check(stub.pet.said.length === saidN, `a tool call or a poll that changes nothing says nothing again (the pet is rate-limited) (${stub.pet.said.length - saidN} extra)`)
+await tick(3100)
+check(stub.pet.said.length === saidN, `a tool call or a poll that changes nothing says nothing again (${stub.pet.said.length - saidN} extra)`)
 await emit('subagent.complete', 'rt-9', { subagent_id: 'p2', status: 'error', cost_usd: 0 })
 await tick(5)
 check(chip()?.querySelector('.sw-sbn')?.textContent === '2/3' && /1 failed/.test(chip()?.dataset.tip || '') && chip()?.querySelector('.sw-sbc')?.textContent === '~$1.20',
@@ -822,8 +929,7 @@ await emit('subagent.start', 'rt-9', { subagent_id: 'p3' })
 await emit('subagent.complete', 'rt-9', { subagent_id: 'p3', status: 'completed' })
 await tick(5)
 lastSaid = stub.pet.said.at(-1)
-check(chip()?.querySelector('.sw-sbn')?.textContent === '3/3' && chip()?.dataset.st === 'failed' && bar() === '100%',
-  `a finished batch with a failure reads 3/3 in red (${chip()?.dataset.st})`)
+check(chip()?.querySelector('.sw-sbn')?.textContent === '3/3' && chip()?.dataset.st === 'failed' && bar() === '100%', `a finished batch with a failure reads 3/3 in red (${chip()?.dataset.st})`)
 check(lastSaid?.[1]?.tone === 'error' && lastSaid?.[1]?.ttlMs === 8000, `the pet's last line for that batch is an error that expires (${JSON.stringify(lastSaid)})`)
 await emit('subagent.complete', 'rt-9', { subagent_id: 'p1', status: 'failed' })
 check(chip()?.querySelector('.sw-sbn')?.textContent === '3/3' && /1 failed/.test(chip()?.dataset.tip || ''), 'a late frame never changes a worker that already ended')
@@ -831,7 +937,6 @@ await act(async () => { chip().click() })
 check(stub.calls.navigated.at(-1) === '/subagent-watch', 'the chip opens the Subagents page')
 await tick(8200)
 check(!chip() && stub.pet.cleared.includes('progress'), 'a finished batch lingers, then the chip and the pet line go')
-// A batch already running when the app loaded: found by subagent.list on focus, ended when the list drops it.
 stub.state.list['rt-8'] = [{ subagent_id: 'r1', status: 'running', goal: 'r1' }, { subagent_id: 'r2', status: 'running', goal: 'r2' }]
 await act(async () => { stub.atoms.focusedSessionId.set('rt-8') })
 await tick(10)
@@ -841,25 +946,19 @@ await tick(3100)
 check(chip()?.querySelector('.sw-sbn')?.textContent === '1/2' && /1 failed or stopped/.test(chip()?.dataset.tip || ''),
   `a worker the list dropped without a complete frame ends as stopped (${chip()?.dataset.tip})`)
 stub.state.listFails = true
-const warnChip = console.warn
-console.warn = () => {}
-for (let i = 0; i < 3; i++) await tick(3100)
-console.warn = warnChip
-check(chip()?.dataset.st === 'failed' && /stopped updating: gateway down/.test(chip()?.dataset.tip || ''),
-  `three failed polls are shown on the chip (${chip()?.dataset.tip})`)
+await quiet(async () => { for (let i = 0; i < 3; i++) await tick(3100) })
+check(chip()?.dataset.st === 'failed' && /stopped updating: gateway down/.test(chip()?.dataset.tip || ''), `three failed polls are shown on the chip (${chip()?.dataset.tip})`)
 stub.state.listFails = false
-// A complete frame's 0 is a subscription or an unpriced model: never shown as a price.
 await emit('subagent.complete', 'rt-8', { subagent_id: 'r2', status: 'completed', cost_usd: 0 })
 await tick(5)
 check(chip()?.querySelector('.sw-sbn')?.textContent === '2/2' && !chip()?.querySelector('.sw-sbc'),
   `a batch whose only cost frames read 0 shows no cost, not $0.00 (${chip()?.querySelector('.sw-sbc')?.textContent})`)
-// The chip follows the focused chat: switching back to the finished chat shows nothing.
 await act(async () => { stub.atoms.focusedSessionId.set('rt-9') })
 await tick(10)
 check(!chip(), 'switching to a chat whose batch is long finished shows no chip')
 await act(async () => chipRoot.unmount())
 
-// 19. files
+// 19. files: path keys shared with the backend, the main agent's and a subagent's files, working on now
 const vectors = JSON.parse(readFileSync(`${HERE}path_vectors.json`, 'utf8')).cases
 const badVec = vectors.filter(([input, key]) => mod.pathKey(input) !== key)
 check(!badVec.length, `the page's pathKey gives the backend's key for all ${vectors.length} shared vectors (${JSON.stringify(badVec)})`)
@@ -875,11 +974,9 @@ check(!mod.fileTargets('patch', { mode: 'patch', path: 'a', patch: '*** Begin Pa
 check(mod.fileState({ last_failed: true, writes: 2 }, false) === 'failed' && mod.fileState({ writes: 1, last_failed: true }, true) === 'active' &&
   mod.fileState({ last_op: 'delete', deletes: 1, writes: 1 }) === 'delete' && mod.fileState({ reads: 3 }) === 'read' && mod.fileState({ writes: 1 }) === 'write',
 'a file state: now beats all, then a failed last change, deleted, edited, read only')
-check(tr('sw.files.counts', 0, 0, 2, 0) === 'deleted 2×' && tr('sw.files.counts', 0, 0, 1, 0) === 'deleted' && tr('sw.files.counts', 1, 2, 0, 3) === 'read 1× · edited 2× · 3 failed',
-  `a row's counts name each kind with its number (${tr('sw.files.counts', 0, 0, 2, 0)})`)
 check(mod.dirLabel('D:\\Proj', 'd:/proj', tr) === 'chat folder' && mod.dirLabel('D:\\Proj\\src\\ui', 'D:\\Proj', tr) === './src/ui' &&
   mod.dirLabel('/x'.repeat(40), '/w', tr).startsWith('…') && mod.dirLabel('/x'.repeat(40), '/w', tr).length === 48,
-'a folder heading: the chat folder by name, its sub-folders relative, a long one cut from the left')
+'a folder label: the chat folder by name, its sub-folders relative, a long one cut from the left')
 
 const fhost = document.createElement('div')
 document.body.appendChild(fhost)
@@ -889,89 +986,158 @@ await act(async () => { froot.render(React.createElement(route.render)) })
 await tick(10)
 const fq = s => fhost.querySelector(s)
 const fqa = s => [...fhost.querySelectorAll(s)]
-const rowOf = name => fqa('.sw-fir').find(b => b.querySelector('.sw-fin')?.textContent === name)
+const sec = name => fqa(`.sw-focus [data-sec=${name}] .sw-fr`)
+const rowOf = name => fqa('.sw-focus .sw-fr').find(b => b.querySelector('.sw-fn')?.textContent === name)
 check(rest.some(p => p === '/files?session_id=st-f'), 'files are read for the stored chat id')
-const blind = fqa('.sw-files .sw-fio').at(-1)?.textContent || ''
-check(fq('.sw-files h3')?.textContent.includes('Files') && /terminal commands or code runs are not listed/.test(blind) &&
-  /Review › Last turn/.test(blind), `the section says what it cannot see and where every change is (${blind})`)
-const dirs = fqa('.sw-fid').map(d => d.textContent)
-check(dirs[0] === './src' && dirs[1] === 'chat folder' && dirs[2]?.startsWith('…') && dirs.length === 3 && fqa('.sw-fid')[2]?.dataset.tip.startsWith('C:/elsewhere'),
-  `files are grouped by folder, newest folder first, long folder cut with the full path on hover (${JSON.stringify(dirs)})`)
-check(rowOf('a.py')?.dataset.op === 'write' && rowOf('README.md')?.dataset.op === 'failed' && rowOf('b.py')?.dataset.op === 'read' && rowOf('old.txt')?.dataset.op === 'delete',
-  'each file state draws its own mark: edited, failed, read only, deleted')
-const sigs = name => [...(rowOf(name)?.querySelectorAll('.sw-sig') || [])].map(e => e.textContent).join(',')
-check(rowOf('a.py')?.querySelector('.sw-fic')?.textContent === 'read 2× · edited 3×' && sigs('a.py') === 'D,Chat' &&
-  rowOf('a.py')?.getAttribute('aria-label') === 'a.py: Edited, read 2× · edited 3×, by docs-writer, this chat (the main agent)' && rowOf('README.md')?.querySelector('.sw-fic')?.textContent === '1 failed',
-  `a tile counts its reads, edits and failures, badges who touched it with the deck's letters, and names all of it for a screen reader (${sigs('a.py')} | ${rowOf('a.py')?.getAttribute('aria-label')})`)
-const deckD = fqa('.sw-deck .sw-unit').find(u => u.textContent.includes('docs-writer'))
-check(deckD?.querySelector('.sw-orbl')?.textContent === 'D' && deckD.style.getPropertyValue('--u') === rowOf('a.py')?.style.getPropertyValue('--u'),
-  'the deck and the files give one agent the same letter and colour')
-check(/edited 1 file/.test(deckD?.querySelector('.sw-ua')?.textContent || ''), `a finished unit says what it changed (${deckD?.querySelector('.sw-ua')?.textContent})`)
-// the deck's pure parts
-check(mod.agentLetters([['docs', 'design', 'wiki', ''], ['Docs']]).flat().join(',') === 'D,D2,W,?,D3', 'agent letters: first letter, a repeat numbered across the page, no name a ?')
-check(mod.baseLetters(['Review alpha panel', 'Review beta panel', 'review gamma']).join(',') === 'A,B,G' && mod.baseLetters(['Review alpha']).join() === 'R'
-  && mod.baseLetters(['Review', 'Review x']).join(',') === 'R,R', "a batch's shared opening words are skipped for its letters, never a whole name")
-check(mod.shortTarget('D:\\Proj\\src\\a.py') === 'src/a.py' && mod.shortTarget('npm test\nmore') === 'npm test' && mod.shortTarget('a b/c') === 'a b/c',
-  'a tool target: a path keeps its last two parts, a command its first line')
-const tb = mod.touchedBy([{ who: ['', 'w1'], editors: ['w1'] }, { who: ['w1'], editors: [] }])
-check(tb.get('w1')?.edited === 1 && tb.get('w1')?.opened === 1 && tb.get('')?.opened === 1, 'per agent: files changed vs only opened')
-const ua = (status, rec) => mod.unitAction({ status, rec }, { edited: 2, opened: 0 }, tr)
-check(ua('running', { last_tool: 'read_file', tool_preview: 'D:/x/y/z.py' }).verb === 'reading' && ua('running', { last_tool: 'read_file', tool_preview: 'D:/x/y/z.py' }).target === 'y/z.py'
-  && ua('running', {}).verb === 'thinking…' && ua('running', { last_tool: 'mcp_x' }).verb === 'using mcp_x'
-  && ua('completed', {}).target === 'edited 2 files' && ua('failed', {}).verb === 'ended with an error' && ua('queued', {}).verb === 'in the queue',
-  'the line under an orb: the verb of its tool and its target while running, what it changed once ended')
-check(rowOf('a.py')?.style.getPropertyValue('--u') === 'var(--ui-blue)' && rowOf('b.py')?.style.getPropertyValue('--u') === 'var(--ui-text-tertiary)',
-  "a tile takes the colour of the agent that touched it first; the chat's own files stay neutral")
-check(parseInt(rowOf('a.py')?.style.getPropertyValue('--heat')) > parseInt(rowOf('b.py')?.style.getPropertyValue('--heat')), 'a file touched more glows brighter')
-check(/1 call could not be read/.test(fq('.sw-files h3')?.textContent || '') && /2 older files not listed/.test(fq('.sw-files')?.textContent || ''),
+const note = fq('.sw-focus .sw-note')?.textContent || ''
+check(/terminal commands or code runs are not listed/.test(note) && /Review › Last turn/.test(note), `the panel says what it cannot see and where every change is (${note})`)
+check(sec('changed').map(r => r.querySelector('.sw-fn').textContent).join() === 'a.py,README.md,old.txt' && sec('read').map(r => r.querySelector('.sw-fn').textContent).join() === 'b.py,x.md',
+  `the main agent's files: Changed (its edits, a failed change, a delete) and Only read (${sec('changed').length}/${sec('read').length})`)
+check(rowOf('a.py')?.dataset.op === 'write' && rowOf('README.md')?.dataset.op === 'failed' && rowOf('old.txt')?.dataset.op === 'delete' && rowOf('b.py')?.dataset.op === 'read',
+  'each file state is its own row kind: edited, failed, deleted, read only')
+check(rowOf('a.py')?.querySelector('.sw-fl')?.textContent === 'edit ×3' && rowOf('README.md')?.querySelector('.sw-fl')?.textContent === 'failed' && rowOf('old.txt')?.querySelector('.sw-fl')?.textContent === 'deleted',
+  `a changed row says EDIT ×n / FAILED / DELETED (${rowOf('a.py')?.querySelector('.sw-fl')?.textContent})`)
+check(parseInt(rowOf('a.py')?.querySelector('.sw-fbar i')?.style.width) > parseInt(rowOf('README.md')?.querySelector('.sw-fbar i')?.style.width),
+  'a bar is as long as the edit count')
+check(rowOf('a.py')?.querySelector('.sw-fd')?.textContent === './src' && rowOf('README.md')?.querySelector('.sw-fd')?.textContent === 'chat folder'
+  && rowOf('x.md')?.querySelector('.sw-fd')?.textContent.startsWith('…') && rowOf('x.md')?.dataset.tip.startsWith('C:/elsewhere'),
+  'a row names its folder relative to the chat; the full path is its tooltip')
+check(rowOf('a.py')?.getAttribute('aria-label') === 'a.py in ./src: edit ×3', `a row is named for a screen reader (${rowOf('a.py')?.getAttribute('aria-label')})`)
+check(fqa('.sw-focus .sw-fnote').map(e => e.textContent).join('|') === '2 older files not listed|1 tool call could not be read',
   'unreadable calls and files past the list are said, never silently dropped')
 await act(async () => { rowOf('b.py').click() })
 await tick(2)
 check(clip.at(-1) === 'D:\\Proj\\src\\b.py' && fq('.sw-toast')?.textContent === 'Path copied', `a row copies its full path (${fq('.sw-toast')?.textContent})`)
-// the shimmer
+{
+  const docs = [...fhost.querySelectorAll('.sw-agents button.sw-unit')].find(u => u.textContent.includes('docs-writer'))
+  await act(async () => { docs.click() })
+  check(fq('.sw-focus')?.dataset.kind === 'sub' && sec('changed').map(r => r.querySelector('.sw-fn').textContent).join() === 'a.py' && !sec('read').length
+    && /changed 1 file/.test(fq('.sw-focus .sw-meta')?.textContent || ''),
+  `a subagent's panel lists the files it changed, from /files who/editors (${fq('.sw-focus .sw-meta')?.textContent})`)
+  await act(async () => { fhost.querySelector('.sw-agents button.sw-unit').click() })
+}
+// working on now (1.6.0's shimmer): the main agent's live file calls
 const filesReads = () => rest.filter(p => p === '/files?session_id=st-f').length
+const nowNames = () => sec('now').map(r => r.querySelector('.sw-fn').textContent).join()
+const mainUnit = () => fhost.querySelector('.sw-agents button.sw-unit')
 await emit('tool.start', 'rt-other', { tool_id: 'x1', name: 'read_file', args: { path: 'D:\\Proj\\src\\b.py' } })
-check(!fq('.sw-fir[data-op=active]'), "another chat's tool call does not shimmer this chat's files")
+check(!sec('now').length, "another chat's tool call is not this chat's work")
 await emit('tool.start', 'rt-f', { tool_id: 'm1', name: 'read_file', args: {}, preview: 'worker row' })
 await emit('tool.start', 'rt-f', { tool_id: 'v1', name: 'patch', args: { mode: 'patch', path: 'src/b.py', patch: '*** Update File: D:/Proj/src/b.py' } })
-check(!fq('.sw-fir[data-op=active]'), 'a mirrored worker row and a V4A patch shimmer nothing')
+check(!sec('now').length, 'a mirrored worker row and a V4A patch name no file')
+await emit('tool.complete', 'rt-f', { tool_id: 'm1' })
+await emit('tool.complete', 'rt-f', { tool_id: 'v1' })
 await emit('tool.start', 'rt-f', { tool_id: 't1', name: 'read_file', args: { path: 'src/b.py' } })
-check(rowOf('b.py')?.dataset.op === 'active' && fqa('.sw-fir')[0] === rowOf('b.py') && rowOf('b.py')?.getAttribute('aria-label').startsWith('b.py: Being worked on now'),
-  'a file tool call in the focused chat makes its row shimmer and moves it to the top (a relative path joins the chat folder)')
+check(nowNames() === 'b.py' && fq('.sw-focus .sw-head')?.textContent === 'Reading b.py' && mainUnit()?.dataset.icon === 'read' && mainUnit()?.dataset.st === 'running',
+  `a file call of the focused chat is the 'Working on now' row, and the main agent's icon reads (${fq('.sw-focus .sw-head')?.textContent})`)
 await emit('tool.start', 'rt-f', { tool_id: 't2', name: 'write_file', args: { path: 'D:/Proj/src/new.ts', content: 'x' } })
-check(rowOf('new.ts')?.dataset.op === 'active' && rowOf('new.ts')?.querySelector('.sw-fic')?.textContent === 'now' && sigs('new.ts') === 'Chat',
-  'a file not yet recorded appears at once, shimmering, marked now and as the chat\'s')
+check(nowNames() === 'b.py,new.ts' && fq('.sw-focus .sw-head')?.textContent === 'Editing new.ts' && rowOf('new.ts')?.dataset.op === 'active' && mainUnit()?.dataset.icon === 'edit',
+  'a file not yet recorded appears at once; the newest file is the head line and the icon edits')
 const readsBefore = filesReads()
 await emit('tool.complete', 'rt-f', { tool_id: 't1', name: 'read_file' })
 await tick(5)
-check(filesReads() > readsBefore && rowOf('b.py')?.dataset.op === 'active', 'a finished call reloads the list, and its row keeps shimmering for a moment')
+check(filesReads() > readsBefore && nowNames() === 'b.py,new.ts', 'a finished call reloads the list, and its row stays a moment')
 await tick(4100)
-check(rowOf('b.py')?.dataset.op === 'read' && rowOf('new.ts')?.dataset.op === 'active', 'the shimmer ends after the linger; a call still running keeps its own')
+check(nowNames() === 'new.ts', 'the row ends after the linger; a call still running keeps its own')
 await emit('tool.complete', 'rt-f', { tool_id: 't2', name: 'write_file' })
 await tick(4100)
-check(!fq('.sw-fir[data-op=active]') && !rowOf('new.ts'), 'once every call ended nothing shimmers, and an unrecorded file leaves with its shimmer')
-const pluginCss = readFileSync(SRC, 'utf8')
-const calm = pluginCss.match(/prefers-reduced-motion:reduce\)\{(\.sw-scan[^{]*)\{animation:none!important\}/)?.[1] || ''
-check(['.sw-scan', '.sw-cells i', '.sw-orb::after', '.sw-ut::after', '.sw-ev', '.sw-fir[data-op=active]::after'].every(sel => calm.split(',').includes(sel)),
-  `every deck animation and the shimmer stop for reduced motion (${calm})`)
-// a read failure, many files, no files
+check(!sec('now').length && !rowOf('new.ts') && mainUnit()?.dataset.st === 'idle', 'once every call ended nothing is worked on now, and an unrecorded file leaves with it')
+// 26. reduced motion turns every animation off; every moment exists
+{
+  const pageCss = mod.default && (fq('style')?.textContent || '')
+  const animated = [...pageCss.matchAll(/([^{}]+)\{[^{}]*animation:(?!none)[^{}]*\}/g)].map(m => m[1].trim()).filter(s => !s.startsWith('@') && !/^\d|^from|^to/.test(s))
+  check(/@media \(prefers-reduced-motion:reduce\)\{\.sw-page \*,\.sw-page \*::before,\.sw-page \*::after\{animation:none!important;transition:none!important\}\}/.test(pageCss)
+    && animated.length > 5 && animated.every(s => s.split(',').every(one => /^\.sw-(page|panel|unit|sk|ld|bign|nowf|fr|spr|frow)/.test(one.trim()) || /^\.sw-page /.test(one.trim()))),
+  `reduced motion stops every page animation (${animated.length} animated rules, all inside the page)`)
+  check(['sw-close', 'sw-shake', 'sw-up', 'sw-slide', 'sw-breathe', 'sw-type', 'sw-blink'].every(k => new RegExp(`@keyframes ${k}\\{`).test(pageCss)),
+    'the moments exist: ring closes, shake, count up, slide, breathe, retyped tag, cursor blink')
+}
+check(/\.sw-units\{display:flex;[^}]*flex-wrap:wrap/.test(fq('style')?.textContent || '') && /\.sw-cellgrid\{display:flex;flex-wrap:wrap/.test(fq('style')?.textContent || ''),
+  'units and swarm cells wrap: nothing scrolls sideways')
 filesFails = true
-const warnFiles = console.warn
-console.warn = () => {}
-await act(async () => { fq('.sw-err button, .sw-hd button[aria-label="Refresh"]')?.click() })
-await act(async () => { stub.atoms.focusedSessionId.set('rt-g'); stub.atoms.focusedStoredSessionId.set('st-g') })
-await tick(10)
-console.warn = warnFiles
-check(/Could not read the files list.*files 503/.test(fq('.sw-err')?.textContent || ''), `a failed files read is an alert (${fq('.sw-err')?.textContent})`)
+await quiet(async () => {
+  await act(async () => { stub.atoms.focusedSessionId.set('rt-g'); stub.atoms.focusedStoredSessionId.set('st-g') })
+  await tick(10)
+})
+check(/the files list — files 503/.test(fq('.sw-err')?.textContent || ''), `a failed files read is in the alert (${fq('.sw-err')?.textContent})`)
 filesFails = false
 await act(async () => { stub.atoms.focusedSessionId.set('rt-m'); stub.atoms.focusedStoredSessionId.set('st-many') })
 await tick(10)
-check(fqa('.sw-fir').length === 40 && /5 more files/.test(fq('.sw-files .sw-more')?.textContent || ''), `a long list shows 40 and says how many more (${fq('.sw-files .sw-more')?.textContent})`)
-await act(async () => { fq('.sw-files .sw-more').click() })
-check(fqa('.sw-fir').length === 45 && !fq('.sw-files .sw-more'), 'show all lists every file')
-await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
+check(sec('read').length === 3 && fq('.sw-focus [data-sec=read] .sw-more')?.textContent === 'Show 42 more', `Only read shows its first rows and how many more (${fq('.sw-focus [data-sec=read] .sw-more')?.textContent})`)
+await act(async () => { fq('.sw-focus [data-sec=read] .sw-more').click() })
+check(sec('read').length === 45 && !fq('.sw-focus [data-sec=read] .sw-more'), 'Show more lists every file')
+
+// 25. the 40-subagent swarm
+await act(async () => { stub.atoms.focusedSessionId.set('rt-s'); stub.atoms.focusedStoredSessionId.set('st-swarm') })
 await tick(10)
-check(!fq('.sw-files'), 'a chat with no files draws no section')
+const grp = id => fq(`.sw-swarm [data-grp=${id}]`)
+check(fq('.sw-swarm') && fqa('.sw-swarm [data-grp]').map(g => g.dataset.grp).join() === 'failed,running,queued,completed' && fq('.sw-swarm > .sw-gmain .sw-unit')?.dataset.main === 'true',
+  `40 subagents: the main agent on top, then Failed, Working, Waiting, Done (${fqa('.sw-swarm [data-grp]').map(g => g.dataset.grp)})`)
+check([...grp('failed').querySelectorAll('.sw-frow .sw-frn')].map(e => e.textContent).join() === 'unit-00,unit-01,unit-02,unit-03',
+  'failed (and stopped) subagents are listed by name')
+check(grp('running').querySelectorAll('.sw-cell').length === 6 && !grp('queued').querySelector('.sw-cell') && !grp('completed').querySelector('.sw-cell')
+  && grp('queued').querySelector('.sw-fold')?.getAttribute('aria-expanded') === 'false' && grp('completed').querySelector('.sw-fold')?.textContent === 'Show',
+  'working subagents are small cells; Waiting and Done start collapsed behind Show')
+check(fq('.sw-bign')?.textContent === '20' && fq('.sw-big small')?.textContent === '/40', 'the swarm score: 20 of 40')
+{
+  const cell = grp('running').querySelector('.sw-cell')
+  check(cell?.dataset.tip === 'unit-04 — working' && cell?.getAttribute('aria-label') === cell?.dataset.tip, `a cell's tooltip names it and its activity (${cell?.dataset.tip})`)
+  await act(async () => { cell.click() })
+  check(fq('.sw-focus')?.dataset.kind === 'sub' && fq('.sw-focus .sw-head')?.textContent === "Sweep 'unit-04'", 'a cell click selects it into the focus panel')
+}
+await act(async () => { grp('completed').querySelector('.sw-fold').click() })
+check(grp('completed').querySelectorAll('.sw-cell').length === 20 && grp('completed').querySelector('.sw-fold')?.getAttribute('aria-expanded') === 'true', 'Show opens a group')
+await act(async () => { fq('.sw-tgb[data-theme=terminal]').click() })
+check(fq('.sw-page')?.dataset.theme === 'terminal' && fqa('.sw-swarm .sw-cell .sw-glyph').length === 26 && !fqa('.sw-swarm .sw-cell svg').length,
+  'the Terminal swarm draws glyph cells')
+await act(async () => { fq('.sw-tgb[data-theme=cockpit]').click() })
 await act(async () => froot.unmount())
+
+// 20b. the kept look is read back from ctx.storage; a storage that fails or is missing falls back
+const quietCtx = extra => ({ ...ctx, register: () => () => {}, onEvent: () => () => {}, ...extra })
+const mountFresh = async () => {
+  const el = document.createElement('div')
+  document.body.appendChild(el)
+  const r = createRoot(el)
+  await act(async () => { r.render(React.createElement(route.render)) })
+  await tick(5)
+  return { el, r }
+}
+kept.set('theme', 'terminal')
+mod.default.register(quietCtx({}))
+{
+  const { el, r } = await mountFresh()
+  check(el.querySelector('.sw-page')?.dataset.theme === 'terminal', 'a kept Terminal look is read back from ctx.storage')
+  await act(async () => r.unmount())
+}
+storageFails = true
+mod.default.register(quietCtx({}))
+await quiet(async () => {
+  let threw = null
+  let el, r
+  try {
+    ({ el, r } = await mountFresh())
+    await act(async () => { el.querySelector('.sw-tgb[data-theme=terminal]').click() })
+  } catch (err) { threw = err }
+  check(!threw && el?.querySelector('.sw-page')?.dataset.theme === 'terminal' && el.querySelector('.sw-agents, .sw-hint, .sw-skel'),
+    `a storage that throws falls back to Cockpit and the toggle still works (${threw})`)
+  if (r) await act(async () => r.unmount())
+})
+storageFails = false
+kept.set('theme', 'nonsense')
+mod.default.register(quietCtx({}))
+{
+  const { el, r } = await mountFresh()
+  check(el.querySelector('.sw-page')?.dataset.theme === 'cockpit', 'a kept value that is not a look falls back to Cockpit')
+  await act(async () => r.unmount())
+}
+mod.default.register(quietCtx({ storage: undefined }))
+{
+  const { el, r } = await mountFresh()
+  check(el.querySelector('.sw-page')?.dataset.theme === 'cockpit', 'no ctx.storage at all: Cockpit')
+  await act(async () => { el.querySelector('.sw-tgb[data-theme=terminal]').click() })
+  check(el.querySelector('.sw-page')?.dataset.theme === 'terminal', 'and the toggle still works without storage')
+  await act(async () => r.unmount())
+}
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED')
 process.exit(failures ? 1 : 0)

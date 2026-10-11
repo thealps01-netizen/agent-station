@@ -12,10 +12,15 @@ Rules
                such as PanelEmpty / ErrorState take `title` as their heading and are allowed)
   iconLabel    every icon-only button goes through IconButton, which sets `aria-label`
   expanded     every accordion row (`sw-acc`) carries `aria-expanded`
-  markName     every status mark (`sw-mk`) and header count (`sw-stat`) carries `aria-label` — the svg is
+  markName     every status mark (`sw-mk`), header count (`sw-stat`) and tab count (`sw-tabn`) carries
+               `aria-label` — the svg is
                aria-hidden and the Tip is hover-only, so without it a screen reader hears nothing / a bare number
   hexColor     no hard-coded colour in the page's CSS or SVG — tokens only, so every skin follows; this
-               covers hex and rgb()/rgba()/hsl() literals (a shadow in rgb(0 0 0/.22) ignores the skin too)
+               covers hex and rgb()/rgba()/hsl() literals (a shadow in rgb(0 0 0/.22) ignores the skin too).
+               ONE exception: the Terminal look's fixed phosphor palette, declared once between
+               `/* TERMINAL PALETTE START */` and `/* TERMINAL PALETTE END */` (terminalPalette below)
+  terminalPalette  the markers appear exactly once each, and the block holds only `--tm-name:#rrggbb`
+               custom properties — a literal anywhere else, or a rule inside the block, is red
   toneInk      no theme tone (--ui-red / green / yellow / blue) as the `color:` of text — the tone rides
                the mark, the text uses a reading token (tone red on the dark card measured 3.3:1 < 4.5)
   silentCatch  every `catch` in the page logs or surfaces the error; every `except` in the backend
@@ -94,14 +99,16 @@ def check_i18n(js: str) -> None:
             report(f"i18n: key '{key}' is not in the English bundle — the page would print the raw key")
     statuses = {"completed", "failed", "running", "queued", "stopped"}
     templates = {
-        "sw.status": statuses,
-        "sw.proc.status": {"running", "completed", "failed", "stopped"},
-        "sw.unit": {"completed", "failed", "stopped"},
-        "sw.unit.st": statuses,
+        "sw.st": statuses | {"idle"},
+        "sw.act": {"edit", "read", "run", "think", "wait"},
+        "sw.tag": (statuses - {"running"}) | {"idle", "edit", "read", "run", "think", "wait"},
         "sw.verb": {"read", "write", "edit", "search", "run", "code", "delegate", "web", "other"},
-        "sw.deck.legend": {"running", "failed", "queued"},
-        "sw.log": {"start", "completed", "failed", "stopped"},
-        "sw.files.op": {"active", "write", "delete", "read", "failed"},
+        "sw.swarm": {"failed", "running", "queued", "completed"},
+        "sw.file.op": {"active", "write", "delete", "read", "failed"},
+        "sw.proc.status": {"running", "completed", "failed", "stopped"},
+        "sw.proc.short": {"running", "completed", "failed", "stopped"},
+        "sw.tabs": {"agents", "commands"},
+        "sw.theme": {"cockpit", "terminal"},
     }
     for prefix, values in templates.items():
         if f"t(`{prefix}.${{" not in js:
@@ -129,7 +136,7 @@ def check_markup(js: str) -> None:
         if "'aria-expanded'" not in props:
             line_no = js[:match.start()].count("\n") + 1
             report(f"expanded: line {line_no} is an accordion row without `aria-expanded`")
-    for match in re.finditer(r"className:\s*'(sw-mk|sw-stat)'", js):
+    for match in re.finditer(r"className:\s*'(sw-mk|sw-stat|sw-tabn)'", js):
         props = js[match.end():match.end() + 200].split("children")[0]
         if "'aria-label'" not in props and "'aria-hidden'" not in props:  # aria-hidden: decorative, text beside it
             line_no = js[:match.start()].count("\n") + 1
@@ -143,12 +150,46 @@ def check_markup(js: str) -> None:
         report("iconLabel: IconButton no longer sets `aria-label` from its label")
 
 
+PALETTE_START = "/* TERMINAL PALETTE START */"
+PALETTE_END = "/* TERMINAL PALETTE END */"
+
+
+def _palette_lines(js: str) -> set[int]:
+    """Line numbers inside the ONE Terminal palette block; [] (and a report) when it is malformed.
+
+    The Terminal look is a fixed phosphor palette, not the app's theme: its colours are declared once,
+    as custom properties, between the START/END markers. Only `--tm-*:#hex` declarations (and the
+    selector line that holds them) may live there — a rule that paints with a literal is not a palette.
+    """
+    if js.count(PALETTE_START) != 1 or js.count(PALETTE_END) != 1:
+        if js.count(PALETTE_START) or js.count(PALETTE_END):
+            report(f"terminalPalette: the palette markers must appear exactly once each "
+                   f"(START {js.count(PALETTE_START)}, END {js.count(PALETTE_END)})")
+        return set()
+    start = js[:js.index(PALETTE_START)].count("\n") + 1
+    end = js[:js.index(PALETTE_END)].count("\n") + 1
+    if end <= start:
+        report("terminalPalette: END comes before START")
+        return set()
+    lines = js.splitlines()
+    inside = set(range(start + 1, end))
+    for line_no in inside:
+        body = re.sub(r"^[^{]*\{", "", lines[line_no - 1]).strip().rstrip("}")
+        for decl in filter(None, (d.strip() for d in body.split(";"))):
+            if not re.fullmatch(r"--tm-[a-z]+:#[0-9a-fA-F]{6}", decl):
+                report(f"terminalPalette: line {line_no} declares `{decl}` — the palette holds only `--tm-name:#rrggbb`")
+    return inside
+
+
 def check_colors(js: str) -> None:
+    palette = _palette_lines(js)
     for line_no, line in enumerate(js.splitlines(), 1):
         if line.lstrip().startswith(("//", "*")):
             continue
+        if line_no in palette:
+            continue
         for hex_value in re.findall(r"#[0-9a-fA-F]{3,8}\b", line):
-            report(f"hexColor: line {line_no} hard-codes {hex_value} — use a theme token")
+            report(f"hexColor: line {line_no} hard-codes {hex_value} — use a theme token (Terminal: a --tm-* palette variable)")
         for literal in re.findall(r"\b(?:rgba?|hsla?)\([^)]*\)", line):
             report(f"hexColor: line {line_no} hard-codes {literal} — use a theme token (e.g. var(--shadow-sm))")
 

@@ -3,22 +3,30 @@
  *
  * Run: cd tests && node render_check.mjs && node preview.mjs      (writes preview.html, exit 0 = ok)
  *
- * It draws SIX FRAMES in jsdom with the real React — the page's REAL output, never a hand-drawn
- * mock — through the same SDK stub the render check writes (`.out/sdk-stub.mjs`):
- *   1. The command deck live — a running batch (a nested worker, a failed one, a queued one) with
- *      the files its agents touched, the live log, earlier batches and the background commands.
- *   2. The deck at rest — the last run drawn as the deck, an Earlier batch opened to its workers, one
- *      worker's detail open, and a failed background command opened to its exit code and output tail.
- *   3. Failures — every read failing at once: the alert box with each message, nothing swallowed.
- *   4-5. Narrow (380 px) and docked (480 px) widths.
- *   6. The status-bar progress chip: a running batch with a failed worker and a cost so far.
+ * It draws the ELEVEN SCREENS of the approved design, each in BOTH looks (Cockpit left, Terminal
+ * right), in jsdom with the real React — the page's REAL output, never a hand-drawn mock — through
+ * the same SDK stub the render check writes (`.out/sdk-stub.mjs`):
+ *    1. Live, the main agent selected: what it works on now, its changed and read files.
+ *    2. A failed subagent selected: task, answer, files, buttons; a copy shows its toast.
+ *    3. The run picker open: this run and the earlier ones.
+ *    4. An earlier run open: calm, with Back to now.
+ *    5. The Commands tab with a failed command open (exit code, cwd, output tail).
+ *    6. A command's other open states: still running, output loading, unreadable, printed nothing.
+ *    7. A chat with no subagents yet: the main agent and its files.
+ *    8. No chat selected · loading · several sources failing (three frames).
+ *    9. Narrow (380 px): units wrap into rows, nothing scrolls sideways.
+ *   10. The status-bar chip, and the header's "held" state after a click inside the page.
+ *   11. 40 subagents: the grouped swarm (failed by name, working, waiting, done).
+ *
+ * Every frame carries `data-screen` and `data-look`; this script exits 1 when a screen is missing in
+ * either look, and shot.cjs re-checks the same in the real engine (a missing screen is RED).
  *
  * STYLES: the application's OWN COMPILED stylesheet (`apps/desktop/dist/assets/index-*.css`, newest
  * build) carries the theme — light and dark blocks both — so nothing is copied from another repo.
  * The page runs in `html.dark` with the seeds `applyTheme()` hands in inline. A missing build is
  * reported as "app stylesheet NOT FOUND" and does NOT fail the run; the picture is then unstyled.
  *
- * Exit 1: a raw `sw.*` key on screen, or a native `title=` in any frame.
+ * Exit 1: a raw `sw.*` key on screen, a native `title=` in any frame, a missing screen or look.
  */
 import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -29,6 +37,8 @@ const HERE_URL = new URL('.', import.meta.url)
 const HERE = fileURLToPath(HERE_URL).replace(/\\/g, '/')
 const STUB = `${HERE_URL.href}.out/sdk-stub.mjs`
 const SRC = `${HERE}../desktop/plugin.js`
+export const SCREENS = 11
+export const LOOKS = ['cockpit', 'terminal']
 
 try {
   readFileSync(`${HERE}.out/sdk-stub.mjs`, 'utf8')
@@ -53,43 +63,56 @@ const mod = await import(`${HERE_URL.href}.out/plugin-preview.mjs`)
 const NOW = Date.now() / 1000
 const HISTORY = {
   session_id: 'st-1',
+  title: 'Panel polish pass',
   batches: [
     {
       started_at: NOW - 5400,
       workers: [
-        { session_id: 'c-a', goal: "Audit 'fleet-routing' against the kit", model: 'anthropic/claude-opus-5-5', effort: 'medium', status: 'completed', duration_s: 312, tool_calls: 40, tokens: 120000, cost_usd: 1.62, cost_status: 'estimated', summary: '' },
+        { session_id: 'c-a', goal: "Audit 'fleet-routing' against the kit", model: 'anthropic/claude-opus-5-5', effort: 'medium', status: 'completed', duration_s: 312, tool_calls: 40, tokens: 120000, cost_usd: 1.62, cost_status: 'estimated', summary: 'Routing matches the kit; two spacing fixes applied.' },
         { session_id: 'c-b', goal: "Audit 'fleet-status' against the kit", model: 'anthropic/claude-opus-5-5', status: 'stopped', duration_s: null, tool_calls: 12, tokens: 9000, cost_usd: 0.31, cost_status: 'estimated', summary: '' }
       ]
     },
     {
       started_at: NOW - 1800,
       workers: [
-        { session_id: 'c-c', goal: "Write the 'wiki-watchdog' changelog", model: 'openai/gpt-5.2', status: 'completed', duration_s: 45, tool_calls: 3, tokens: 800, cost_usd: 0, cost_status: 'included', summary: '' }
+        { session_id: 'c-c', goal: "Write the 'wiki-watchdog' changelog", model: 'openai/gpt-5.2', status: 'completed', duration_s: 45, tool_calls: 3, tokens: 800, cost_usd: 0, cost_status: 'included', summary: 'Changelog written.' }
       ]
     },
-    // The last run: with nothing running it is the deck.
+    // The last run: with nothing running it is the run shown.
     {
       started_at: NOW - 600,
       workers: [
-        { session_id: 'c-d', goal: "Review 'desktop-panel' layout", model: 'anthropic/claude-opus-5-5', effort: 'high', status: 'completed', duration_s: 184, tool_calls: 22, tokens: 60000, cost_usd: 0.74, cost_status: 'estimated', summary: '' },
-        { session_id: 'c-e', goal: "Measure 'contrast' of every label", model: 'anthropic/claude-sonnet-5', status: 'completed', duration_s: 97, tool_calls: 9, tokens: 21000, cost_usd: 0.12, cost_status: 'estimated', summary: '' },
-        { session_id: 'c-f', goal: "Fix 'render-check' fixtures", model: 'openai/gpt-5.2', status: 'failed', duration_s: 41, tool_calls: 6, tokens: 9000, cost_usd: 0, cost_status: 'included', summary: '' }
+        { session_id: 'c-d', goal: "Review 'desktop-panel' layout", model: 'anthropic/claude-opus-5-5', effort: 'high', status: 'completed', duration_s: 184, tool_calls: 22, tokens: 60000, cost_usd: 0.74, cost_status: 'estimated', summary: 'Layout reviewed; the header wraps at 380 px.' },
+        { session_id: 'c-e', goal: "Measure 'contrast' of every label", model: 'anthropic/claude-sonnet-5', status: 'completed', duration_s: 97, tool_calls: 9, tokens: 21000, cost_usd: 0.12, cost_status: 'estimated', summary: 'Every label is at or above 4.5:1.' },
+        { session_id: 'c-f', goal: "Fix 'render-check' fixtures", model: 'openai/gpt-5.2', status: 'failed', duration_s: 41, tool_calls: 6, tokens: 9000, cost_usd: 0, cost_status: 'included', summary: "Cannot find module './sdk-stub.mjs'." }
       ]
     }
   ]
 }
+// 40 subagents in one run, for the swarm.
+const SWARM_NAMES = ['atlas', 'beacon', 'cinder', 'delta', 'ember', 'fable', 'garnet', 'harbor', 'ivory', 'jasper', 'kestrel', 'lumen', 'meridian', 'nimbus', 'onyx', 'pylon',
+  'quarry', 'raven', 'sable', 'tundra', 'umber', 'vertex', 'willow', 'xenon', 'yarrow', 'zephyr', 'aster', 'birch', 'cobalt', 'dune', 'elm', 'flint', 'gale', 'heron', 'iris', 'juniper',
+  'kelp', 'larch', 'moss', 'nova']
+// The backend lists commands oldest first; the page shows the newest first.
 const PROCS = [
-  { id: 'proc_run', command: 'npm run dev -- --port 5174', cwd: 'C:/work/panel', status: 'running', started_at: NOW - 95, duration_s: null, exit_code: null },
-  { id: 'proc_ok', command: 'python -m pytest tests/ -q --maxfail=1 --durations=10 --basetemp=C:/Users/someone/AppData/Local/hermes/cache/scratch/pytest', cwd: 'C:/Users/someone/AppData/Local/hermes/plugins/subagent-watch/tests', status: 'completed', started_at: NOW - 900, duration_s: 42, exit_code: 0 },
+  { id: 'proc_kill', command: 'sleep 999', cwd: 'C:/work/panel', status: 'stopped', started_at: NOW - 3000, duration_s: 100, exit_code: -15 },
   { id: 'proc_bad', command: 'node build.mjs --release', cwd: 'C:/work/panel', status: 'failed', started_at: NOW - 1200, duration_s: 5, exit_code: 1 },
-  { id: 'proc_kill', command: 'sleep 999', cwd: 'C:/work/panel', status: 'stopped', started_at: NOW - 3000, duration_s: 100, exit_code: -15 }
+  { id: 'proc_ok', command: 'python -m pytest tests/ -q --maxfail=1 --durations=10 --basetemp=C:/Users/someone/AppData/Local/hermes/cache/scratch/pytest', cwd: 'C:/Users/someone/AppData/Local/hermes/plugins/subagent-watch/tests', status: 'completed', started_at: NOW - 900, duration_s: 42, exit_code: 0 },
+  { id: 'proc_run', command: 'npm run dev -- --port 5174', cwd: 'C:/work/panel', status: 'running', started_at: NOW - 95, duration_s: null, exit_code: null }
+]
+// Screen 6: one command per open state.
+const PROCS6 = [
+  { id: 'proc_quiet', command: 'git fetch --quiet', cwd: 'C:/work/panel', status: 'completed', started_at: NOW - 500, duration_s: 2, exit_code: 0 },
+  { id: 'proc_lost', command: 'node migrate.mjs', cwd: 'C:/work/panel', status: 'failed', started_at: NOW - 400, duration_s: 3, exit_code: 2 },
+  { id: 'proc_slow', command: 'npm run lint', cwd: 'C:/work/panel', status: 'completed', started_at: NOW - 300, duration_s: 18, exit_code: 0 },
+  { id: 'proc_run', command: 'npm run dev -- --port 5174', cwd: 'C:/work/panel', status: 'running', started_at: NOW - 95, duration_s: null, exit_code: null }
 ]
 // Who touched each file, as the backend names them: '' the chat, else a worker's session id. The
-// live frame's agents are k1-k3, the stored last run's c-d..c-f.
+// live run's agents are k1-k3, the stored last run's c-d..c-f.
 const filesFor = live => {
   const w = live ? { a: 'k1', b: 'k2', c: 'k1a' } : { a: 'c-d', b: 'c-e', c: 'c-f' }
   const who = (...ks) => ks.map(k => (k ? w[k] : ''))
-  const sets = [[who('a', ''), who('a', '')], [who('c'), []], [who('b', 'a'), []], [who(''), who('')], [who(''), who('')], [who('b'), []]]
+  const sets = [[who('a', ''), who('a', '')], [who('c', 'b'), []], [who('b', 'a', ''), []], [who(''), who('')], [who(''), who('')], [who('b', ''), []]]
   return { ...FILES, files: FILES.files.map((f, i) => ({ ...f, who: sets[i][0], editors: sets[i][1] })) }
 }
 const FILES = {
@@ -104,11 +127,13 @@ const FILES = {
   ]
 }
 const OUTPUT = 'building 14 entries…\nerror: Cannot find module \'./sdk-stub.mjs\'\n    at build.mjs:41:9\nexit 1'
+const NEVER = new Promise(() => {})
 
-function makeCtx(fail, live = false) {
+function makeCtx(look, { fail = false, live = false, empty = false, loading = false, procs = PROCS } = {}) {
   const listeners = new Map()
   const registered = []
   const ctx = {
+    storage: { get: (key, fallback) => (key === 'theme' ? look : fallback), set: () => {}, remove: () => {} },
     register: c => { registered.push(c); return () => {} },
     i18n: { register: b => stub.registerBundles('subagent-watch', b), t: k => k },
     onEvent: (type, fn) => {
@@ -119,14 +144,20 @@ function makeCtx(fail, live = false) {
     setInterval: (fn, ms) => { const h = setInterval(fn, ms); return () => clearInterval(h) },
     setTimeout: (fn, ms) => { const h = setTimeout(fn, ms); return () => clearTimeout(h) },
     rest: async path => {
-      if (fail) throw new Error(path.startsWith('/children') ? 'backend 503: state.db not found' : 'backend 503: processes.json unreadable')
-      if (path.startsWith('/children')) return HISTORY
-      if (path.startsWith('/processes')) return { session_id: 'st-1', processes: PROCS, unreadable: 1 }
+      if (path.startsWith('/children') && loading) return NEVER
+      if (fail) {
+        if (path.startsWith('/files')) return { ...FILES, files: [] }
+        throw new Error(path.startsWith('/children') ? 'backend 503: state.db not found' : 'backend 503: processes.json unreadable')
+      }
+      if (path.startsWith('/children')) return empty ? { session_id: 'st-1', title: 'Quick question', batches: [] } : HISTORY
+      if (path.startsWith('/processes')) return { session_id: 'st-1', processes: procs, unreadable: 1 }
       if (path.startsWith('/files')) return filesFor(live)
       if (path.startsWith('/process_output')) {
         const id = new URLSearchParams(path.split('?')[1]).get('process_id')
-        const p = PROCS.find(x => x.id === id)
-        return { id, command: p.command, output: id === 'proc_bad' ? OUTPUT : '12 passed in 41.8s', output_truncated: false }
+        if (id === 'proc_slow') return NEVER
+        if (id === 'proc_lost') throw new Error('receipt unreadable: Expecting value: line 1 column 1')
+        const p = procs.find(x => x.id === id)
+        return { id, command: p.command, output: id === 'proc_bad' ? OUTPUT : id === 'proc_quiet' ? '' : '12 passed in 41.8s', output_truncated: false }
       }
       if (path.startsWith('/output')) return { text: 'answer' }
       throw new Error(`unexpected ${path}`)
@@ -140,13 +171,34 @@ function makeCtx(fail, live = false) {
 const tick = ms => act(() => new Promise(r => setTimeout(r, ms)))
 const problems = []
 const frames = []
+const warn = console.warn
+console.warn = () => {} // the failing-sources frame logs each failed poll on purpose
+const click = el => act(async () => { el.click() })
 
-async function frame(label, { fail = false, live = false, open = null, narrow = false, docked = false } = {}) {
-  const { ctx, registered, emit } = makeCtx(fail, live)
-  stub.state.listFails = fail
+async function liveRun(emit) {
+  const ev = (id, goal, extra = {}) => emit('subagent.start', { subagent_id: id, delegation_id: 'd1', goal, started_at: NOW - 140, ...extra })
+  await emit('subagent.spawn_requested', { subagent_id: 's1', delegation_id: 'd1', goal: "Polish 'fleet-status' visuals", task_index: 0 })
+  await emit('subagent.spawn_requested', { subagent_id: 's2', delegation_id: 'd1', goal: "Check 'wiki-watchdog' tests", task_index: 1 })
+  await emit('subagent.spawn_requested', { subagent_id: 's3', delegation_id: 'd1', goal: "Run 'subagent-watch' gates", task_index: 2 })
+  await emit('subagent.spawn_requested', { subagent_id: 's4', delegation_id: 'd1', goal: "Write 'release-notes' draft", task_index: 3 })
+  await ev('s1', "Polish 'fleet-status' visuals", { child_session_id: 'k1', model: 'anthropic/claude-opus-5-5' })
+  await ev('s2', "Check 'wiki-watchdog' tests", { child_session_id: 'k2', model: 'anthropic/claude-sonnet-5' })
+  await emit('subagent.tool', { subagent_id: 's2', tool_name: 'read_file', tool_preview: 'C:/work/panel/tests/render_check.mjs' })
+  await ev('s1a', "Judge 'status-contrast' ratios", { parent_id: 's1', child_session_id: 'k1a', depth: 1, model: 'openai/gpt-5.2', started_at: NOW - 60 })
+  await emit('subagent.tool', { subagent_id: 's1a', tool_name: 'read_file', tool_preview: 'C:/work/panel/desktop/plugin.js' })
+  await ev('s3', "Run 'subagent-watch' gates", { child_session_id: 'k3', model: 'anthropic/claude-sonnet-5' })
+  await emit('subagent.tool', { subagent_id: 's3', tool_name: 'terminal', tool_preview: 'node render_check.mjs' })
+  await emit('subagent.complete', { subagent_id: 's2', status: 'error', summary: "The wiki-watchdog suite fails before it starts: Cannot find module './fixtures/state.db'. Nothing was changed.", duration_seconds: 74, cost_usd: 0.42 })
+  await emit('subagent.tool', { subagent_id: 's1', tool_name: 'patch', tool_preview: 'C:/work/panel/desktop/plugin.js' })
+  await emit('tool.start', { tool_id: 'f1', name: 'read_file', args: { path: 'dashboard/plugin_api.py' } })
+}
+
+async function frame(screen, look, label, opts = {}, steps = async () => {}) {
+  const { ctx, registered, emit } = makeCtx(look, opts)
+  stub.state.listFails = Boolean(opts.fail)
   stub.state.list['rt-1'] = []
-  stub.atoms.focusedSessionId.set('rt-1')
-  stub.atoms.focusedStoredSessionId.set('st-1')
+  stub.atoms.focusedSessionId.set(opts.noChat ? null : 'rt-1')
+  stub.atoms.focusedStoredSessionId.set(opts.noChat ? null : 'st-1')
   mod.default.register(ctx)
   const route = registered.find(c => c.area === 'routes')
   const host = document.createElement('div')
@@ -154,89 +206,118 @@ async function frame(label, { fail = false, live = false, open = null, narrow = 
   const root = createRoot(host)
   await act(async () => { root.render(React.createElement(route.render)) })
   await tick(20)
-  if (live) {
-    await emit('subagent.spawn_requested', { subagent_id: 's1', delegation_id: 'd1', goal: "Polish 'fleet-status' visuals", task_index: 0 })
-    await emit('subagent.spawn_requested', { subagent_id: 's2', delegation_id: 'd1', goal: "Polish 'wiki-watchdog' visuals", task_index: 1 })
-    await emit('subagent.spawn_requested', { subagent_id: 's3', delegation_id: 'd1', goal: "Polish 'subagent-watch' visuals", task_index: 2 })
-    await emit('subagent.start', { subagent_id: 's1', delegation_id: 'd1', goal: "Polish 'fleet-status' visuals", child_session_id: 'k1', model: 'anthropic/claude-opus-5-5', started_at: NOW - 140 })
-    await emit('subagent.start', { subagent_id: 's2', delegation_id: 'd1', goal: "Polish 'wiki-watchdog' visuals", child_session_id: 'k2', model: 'anthropic/claude-sonnet-5', started_at: NOW - 140 })
-    await emit('subagent.tool', { subagent_id: 's2', tool_name: 'read_file', tool_preview: 'C:/work/panel/tests/render_check.mjs' })
-    await emit('subagent.start', { subagent_id: 's1a', parent_id: 's1', delegation_id: 'd1', goal: "Judge 'fleet-status' contrast", child_session_id: 'k1a', depth: 1, model: 'openai/gpt-5.2', started_at: NOW - 60 })
-    await emit('subagent.tool', { subagent_id: 's1a', tool_name: 'search_files', tool_preview: 'color-mix' })
-    await emit('subagent.complete', { subagent_id: 's2', status: 'error', summary: 'boom', duration_seconds: 12, cost_usd: 0.42 })
-    await emit('subagent.tool', { subagent_id: 's1', tool_name: 'patch', tool_preview: 'C:/work/panel/desktop/plugin.js' })
-    await emit('tool.start', { tool_id: 'f1', name: 'read_file', args: { path: 'dashboard/plugin_api.py' } })
-  }
-  if (narrow) {
-    // The page docked beside the chat: six running workers and a finished command with a long path.
-    for (let i = 1; i <= 6; i++) {
-      await emit('subagent.start', { subagent_id: `n${i}`, delegation_id: 'dn', goal: `Blind-review ${['alpha', 'beta', 'gamma', 'delta', 'echo', 'foxtrot'][i - 1]} panel: score CODE and UI`, model: 'anthropic/claude-opus-5-5', started_at: NOW - 28 })
-      await emit('subagent.tool', { subagent_id: `n${i}`, tool_name: 'read_file', tool_preview: 'plugin.js' })
-    }
-    const ok = [...host.querySelectorAll('.sw-pr')].find(p => p.dataset.st === 'completed')
-    await act(async () => { ok.click() })
-    // A still-running command opened too: no exit code yet, so its meta line is the path alone.
-    const run = [...host.querySelectorAll('.sw-pr')].find(p => p.dataset.st === 'running')
-    await act(async () => { run.click() })
-    await tick(20)
-  }
-  if (fail) {
-    for (let i = 0; i < 3; i++) await tick(3100)
-  }
-  if (open === 'earlier') {
-    await act(async () => { host.querySelectorAll('.sw-hb')[0].click() })
-    await act(async () => { host.querySelectorAll('.sw-wr')[0].click() })
-    const bad = [...host.querySelectorAll('.sw-pr')].find(p => p.dataset.st === 'failed')
-    await act(async () => { bad.click() })
-    await tick(20)
-  }
-  if (docked) {
-    // The older batch holds the Opus workers (one with a reasoning effort): open it too.
-    await act(async () => { host.querySelectorAll('.sw-hb')[1].click() })
-    await tick(20)
-  }
+  if (opts.live) await liveRun(emit)
+  await steps({ host, emit, q: s => host.querySelector(s), qa: s => [...host.querySelectorAll(s)] })
+  await tick(20)
   const html = host.innerHTML
   const text = host.textContent || ''
   const raw = [...new Set(text.match(/\bsw\.[a-z][A-Za-z0-9_.]*/g) || [])]
-  if (raw.length) problems.push(`${label}: raw i18n key(s) on screen: ${raw.join(', ')}`)
+  if (raw.length) problems.push(`${screen}/${look}: raw i18n key(s) on screen: ${raw.join(', ')}`)
   const titled = host.querySelectorAll('[title]').length
-  if (titled) problems.push(`${label}: ${titled} native title= attribute(s) — the themed Tip owns hover text`)
-  frames.push({ label, html, narrow, docked })
+  if (titled) problems.push(`${screen}/${look}: ${titled} native title= attribute(s) — the themed Tip owns hover text`)
+  if (host.querySelector('.sw-page')?.dataset.theme !== look && !opts.bar) problems.push(`${screen}/${look}: the page drew ${host.querySelector('.sw-page')?.dataset.theme}`)
+  frames.push({ screen, look, label, html, narrow: Boolean(opts.narrow), bar: Boolean(opts.bar) })
   await act(async () => root.unmount())
   host.remove()
 }
 
-await frame('1 · Command deck, live — agents, the files they touch, the live log', { live: true })
-await frame('2 · The deck at rest — the last run, an Earlier batch, a worker and a failed command opened', { open: 'earlier' })
-await frame('3 · Failures — every read failing: nothing is swallowed', { fail: true })
-await frame('4 · Narrow (380 px) — six running workers and a command with a long working directory', { narrow: true })
-await frame('5 · Docked (480 px) — an Earlier worker whose model chip carries its reasoning effort', { open: 'earlier', docked: true })
+const TITLES = {
+  1: '1 · Live, main agent selected (default view)',
+  2: '2 · A failed subagent selected — task, answer, files, buttons; a copy shows a toast',
+  3: '3 · Run picker open — earlier runs live here',
+  4: '4 · An earlier run open — calm, one click back to now',
+  5: '5 · Commands tab — a failed command open',
+  6: "6 · A command's other open states: running, loading, unreadable, printed nothing",
+  7: '7 · A chat with no subagents yet — the main agent and its files',
+  8: '8 · No chat selected · loading · several sources failing',
+  9: '9 · Narrow (380 px): units wrap into rows; nothing scrolls sideways',
+  10: '10 · The status-bar chip · the header "held" state after a click inside the page',
+  11: '11 · 40 subagents: the grouped swarm — failed by name, then working, waiting, done'
+}
+
+for (const look of LOOKS) {
+  await frame(1, look, TITLES[1], { live: true })
+  await frame(2, look, TITLES[2], { live: true }, async ({ qa, q }) => {
+    const failed = qa('.sw-agents button.sw-unit').find(u => u.dataset.st === 'failed')
+    await click(failed)
+    await click(q('.sw-focus .sw-btns .sw-ib'))
+    await tick(10)
+  })
+  await frame(3, look, TITLES[3], {}, async ({ q }) => { await click(q('.sw-pick')) })
+  await frame(4, look, TITLES[4], {}, async ({ q, qa }) => {
+    await click(q('.sw-pick'))
+    await click(qa('.sw-menu [role=menuitem]').at(-1))
+    await click(qa('.sw-agents button.sw-unit')[1])
+  })
+  await frame(5, look, TITLES[5], {}, async ({ q, qa }) => {
+    await click(q('[role=tab][data-tab=commands]'))
+    await tick(10)
+    await click(qa('.sw-cmr').find(p => p.dataset.st === 'failed'))
+    await tick(20)
+  })
+  await frame(6, look, TITLES[6], { procs: PROCS6 }, async ({ q, qa }) => {
+    await click(q('[role=tab][data-tab=commands]'))
+    await tick(10)
+    for (const row of qa('.sw-cmr')) await click(row)
+    await tick(30)
+  })
+  await frame(7, look, TITLES[7], { empty: true })
+  await frame(8, look, `${TITLES[8]} — no chat`, { noChat: true })
+  await frame(8, look, `${TITLES[8]} — loading`, { loading: true })
+  await frame(8, look, `${TITLES[8]} — failing`, { fail: true }, async () => { for (let i = 0; i < 3; i++) await tick(3100) })
+  await frame(9, look, TITLES[9], { live: true, narrow: true }, async ({ emit }) => {
+    for (const [i, name] of ['alpha', 'beta', 'gamma'].entries()) {
+      await emit('subagent.start', { subagent_id: `n${i}`, delegation_id: 'd1', goal: `Blind-review '${name}-panel' score`, model: 'anthropic/claude-opus-5-5', started_at: NOW - 28 })
+      await emit('subagent.tool', { subagent_id: `n${i}`, tool_name: 'read_file', tool_preview: 'plugin.js' })
+    }
+  })
+  // 10: the held header — a click inside the page, then the app names another chat as focused.
+  await frame(10, look, `${TITLES[10]} — held`, {}, async ({ q }) => {
+    await act(async () => { q('.sw-tabs').dispatchEvent(new window.Event('pointerdown', { bubbles: true })) })
+    await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
+    await tick(20)
+    if (!q('.sw-held')) problems.push(`10/${look}: the held tag did not show`)
+  })
+  // 10: the status-bar chip, in a strip the height of the app's status bar.
+  {
+    const { ctx, registered } = makeCtx(look)
+    const sid = `rt-chip-${look}` // each look its own batch: a finished batch never restarts
+    stub.state.list[sid] = []
+    mod.default.register(ctx)
+    stub.atoms.focusedSessionId.set(sid)
+    const chipReg = registered.find(c => c.area === 'statusBar.right')
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(React.createElement(chipReg.render)) })
+    const send = (type, payload) => act(async () => { mod.trackEvent(type, { session_id: sid, payload }) })
+    for (const id of ['k1', 'k2', 'k3', 'k4', 'k5']) await send('subagent.spawn_requested', { subagent_id: id })
+    for (const id of ['k1', 'k2', 'k3', 'k4']) await send('subagent.start', { subagent_id: id })
+    await send('subagent.complete', { subagent_id: 'k1', status: 'completed', cost_usd: 1.62 })
+    await send('subagent.complete', { subagent_id: 'k2', status: 'completed', cost_usd: 2.58 })
+    await send('subagent.complete', { subagent_id: 'k3', status: 'error', cost_usd: 0 })
+    await tick(20)
+    if (!host.querySelector('.sw-sb')) problems.push(`10/${look}: the progress chip did not render`)
+    if (host.querySelector('.sw-sbw')?.dataset.theme !== look) problems.push(`10/${look}: the chip drew another look`)
+    if (host.querySelectorAll('[title]').length) problems.push(`10/${look}: a native title= on the chip`)
+    frames.push({ screen: 10, look, label: `${TITLES[10]} — chip: 3 of 5 finished, one failed, cost so far`, html: host.innerHTML, bar: true })
+    await act(async () => root.unmount())
+    host.remove()
+  }
+  await frame(11, look, TITLES[11], {}, async ({ emit, q }) => {
+    for (const [i, name] of SWARM_NAMES.entries()) await emit('subagent.spawn_requested', { subagent_id: `w${i}`, delegation_id: 'dw', goal: `Sweep '${name}' module`, task_index: i })
+    for (let i = 0; i < 30; i++) await emit('subagent.start', { subagent_id: `w${i}`, delegation_id: 'dw', goal: `Sweep '${SWARM_NAMES[i]}' module`, child_session_id: `kw${i}`, started_at: NOW - 200 })
+    for (let i = 0; i < 20; i++) await emit('subagent.complete', { subagent_id: `w${i}`, status: 'completed', duration_seconds: 60 + i, cost_usd: 0.05 })
+    for (let i = 20; i < 23; i++) await emit('subagent.complete', { subagent_id: `w${i}`, status: 'error', summary: 'boom', duration_seconds: 30, cost_usd: 0.02 })
+    for (let i = 23; i < 30; i++) await emit('subagent.tool', { subagent_id: `w${i}`, tool_name: ['patch', 'read_file', 'terminal'][i % 3], tool_preview: `src/${SWARM_NAMES[i]}.ts` })
+    const n = [...q('.sw-swarm')?.querySelectorAll('.sw-gh em') || []].reduce((s, e) => s + Number(e.textContent), 0)
+    if (n !== 40) problems.push(`11/${look}: the swarm groups hold ${n} subagents, not 40`)
+  })
+}
 stub.state.listFails = false
 
-// 6. The status-bar chip, in a strip the height of the app's status bar.
-{
-  const { ctx, registered } = makeCtx(false)
-  stub.state.list['rt-chip'] = []
-  mod.default.register(ctx)
-  stub.atoms.focusedSessionId.set('rt-chip')
-  const chipReg = registered.find(c => c.area === 'statusBar.right')
-  const host = document.createElement('div')
-  document.body.appendChild(host)
-  const root = createRoot(host)
-  await act(async () => { root.render(React.createElement(chipReg.render)) })
-  const send = (type, payload) => act(async () => { mod.trackEvent(type, { session_id: 'rt-chip', payload }) })
-  for (const id of ['k1', 'k2', 'k3', 'k4', 'k5']) await send('subagent.spawn_requested', { subagent_id: id })
-  for (const id of ['k1', 'k2', 'k3', 'k4']) await send('subagent.start', { subagent_id: id })
-  await send('subagent.complete', { subagent_id: 'k1', status: 'completed', cost_usd: 1.62 })
-  await send('subagent.complete', { subagent_id: 'k2', status: 'completed', cost_usd: 2.58 })
-  await send('subagent.complete', { subagent_id: 'k3', status: 'error', cost_usd: 0 })
-  await tick(20)
-  const html = host.innerHTML
-  if (!host.querySelector('.sw-sb')) problems.push('6: the progress chip did not render')
-  if (host.querySelectorAll('[title]').length) problems.push('6: a native title= on the chip')
-  frames.push({ label: '6 · Status bar — the progress chip: 3 of 5 finished, one failed, cost so far', html, bar: true })
-  await act(async () => root.unmount())
-  host.remove()
+for (let s = 1; s <= SCREENS; s++) {
+  for (const look of LOOKS) if (!frames.some(f => f.screen === s && f.look === look)) problems.push(`screen ${s} is missing in the ${look} look`)
 }
 
 const DIST_ASSETS = DESKTOP_APP ? `${DESKTOP_APP.replace(/\\/g, '/')}/dist/assets` : null
@@ -262,10 +343,15 @@ if (!appCss) console.log(`warning: ${styles}`)
 const DARK_SEEDS = ':root.dark { --theme-background-seed: #0d0d0e; --theme-sidebar-seed: #0a0a0b;'
   + ' --theme-card-seed: #161618; --theme-neutral-card: #161618; --theme-foreground: #f4f4f6; }'
 
-const body = frames.map(f => `<section class="swp-wrap${f.narrow ? ' is-narrow' : ''}${f.docked ? ' is-docked' : ''}${f.bar ? ' is-bar' : ''}">
+// One row per screen: Cockpit left, Terminal right, each frame in the order it was drawn.
+const cell = f => `<section class="swp-wrap${f.narrow ? ' is-narrow' : ''}${f.bar ? ' is-bar' : ''}" data-screen="${f.screen}" data-look="${f.look}">
   <p class="swp-label">${f.label}</p>
   <div class="swp-frame">${f.bar ? `<div class="swp-bar">${f.html}</div>` : f.html}</div>
-</section>`).join('\n')
+</section>`
+const body = Array.from({ length: SCREENS }, (_, i) => i + 1).map(s => `<div class="swp-row" data-row="${s}">
+${LOOKS.map(look => `<div class="swp-col" data-col="${look}"><p class="swp-look">${look === 'cockpit' ? 'Cockpit (default)' : 'Terminal'}</p>
+${frames.filter(f => f.screen === s && f.look === look).map(cell).join('\n')}</div>`).join('\n')}
+</div>`).join('\n')
 
 const page = `<!doctype html>
 <html class="dark" lang="en">
@@ -276,12 +362,16 @@ const page = `<!doctype html>
 html,body{margin:0;background:var(--ui-bg-sidebar);color:var(--ui-text-primary);font-family:system-ui,'Segoe UI',sans-serif}
 *,*::before,*::after{box-sizing:border-box}
 body{padding:16px 18px 28px}
-.swp-wrap{margin:0 0 22px;width:640px}
+.swp-row{display:flex;gap:24px;align-items:flex-start;margin:0 0 26px}
+.swp-col{width:640px;flex:none}
+.swp-look{font-size:12px;font-weight:600;color:var(--ui-text-secondary);margin:0 0 6px}
+.swp-wrap{margin:0 0 14px;width:640px}
 .swp-wrap.is-narrow{width:380px}
-.swp-wrap.is-docked{width:480px}
-.swp-bar{height:24px;display:flex;align-items:center;justify-content:flex-end;padding:0 8px;background:var(--ui-bg-sidebar);font-size:11px}
-.swp-label{font-size:11px;color:var(--ui-text-tertiary);margin:0 0 6px}
+.swp-wrap.is-bar{width:auto}
+.swp-bar{height:24px;display:flex;align-items:center;justify-content:flex-end;padding:0 8px;background:var(--ui-bg-sidebar);font-size:11.5px}
+.swp-label{font-size:12px;color:var(--ui-text-secondary);margin:0 0 6px}
 .swp-frame{border:1px solid var(--ui-stroke-primary);border-radius:10px;overflow:hidden;background:var(--ui-bg-primary)}
+.swp-frame .sw-page{height:auto}
 </style>
 </head>
 <body>
@@ -296,5 +386,5 @@ if (problems.length) {
   for (const p of problems) console.error('  -', p)
   process.exit(1)
 }
-console.log(`preview.html written (${page.length} bytes) · ${frames.length} frames · style: ${styles}`)
+console.log(`preview.html written (${page.length} bytes) · ${frames.length} frames · ${SCREENS} screens × ${LOOKS.length} looks · style: ${styles}`)
 process.exit(0)

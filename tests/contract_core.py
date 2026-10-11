@@ -18,8 +18,10 @@ Checked against the core checkout (`HERMES_AGENT_DIR`, see env.py):
   cost       a worker's complete frame still carries `cost_usd`; Hermes' CostStatus still names
              the statuses the backend and page read (actual / estimated / included / unknown)
   sdk        every name the page imports from `@hermes/plugin-sdk` is exported, the two
-             `host.state` atoms it reads exist, `host.navigate` exists (the progress chip opens the
-             page), and `ctx.pet` keeps `say` / `clear` / `visible` (the progress line)
+             `host.state` atoms it reads exist, `host.state.busyBySession` exists (the main agent's
+             busy state), `host.navigate` exists (the progress chip opens the page), `ctx.pet` keeps
+             `say` / `clear` / `visible` (the progress line), and `ctx.storage` keeps a synchronous
+             `get(key, fallback)` / `set(key, value)` (the kept Cockpit / Terminal look)
   files      the file tools keep their names and `path` / `mode` / `patch` arguments (patch mode
              defaults to "replace"); Hermes' V4A parser keeps `parse_v4a_patch` and its update / add /
              delete / move operations with `new_path`; `tool.start` / `tool.complete` are declared with
@@ -209,6 +211,13 @@ def check(core: Path) -> list[str]:
             problems.append(f"{PRICING_FILE}: new cost status `{status}` — the backend would read it as not priced")
 
     plugin_ts = _read(core, PET_FILE, problems)
+    if plugin_ts and not re.search(r"^\s+storage: PluginStorage$", plugin_ts, re.M):
+        problems.append(f"{PET_FILE}: `ctx.storage` is gone — the page keeps its look (Cockpit / Terminal) there")
+    store = re.search(r"export interface PluginStorage \{(.*?)\n\}", plugin_ts, re.S)
+    if plugin_ts and not (store and re.search(r"^\s+get<T>\(key: string, fallback: T\): T$", store.group(1), re.M)
+                          and re.search(r"^\s+set\(key: string, value: unknown\): void$", store.group(1), re.M)):
+        problems.append(f"{PET_FILE}: `PluginStorage.get/set` are no longer synchronous (get<T>(key, fallback): T) — "
+                        "the page reads its kept look at first render")
     if plugin_ts and not re.search(r"^\s+pet: PluginPet$", plugin_ts, re.M):
         problems.append(f"{PET_FILE}: `ctx.pet` is gone — the progress line in the pet's bubble would never show")
     pet = re.search(r"export interface PluginPet \{(.*?)\n\}", plugin_ts, re.S)
@@ -228,6 +237,9 @@ def check(core: Path) -> list[str]:
         for atom in HOST_STATE_ATOMS:
             if not re.search(rf"^\s+{atom}: readonlyAtom", sdk, re.M):
                 problems.append(f"{SDK_FILE}: `host.state.{atom}` is gone — the page scopes everything by it")
+        if not re.search(r"^\s+busyBySession: readonlyAtom<Record<string, boolean>>", sdk, re.M):
+            problems.append(f"{SDK_FILE}: `host.state.busyBySession` is gone or changed — the main agent unit would "
+                            "never show it is busy")
 
     tools = _read(core, FILE_TOOLS_FILE, problems)
     if tools:
@@ -290,7 +302,10 @@ BREAKS = [
     (REGISTRY_FILE, "completion_reason = \"killed\"", "completion_reason = \"terminated\"", "no longer records completion_reason"),
     (EVENTS_FILE, "(\"subagent.tool\",", "(\"subagent.tool_call\",", "event `subagent.tool` is not declared"),
     (STATUS_FILE, "    timeout = \"timeout\"\n", "    timeout = \"timeout\"\n    paused = \"paused\"\n", "wire status `paused`"),
-    (SDK_FILE, "  PanelEmpty,\n", "\n", "`PanelEmpty` is not exported"),
+    (SDK_FILE, "export { Tip, Tooltip", "export { Tooltip", "`Tip` is not exported"),
+    (SDK_FILE, "    busyBySession: readonlyAtom", "    busyMap: readonlyAtom", "`host.state.busyBySession` is gone"),
+    (PET_FILE, "  storage: PluginStorage\n", "  store: PluginStorage\n", "`ctx.storage` is gone"),
+    (PET_FILE, "get<T>(key: string, fallback: T): T", "get<T>(key: string, fallback: T): Promise<T>", "no longer synchronous"),
     (SDK_FILE, "    focusedStoredSessionId: readonlyAtom", "    storedSessionId: readonlyAtom", "`host.state.focusedStoredSessionId` is gone"),
     (SDK_FILE, "  navigate: (path", "  go: (path", "`host.navigate` is gone"),
     (SDK_FILE, "STATUSBAR_AREAS, ", "", "`STATUSBAR_AREAS` is not exported"),
