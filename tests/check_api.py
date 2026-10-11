@@ -16,7 +16,10 @@ is running even after it wrote text, until it has been silent past STALE_S); /ou
 is a 503 that does not print its path. Background commands: only the chain's own
 processes are listed; running / stopped / completed / failed are derived from Hermes' own files;
 unreadable files are reported, never silently dropped; /process_output refuses another chat's
-process and anything that is not a process id.
+process and anything that is not a process id. Files: one row per file however the path is spelled
+(the spelling rule is shared with the page through path_vectors.json); a worker's files are its chat's;
+refused writes and compressed FAILED / BLOCKED stubs are failures, not edits; a V4A patch is read by
+Hermes' own parser (move = delete + write) and an unreadable call is counted, never dropped.
 """
 
 from __future__ import annotations
@@ -513,6 +516,144 @@ def run_bad_shapes(conn) -> None:
           "a model_config that is a list, or a non-text _delegate_from, is not a worker marker")
 
 
+FILES_DB = HERE / ".out" / "files_state.db"
+
+
+def build_files_fixture() -> None:
+    """A chat F1 -> F2 (compression), its worker FW and an unrelated chat G, with file tool calls."""
+    FILES_DB.unlink(missing_ok=True)
+    db = sqlite3.connect(FILES_DB)
+    db.executescript(
+        "create table sessions (id text primary key, model text, model_config text, parent_session_id text,"
+        " started_at real not null, ended_at real, end_reason text, tool_call_count integer default 0,"
+        " input_tokens integer default 0, output_tokens integer default 0, last_activity_at real,"
+        " source text not null default 'cli', title text, estimated_cost_usd real, actual_cost_usd real,"
+        " cost_status text, cwd text);"
+        "create table messages (id integer primary key autoincrement, session_id text, role text, content text,"
+        " timestamp real, tool_calls text, tool_call_id text);")
+
+    def session(sid, started, ended=None, reason=None, parent=None, delegate_from=None, cwd=None):
+        cfg = json.dumps({"_delegate_from": delegate_from} if delegate_from else {})
+        db.execute("insert into sessions (id, model, model_config, parent_session_id, started_at, ended_at,"
+                   " end_reason, cwd) values (?,?,?,?,?,?,?,?)", (sid, "m", cfg, parent, started, ended, reason, cwd))
+
+    seq = [0]
+
+    def call(sid, ts, name, args, result='{"success": true}', raw_args=None):
+        seq[0] += 1
+        cid = f"c{seq[0]}"
+        fn = {"name": name, "arguments": raw_args if raw_args is not None else json.dumps(args)}
+        db.execute("insert into messages (session_id, role, content, timestamp, tool_calls) values (?,?,?,?,?)",
+                   (sid, "assistant", "", ts, json.dumps([{"id": cid, "type": "function", "function": fn}])))
+        db.execute("insert into messages (session_id, role, content, timestamp, tool_call_id) values (?,?,?,?,?)",
+                   (sid, "tool", result, ts + 0.1, cid))
+
+    session("F1", 100, 200, "compression", cwd="D:\\Proj")
+    session("F2", 200, parent="F1", cwd="D:\\Proj")
+    session("FW", 150, 180, "completed", delegate_from="F1", cwd="D:\\Proj")
+    session("G", 100, cwd="/other")
+    call("F1", 101, "read_file", {"path": "D:\\Proj\\src\\a.py"})
+    call("F1", 102, "patch", {"mode": "replace", "path": "src/a.py", "old_string": "x", "new_string": "y"})
+    call("F1", 103, "write_file", {"path": "D:/Proj/README.md", "content": "hi"},
+         result='{"error": "Refusing to overwrite"}')
+    call("F1", 104, "terminal", {"command": "echo hi > D:/Proj/x.txt"})
+    call("F1", 105, "read_file", {}, raw_args="{not json")
+    call("FW", 160, "read_file", {"path": "D:/Proj/docs/guide.md"})
+    call("FW", 161, "write_file", {"path": "d:\\proj\\SRC\\..\\src\\A.py", "content": "z"})
+    call("F2", 201, "patch", {"mode": "patch", "patch": "*** Begin Patch\n*** Update File: D:/Proj/src/b.py\n@@\n-a\n+b\n"
+                                                       "*** Move File: D:/Proj/old.txt -> D:/Proj/new.txt\n"
+                                                       "*** Delete File: D:/Proj/gone.txt\n*** End Patch"})
+    call("F2", 202, "patch", {"mode": "patch", "patch": "nothing a parser can read"})
+    call("F2", 203, "write_file", {"path": "D:/Proj/README.md"}, result="[write_file] `D:/Proj/README.md` BLOCKED, not run")
+    call("F2", 204, "patch", {"path": "D:/Proj/src/c.py"}, result="[patch] D:/Proj/src/c.py FAILED: no match")
+    call("F2", 205, "write_file", {"path": "D:/Proj/src/d.py"}, result="[write_file] wrote to D:/Proj/src/d.py")
+    call("F2", 206, "write_file", {"path": "D:/Proj/src/e.py"}, result="[write_file] D:/Proj/src/e.py FAILED")
+    call("G", 101, "write_file", {"path": "/other/secret.txt", "content": "s"})
+    db.commit()
+    db.close()
+
+
+def run_files() -> None:
+    core = env.core_dir()
+    if core is not None and str(core) not in sys.path:
+        sys.path.append(str(core))  # Hermes' own V4A parser reads a patch in patch mode
+    build_files_fixture()
+    saved = api._db_path
+    api._db_path = lambda: FILES_DB
+    try:
+        for vec_in, vec_key in json.loads((HERE / "path_vectors.json").read_text(encoding="utf-8"))["cases"]:
+            check(api.path_key(vec_in) == vec_key, f"files: path_key({vec_in!r}) == {vec_key!r} (shared with the page)")
+        with api._connect() as conn:
+            got = api.list_files(conn, "F2")
+            again = api.list_files(conn, "F2")
+        by = {f["key"]: f for f in got["files"]}
+        check(again is got, "files: a second read with no new message is served from the cache")
+        check(got["cwd"] == "D:\\Proj", f"files: the chat's folder comes from the newest link [{got['cwd']}]")
+        a = by.get("d:/proj/src/a.py")
+        check(bool(a) and a["reads"] == 1 and a["writes"] == 2 and a["by_worker"] == 1,
+              "files: one file under three spellings (absolute, relative to the chat's folder, '..' and case) "
+              "is one row: read 1, edited 2, one call from the worker")
+        check("d:/proj/docs/guide.md" in by and by["d:/proj/docs/guide.md"]["by_worker"] == 1,
+              "files: a worker's file is listed and marked as the worker's")
+        readme = by.get("d:/proj/readme.md")
+        check(bool(readme) and readme["writes"] == 0 and readme["failed"] == 2 and readme["last_failed"],
+              "files: a refused write ({\"error\"}) and a compressed BLOCKED stub count as failed, not as edits")
+        c_py = by.get("d:/proj/src/c.py")
+        check(bool(c_py) and c_py["failed"] == 1 and c_py["writes"] == 0, "files: a compressed 'FAILED:' stub is a failure")
+        e_py = by.get("d:/proj/src/e.py")
+        check(bool(e_py) and e_py["failed"] == 1 and e_py["writes"] == 0, "files: a compressed bare ' FAILED' stub is a failure")
+        d_py = by.get("d:/proj/src/d.py")
+        check(bool(d_py) and d_py["writes"] == 1 and not d_py["last_failed"], "files: a compressed success stub is an edit")
+        check("d:/proj/src/b.py" in by and by["d:/proj/src/b.py"]["writes"] == 1, "files: a V4A update names its file")
+        check(by.get("d:/proj/old.txt", {}).get("last_op") == "delete" and by.get("d:/proj/new.txt", {}).get("writes") == 1,
+              "files: a V4A move deletes its source and writes its target")
+        check(by.get("d:/proj/gone.txt", {}).get("deletes") == 1, "files: a V4A delete is a delete")
+        check(not any("x.txt" in k for k in by), "files: a terminal command's redirect is not a file-tool call")
+        check(not any("secret" in k for k in by), "files: another chat's files never show")
+        check(got["unreadable"] == 2 and got["calls"] == 12,
+              f"files: unparseable arguments and an unreadable patch are counted, not dropped "
+              f"[unreadable {got['unreadable']}, calls {got['calls']}]")
+        fresh = sqlite3.connect(FILES_DB)
+        fresh.execute("insert into messages (session_id, role, content, timestamp, tool_calls) values (?,?,?,?,?)",
+                      ("F2", "assistant", "", 300, json.dumps([{"id": "late", "function": {
+                          "name": "read_file", "arguments": json.dumps({"path": "D:/Proj/late.md"})}}])))
+        fresh.commit()
+        fresh.close()
+        with api._connect() as conn:
+            later = api.list_files(conn, "F2")
+        check(later["files"][0]["key"] == "d:/proj/late.md", "files: a new message is read at once, not served stale from the cache")
+        stamps = [f["last_at"] for f in got["files"]]
+        check(stamps == sorted(stamps, reverse=True), "files: newest first")
+        api.MAX_FILES, cap = 3, api.MAX_FILES
+        api._FILES_CACHE.clear()
+        try:
+            with api._connect() as conn:
+                capped = api.list_files(conn, "F2")
+        finally:
+            api.MAX_FILES = cap
+            api._FILES_CACHE.clear()
+        check(len(capped["files"]) == 3 and capped["more"] == len(later["files"]) - 3,
+              "files: past MAX_FILES the rest is counted in `more`, never silently cut")
+        real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+        import builtins
+
+        def no_parser(name, *a, **k):
+            if name == "tools.patch_parser":
+                raise ImportError("parser moved")
+            return real_import(name, *a, **k)
+
+        builtins.__import__ = no_parser
+        try:
+            check(api._patch_targets({"mode": "patch", "patch": "*** Begin Patch\n*** Add File: z\n+1\n*** End Patch"}) is None,
+                  "files: without Hermes' V4A parser a patch is unreadable (counted), not a crash")
+        finally:
+            builtins.__import__ = real_import
+        check(api.files.__name__ == "files" and any(getattr(r, "path", "") == "/files" and "GET" in r.methods
+                                                    for r in api.router.routes), "files: /files is a GET route")
+    finally:
+        api._db_path = saved
+
+
 def run_live() -> None:
     core = env.core_dir()
     if core is None:
@@ -534,6 +675,12 @@ def run_live() -> None:
                   f"live: {len(workers)} workers read, every status known")
         owner = next((json.loads(p.read_text(encoding="utf-8")).get("parent_session_id")
                       for p in sorted(api._results_dir().glob("proc_*.json"))), None)
+        busy = conn.execute("select session_id from messages where tool_calls like '%write_file%' "
+                            "order by id desc limit 1").fetchone()
+        if busy:
+            seen = api.list_files(conn, busy["session_id"])
+            check(bool(seen["files"]), f"live: {len(seen['files'])} files read for a chat that wrote one, "
+                                       f"{seen['unreadable']} of {seen['calls']} calls unreadable")
         if not owner:
             print("SKIP  live: no process receipts in this home")
             return
@@ -545,6 +692,7 @@ def run_live() -> None:
 
 
 run_fixture()
+run_files()
 if "--live" in sys.argv:
     run_live()
 print("\nALL PASSED" if not fails else f"\n{fails} FAILED")

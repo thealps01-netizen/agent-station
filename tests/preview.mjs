@@ -75,6 +75,17 @@ const PROCS = [
   { id: 'proc_bad', command: 'node build.mjs --release', cwd: 'C:/work/panel', status: 'failed', started_at: NOW - 1200, duration_s: 5, exit_code: 1 },
   { id: 'proc_kill', command: 'sleep 999', cwd: 'C:/work/panel', status: 'stopped', started_at: NOW - 3000, duration_s: 100, exit_code: -15 }
 ]
+const FILES = {
+  session_id: 'st-1', cwd: 'C:/work/panel', unreadable: 0, more: 0,
+  files: [
+    { key: 'c:/work/panel/desktop/plugin.js', path: 'C:/work/panel/desktop/plugin.js', reads: 6, writes: 4, deletes: 0, failed: 0, by_worker: 0, last_op: 'write', last_failed: false, last_at: NOW - 30 },
+    { key: 'c:/work/panel/tests/render_check.mjs', path: 'C:/work/panel/tests/render_check.mjs', reads: 2, writes: 1, deletes: 0, failed: 1, by_worker: 0, last_op: 'write', last_failed: true, last_at: NOW - 60 },
+    { key: 'c:/work/panel/dashboard/plugin_api.py', path: 'C:/work/panel/dashboard/plugin_api.py', reads: 3, writes: 0, deletes: 0, failed: 0, by_worker: 2, last_op: 'read', last_failed: false, last_at: NOW - 120 },
+    { key: 'c:/work/panel/changelog.md', path: 'C:/work/panel/CHANGELOG.md', reads: 1, writes: 2, deletes: 0, failed: 0, by_worker: 0, last_op: 'write', last_failed: false, last_at: NOW - 400 },
+    { key: 'c:/work/panel/old-notes.md', path: 'C:/work/panel/old-notes.md', reads: 0, writes: 0, deletes: 1, failed: 0, by_worker: 0, last_op: 'delete', last_failed: false, last_at: NOW - 600 },
+    { key: 'c:/users/someone/appdata/local/hermes/hermes-agent/apps/desktop/src/sdk/index.ts', path: 'C:/Users/someone/AppData/Local/hermes/hermes-agent/apps/desktop/src/sdk/index.ts', reads: 2, writes: 0, deletes: 0, failed: 0, by_worker: 0, last_op: 'read', last_failed: false, last_at: NOW - 700 }
+  ]
+}
 const OUTPUT = 'building 14 entries…\nerror: Cannot find module \'./sdk-stub.mjs\'\n    at build.mjs:41:9\nexit 1'
 
 function makeCtx(fail) {
@@ -94,6 +105,7 @@ function makeCtx(fail) {
       if (fail) throw new Error(path.startsWith('/children') ? 'backend 503: state.db not found' : 'backend 503: processes.json unreadable')
       if (path.startsWith('/children')) return HISTORY
       if (path.startsWith('/processes')) return { session_id: 'st-1', processes: PROCS, unreadable: 1 }
+      if (path.startsWith('/files')) return FILES
       if (path.startsWith('/process_output')) {
         const id = new URLSearchParams(path.split('?')[1]).get('process_id')
         const p = PROCS.find(x => x.id === id)
@@ -132,6 +144,7 @@ async function frame(label, { fail = false, live = false, open = null, narrow = 
     await emit('subagent.start', { subagent_id: 's1', delegation_id: 'd1', goal: "Polish 'fleet-status' visuals", model: 'anthropic/claude-opus-5-5', started_at: NOW - 140 })
     await emit('subagent.start', { subagent_id: 's1a', parent_id: 's1', delegation_id: 'd1', goal: "Judge 'fleet-status' contrast", depth: 1, model: 'openai/gpt-5.2', started_at: NOW - 60 })
     await emit('subagent.tool', { subagent_id: 's1', tool_name: 'terminal', tool_preview: 'node preview.mjs' })
+    await emit('tool.start', { tool_id: 'f1', name: 'read_file', args: { path: 'dashboard/plugin_api.py' } })
     await emit('subagent.complete', { subagent_id: 's2', status: 'error', summary: 'boom', duration_seconds: 12, cost_usd: 0.42 })
   }
   if (narrow) {

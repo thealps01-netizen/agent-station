@@ -47,6 +47,14 @@
  *      a finished batch stays in Now until history has it, then keeps its open detail and focus
  *      under Earlier; a checkpoint-only command asks for no output; a cut command says so; empty
  *      output is not "Copied"; a dead chat's failed poll does not count against the new chat.
+ *  19. 1.5.0 files: the page's pathKey gives the backend's key for every shared vector
+ *      (path_vectors.json); files are read for the STORED chat id and grouped by folder (the chat's
+ *      folder by name, its sub-folders relative); each state draws its own mark; a row copies its
+ *      path; the section says what it cannot see; a file tool call in the FOCUSED chat makes its row
+ *      shimmer (a relative path joins the chat's folder; a file not yet recorded appears at the top),
+ *      another chat's call does not; a finished call reloads the list and the shimmer lingers, then
+ *      ends; a V4A patch or a mirrored worker row shimmers nothing; unreadable calls, files past the
+ *      list and a failed read are shown; a chat with no files draws no section.
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -139,6 +147,22 @@ let procFails = false
 let procUnreadable = 1
 let procOutputFails = false
 let clipRejects = false
+let filesFails = false
+const FILES = {
+  'st-f': {
+    cwd: 'D:\\Proj',
+    unreadable: 1,
+    more: 2,
+    files: [
+      { key: 'd:/proj/src/a.py', path: 'D:\\Proj\\src\\a.py', reads: 2, writes: 3, deletes: 0, failed: 0, by_worker: 1, last_op: 'write', last_failed: false, last_at: 30 },
+      { key: 'd:/proj/readme.md', path: 'D:\\Proj\\README.md', reads: 0, writes: 0, deletes: 0, failed: 1, by_worker: 0, last_op: 'write', last_failed: true, last_at: 20 },
+      { key: 'd:/proj/src/b.py', path: 'D:\\Proj\\src\\b.py', reads: 1, writes: 0, deletes: 0, failed: 0, by_worker: 0, last_op: 'read', last_failed: false, last_at: 15 },
+      { key: 'd:/proj/old.txt', path: 'D:\\Proj\\old.txt', reads: 0, writes: 1, deletes: 1, failed: 0, by_worker: 0, last_op: 'delete', last_failed: false, last_at: 10 },
+      { key: 'c:/elsewhere/very/long/folder/name/that/goes/on/and/on/x.md', path: 'C:/elsewhere/very/long/folder/name/that/goes/on/and/on/x.md', reads: 1, writes: 0, deletes: 0, failed: 0, by_worker: 0, last_op: 'read', last_failed: false, last_at: 5 }
+    ]
+  },
+  'st-many': { cwd: '/w', unreadable: 0, more: 0, files: Array.from({ length: 45 }, (_, i) => ({ key: `/w/f${i}.txt`, path: `/w/f${i}.txt`, reads: 1, writes: 0, deletes: 0, failed: 0, by_worker: 0, last_op: 'read', last_failed: false, last_at: 100 - i })) }
+}
 // Scenario state: extra stored batches and held (pending) reads. The fixtures below are never mutated.
 let extraBatches = []
 const holds = {}
@@ -175,6 +199,7 @@ const HISTORY = {
 // Shared fixtures are frozen: a scenario that needs other data sets `extraBatches` instead.
 deepFreeze(HISTORY)
 deepFreeze(PROCS)
+deepFreeze(FILES)
 const ctx = {
   pet: {
     visible: stub.pet.visible,
@@ -207,6 +232,11 @@ const ctx = {
       if (procFails) throw new Error('procs 503')
       const sid = new URLSearchParams(path.split('?')[1]).get('session_id')
       return { session_id: sid, processes: PROCS[sid] || [], unreadable: sid === 'st-1' ? procUnreadable : 0 }
+    }
+    if (path.startsWith('/files')) {
+      if (filesFails) throw new Error('files 503')
+      const sid = new URLSearchParams(path.split('?')[1]).get('session_id')
+      return { session_id: sid, cwd: null, unreadable: 0, more: 0, files: [], ...(FILES[sid] || {}) }
     }
     if (path.startsWith('/process_output')) {
       if (procOutputFails) throw new Error('output 503')
@@ -803,5 +833,96 @@ await act(async () => { stub.atoms.focusedSessionId.set('rt-9') })
 await tick(10)
 check(!chip(), 'switching to a chat whose batch is long finished shows no chip')
 await act(async () => chipRoot.unmount())
+
+// 19. files
+const vectors = JSON.parse(readFileSync(`${HERE}path_vectors.json`, 'utf8')).cases
+const badVec = vectors.filter(([input, key]) => mod.pathKey(input) !== key)
+check(!badVec.length, `the page's pathKey gives the backend's key for all ${vectors.length} shared vectors (${JSON.stringify(badVec)})`)
+check(mod.resolvePath('src/a.py', 'D:\\Proj') === 'D:\\Proj\\src/a.py' && mod.resolvePath('/abs/x', '/w') === '/abs/x' &&
+  mod.resolvePath('C:/x', '/w') === 'C:/x' && mod.resolvePath('~/n', '/w') === '~/n' && mod.resolvePath('a', null) === 'a',
+'a relative path joins the chat folder with its separator; absolute, drive and ~ paths are kept')
+check(JSON.stringify(mod.fileTargets('read_file', { path: 'a' })) === '[{"path":"a","op":"read"}]' &&
+  mod.fileTargets('write_file', { path: 'a' })[0]?.op === 'write' && mod.fileTargets('patch', { path: 'a' })[0]?.op === 'write',
+'read_file reads, write_file and a replace-mode patch write')
+check(!mod.fileTargets('patch', { mode: 'patch', path: 'a', patch: '*** Begin Patch' }).length && !mod.fileTargets('read_file', {}).length &&
+  !mod.fileTargets('terminal', { command: 'cat a' }).length && !mod.fileTargets('write_file', null).length,
+'a V4A patch, a mirrored worker row (no args), a terminal call and missing args name no file here')
+check(mod.fileState({ last_failed: true, writes: 2 }, false) === 'failed' && mod.fileState({ writes: 1, last_failed: true }, true) === 'active' &&
+  mod.fileState({ last_op: 'delete', deletes: 1, writes: 1 }) === 'delete' && mod.fileState({ reads: 3 }) === 'read' && mod.fileState({ writes: 1 }) === 'write',
+'a file state: now beats all, then a failed last change, deleted, edited, read only')
+check(tr('sw.files.counts', 0, 0, 2, 0) === 'deleted 2×' && tr('sw.files.counts', 0, 0, 1, 0) === 'deleted' && tr('sw.files.counts', 1, 2, 0, 3) === 'read 1× · edited 2× · 3 failed',
+  `a row's counts name each kind with its number (${tr('sw.files.counts', 0, 0, 2, 0)})`)
+check(mod.dirLabel('D:\\Proj', 'd:/proj', tr) === 'chat folder' && mod.dirLabel('D:\\Proj\\src\\ui', 'D:\\Proj', tr) === './src/ui' &&
+  mod.dirLabel('/x'.repeat(40), '/w', tr).startsWith('…') && mod.dirLabel('/x'.repeat(40), '/w', tr).length === 48,
+'a folder heading: the chat folder by name, its sub-folders relative, a long one cut from the left')
+
+const fhost = document.createElement('div')
+document.body.appendChild(fhost)
+const froot = createRoot(fhost)
+await act(async () => { stub.atoms.focusedSessionId.set('rt-f'); stub.atoms.focusedStoredSessionId.set('st-f') })
+await act(async () => { froot.render(React.createElement(route.render)) })
+await tick(10)
+const fq = s => fhost.querySelector(s)
+const fqa = s => [...fhost.querySelectorAll(s)]
+const rowOf = name => fqa('.sw-fir').find(b => b.querySelector('.sw-fin')?.textContent === name)
+check(rest.some(p => p === '/files?session_id=st-f'), 'files are read for the stored chat id')
+check(fq('.sw-files h3')?.textContent.includes('Files') && /terminal commands or code runs are not listed/.test(fq('.sw-fio')?.textContent || '') &&
+  /Review › Last turn/.test(fq('.sw-fio')?.textContent || ''), `the section says what it cannot see and where every change is (${fq('.sw-fio')?.textContent})`)
+const dirs = fqa('.sw-fid').map(d => d.textContent)
+check(dirs[0] === './src' && dirs[1] === 'chat folder' && dirs[2]?.startsWith('…') && dirs.length === 3 && fqa('.sw-fid')[2]?.dataset.tip.startsWith('C:/elsewhere'),
+  `files are grouped by folder, newest folder first, long folder cut with the full path on hover (${JSON.stringify(dirs)})`)
+check(rowOf('a.py')?.dataset.op === 'write' && rowOf('README.md')?.dataset.op === 'failed' && rowOf('b.py')?.dataset.op === 'read' && rowOf('old.txt')?.dataset.op === 'delete',
+  'each file state draws its own mark: edited, failed, read only, deleted')
+check(rowOf('a.py')?.querySelector('.sw-fic')?.textContent === 'read 2× · edited 3×' && rowOf('a.py')?.querySelector('.sw-fiw')?.textContent === 'worker' &&
+  rowOf('a.py')?.getAttribute('aria-label') === 'a.py: Edited, read 2× · edited 3×' && rowOf('README.md')?.querySelector('.sw-fic')?.textContent === '1 failed',
+  `a row counts its reads, edits and failures, says a worker touched it, and names all of it for a screen reader (${rowOf('a.py')?.getAttribute('aria-label')})`)
+check(/1 call could not be read/.test(fq('.sw-files h3')?.textContent || '') && /2 older files not listed/.test(fq('.sw-files')?.textContent || ''),
+  'unreadable calls and files past the list are said, never silently dropped')
+await act(async () => { rowOf('b.py').click() })
+await tick(2)
+check(clip.at(-1) === 'D:\\Proj\\src\\b.py' && fq('.sw-toast')?.textContent === 'Path copied', `a row copies its full path (${fq('.sw-toast')?.textContent})`)
+// the shimmer
+const filesReads = () => rest.filter(p => p === '/files?session_id=st-f').length
+await emit('tool.start', 'rt-other', { tool_id: 'x1', name: 'read_file', args: { path: 'D:\\Proj\\src\\b.py' } })
+check(!fq('.sw-fir[data-op=active]'), "another chat's tool call does not shimmer this chat's files")
+await emit('tool.start', 'rt-f', { tool_id: 'm1', name: 'read_file', args: {}, preview: 'worker row' })
+await emit('tool.start', 'rt-f', { tool_id: 'v1', name: 'patch', args: { mode: 'patch', path: 'src/b.py', patch: '*** Update File: D:/Proj/src/b.py' } })
+check(!fq('.sw-fir[data-op=active]'), 'a mirrored worker row and a V4A patch shimmer nothing')
+await emit('tool.start', 'rt-f', { tool_id: 't1', name: 'read_file', args: { path: 'src/b.py' } })
+check(rowOf('b.py')?.dataset.op === 'active' && fqa('.sw-fir')[0] === rowOf('b.py') && rowOf('b.py')?.getAttribute('aria-label').startsWith('b.py: Being worked on now'),
+  'a file tool call in the focused chat makes its row shimmer and moves it to the top (a relative path joins the chat folder)')
+await emit('tool.start', 'rt-f', { tool_id: 't2', name: 'write_file', args: { path: 'D:/Proj/src/new.ts', content: 'x' } })
+check(rowOf('new.ts')?.dataset.op === 'active' && !rowOf('new.ts')?.querySelector('.sw-fic')?.textContent,
+  'a file not yet recorded appears at once, shimmering, with no counts')
+const readsBefore = filesReads()
+await emit('tool.complete', 'rt-f', { tool_id: 't1', name: 'read_file' })
+await tick(5)
+check(filesReads() > readsBefore && rowOf('b.py')?.dataset.op === 'active', 'a finished call reloads the list, and its row keeps shimmering for a moment')
+await tick(4100)
+check(rowOf('b.py')?.dataset.op === 'read' && rowOf('new.ts')?.dataset.op === 'active', 'the shimmer ends after the linger; a call still running keeps its own')
+await emit('tool.complete', 'rt-f', { tool_id: 't2', name: 'write_file' })
+await tick(4100)
+check(!fq('.sw-fir[data-op=active]') && !rowOf('new.ts'), 'once every call ended nothing shimmers, and an unrecorded file leaves with its shimmer')
+const pluginCss = readFileSync(SRC, 'utf8')
+check(/prefers-reduced-motion:reduce\)\{\.sw-fir\[data-op=active\]::after\{animation:none/.test(pluginCss), 'the shimmer stops for reduced motion')
+// a read failure, many files, no files
+filesFails = true
+const warnFiles = console.warn
+console.warn = () => {}
+await act(async () => { fq('.sw-err button, .sw-hd button[aria-label="Refresh"]')?.click() })
+await act(async () => { stub.atoms.focusedSessionId.set('rt-g'); stub.atoms.focusedStoredSessionId.set('st-g') })
+await tick(10)
+console.warn = warnFiles
+check(/Could not read the files list.*files 503/.test(fq('.sw-err')?.textContent || ''), `a failed files read is an alert (${fq('.sw-err')?.textContent})`)
+filesFails = false
+await act(async () => { stub.atoms.focusedSessionId.set('rt-m'); stub.atoms.focusedStoredSessionId.set('st-many') })
+await tick(10)
+check(fqa('.sw-fir').length === 40 && /5 more files/.test(fq('.sw-files .sw-more')?.textContent || ''), `a long list shows 40 and says how many more (${fq('.sw-files .sw-more')?.textContent})`)
+await act(async () => { fq('.sw-files .sw-more').click() })
+check(fqa('.sw-fir').length === 45 && !fq('.sw-files .sw-more'), 'show all lists every file')
+await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
+await tick(10)
+check(!fq('.sw-files'), 'a chat with no files draws no section')
+await act(async () => froot.unmount())
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED')
 process.exit(failures ? 1 : 0)

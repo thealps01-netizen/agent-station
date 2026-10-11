@@ -71,6 +71,8 @@ Sidebar entry "Subagents" → route `/subagent-watch`.
 | Full output | `GET /api/plugins/subagent-watch/output?session_id=<stored id>&worker_id=<child id>` — 403 unless the child was delegated from that chat (or a worker of it) |
 | Background commands | `GET /api/plugins/subagent-watch/processes?session_id=<stored id>`, polled every 3 s |
 | Command output tail | `GET /api/plugins/subagent-watch/process_output?session_id=<stored id>&process_id=<proc_…>` |
+| Files | `GET /api/plugins/subagent-watch/files?session_id=<stored id>`, polled every 3 s and after each file tool call ends — see "Files" |
+| Shimmer | gateway events `tool.start` / `tool.complete` of the focused runtime session id |
 
 The backend opens `state.db` with SQLite `mode=ro` (cannot write) and serves only sessions whose
 `model_config` carries `_delegate_from` — any other id gets 403. `/children` takes any chat id on
@@ -141,6 +143,33 @@ zone — follows the app again. Depends on the app's `data-tree-group` / `data-t
 `aria-selected` markup; if the app renames it, the hold stops working and the page falls back to
 the old behaviour (it never shows a wrong chat that the app did not name). A chat switch made only
 by keyboard while the hold is on is picked up at the next click outside the panel.
+
+### Files
+Source: the `tool_calls` of every message in the chat's compression chain and its workers' sessions
+(nested and compressed workers included), joined to each call's result by `tool_call_id`. Only
+`read_file`, `write_file` and `patch` name a file; `search_files` names a folder and is left out.
+- **One row per file.** `path_key`: backslashes to `/`, dot segments folded (`posixpath.normpath`), a
+  drive path lowercased (Windows paths are case-insensitive; a POSIX path keeps its case). A relative
+  path is joined to its session's `cwd` first. The page applies the same rule to a live call
+  (`pathKey`); `tests/path_vectors.json` holds the cases both must agree on, and both gates read it.
+- **Patch mode.** A `patch` call with `mode: "patch"` names its files inside V4A text; the backend
+  asks Hermes' own `tools.patch_parser.parse_v4a_patch` (never a copy of the grammar). Update / add
+  write, delete deletes, move deletes its source and writes its target. Without the parser, or with
+  text it cannot read, the call is counted as unreadable — shown, never dropped.
+- **Failed is not edited.** A result `{"error": …}` / `{"success": false}`, or the one-line stub
+  Hermes writes over an old result when it compresses a conversation (`[patch] … FAILED: …`,
+  `… BLOCKED, not run`), counts as a failure.
+- **Blind spot, said on the page.** A terminal command or code run that writes a file records no
+  path. In a 30-day sample of this install's calls, file tools were 59% of write-like calls (5,853 vs
+  4,021 terminal / execute_code calls matching a write pattern). The section points to Review › Last
+  turn, which reads git and lists every change.
+- **Shimmer.** `tool.start` for the focused runtime id adds the call's files; `tool.complete` reloads
+  the list and ends the shimmer `TOUCH_LINGER_MS` (4 s) later — a file call takes milliseconds.
+  `write_file` / `patch` keep their lifecycle events even with tool progress off; `read_file` shimmers
+  only with tool progress on. A worker's calls are mirrored without arguments and a V4A patch's
+  files are in its text, so neither shimmers; both appear on reload.
+- At most `MAX_FILES` (400) files are returned, the rest counted in `more`; the page draws 40 and a
+  "N more" button. The answer is cached until a message lands in any covered session.
 
 ## Not here on purpose
 Interrupt / steer / live transcript — the composer status stack already owns them.

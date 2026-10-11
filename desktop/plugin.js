@@ -17,6 +17,11 @@
  *            same events through a small tracker of its own, so it shows while the page is closed.
  *   Cost     each worker's spend as Hermes recorded it in state.db (estimated / billed / in a
  *            subscription / not priced) — shown, never computed or guessed here.
+ *   Files    the files the chat and its workers read or wrote with the file tools, grouped by
+ *            folder, from the backend's /files (the tool calls state.db recorded). A file the agent is
+ *            touching right now shimmers, fed by the focused chat's tool.start / tool.complete events.
+ *            Edits made through terminal commands or code runs carry no path and are not listed: the
+ *            section says so and points to Review › Last turn, which lists every change.
  *
  * Nothing here writes: no interrupt, no steer (the composer status stack already owns those).
  * Every failed read is shown in the page; nothing is swallowed.
@@ -56,6 +61,13 @@ const PRICED = new Set(['actual', 'estimated'])
 const PROGRESS_LINGER_MS = 8000
 // The pet clamps a line's life to 30 s; a running batch's line is refreshed on every change.
 const PET_LINE_MS = 30000
+// The file tools whose calls name a file (tools/file_tools.py). search_files names a folder to look in.
+const FILE_TOOLS = new Set(['read_file', 'write_file', 'patch'])
+// A file tool call takes milliseconds: the shimmer stays this long after it ends, or nobody sees it.
+const TOUCH_LINGER_MS = 4000
+// Files listed before "N more"; a folder path longer than this is cut from the left (the end names it).
+const FILES_PAGE = 40
+const DIR_CHARS = 48
 
 let ctxRef = null
 // The stored id of the chat the page watches (see useWatchedChat), for reads deep in the tree.
@@ -143,6 +155,27 @@ const BUNDLES = {
         notSubagent: 'Shell commands the agent started in the background (not subagents).',
         unreadable: n => `${n} record${n === 1 ? '' : 's'} could not be read`
       },
+      files: {
+        title: 'Files',
+        tip: 'Files this chat and its workers read or wrote with the file tools. Click a file to copy its path.',
+        blind: 'File tools only: edits made by terminal commands or code runs are not listed. Review › Last turn shows every change.',
+        op: {
+          active: 'Being worked on now', write: 'Edited', delete: 'Deleted', read: 'Read only', failed: 'Last change failed'
+        },
+        counts: (reads, writes, deletes, failed) => [
+          reads ? `read ${reads}×` : '',
+          writes ? `edited ${writes}×` : '',
+          deletes > 1 ? `deleted ${deletes}×` : deletes ? 'deleted' : '',
+          failed ? `${failed} failed` : ''
+        ].filter(Boolean).join(' · '),
+        worker: 'worker',
+        byWorker: n => `${n} of these calls came from a worker (subagent)`,
+        here: 'chat folder',
+        copied: 'Path copied',
+        more: n => `${n} more file${n === 1 ? '' : 's'}`,
+        notListed: n => `${n} older file${n === 1 ? '' : 's'} not listed`,
+        unreadable: n => `${n} call${n === 1 ? '' : 's'} could not be read`
+      },
       noChat: { title: 'No chat selected', body: 'Open a chat to see its subagents.' },
       empty: { title: 'No subagents yet', body: 'Workers started with delegate_task in this chat appear here.' },
       err: {
@@ -150,6 +183,7 @@ const BUNDLES = {
         live: 'Live updates stopped',
         output: 'Could not read the full output',
         procs: 'Could not read background commands',
+        files: 'Could not read the files list',
         procOutput: 'Could not read the command output',
         withDetail: (what, detail) => `${what}: ${detail}`,
         hint: 'Nothing could be read. Use Try again in the box above.'
@@ -354,6 +388,9 @@ const ICON = {
     jsx('rect', { x: 2, y: 3, width: 12, height: 10, rx: 1.8, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3 }, 'r'),
     jsx('path', { d: 'M4.8 6.5l2 1.6-2 1.6M8.5 10.2h2.8', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }, 'p')
   ]),
+  file: () => svg(jsx('path', {
+    d: 'M4 2.5h5l3 3v8H4zM9 2.5v3h3', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinejoin: 'round'
+  })),
   chev: open => svg(jsx('path', {
     d: open ? 'M4 6l4 4 4-4' : 'M6 4l4 4-4 4', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5,
     strokeLinecap: 'round', strokeLinejoin: 'round'
@@ -468,6 +505,94 @@ function useProcesses(storedId) {
   const own = state.key === storedId ? state : { data: null, error: null }
   // Loading = this chat's first read has not answered yet (later polls keep the last answer shown).
   return { ...own, loading: Boolean(storedId) && !own.data && !own.error, reload: load }
+}
+
+/** The files one stored session read or wrote, from the plugin backend; polled like the commands. */
+function useFiles(storedId) {
+  const [state, setState] = useState({ key: null, data: null, error: null })
+  const gen = useRef(0)
+  const load = useCallback(() => {
+    if (!storedId) {
+      setState({ key: null, data: null, error: null })
+      return
+    }
+    const mine = ++gen.current
+    setState(prev => (prev.key === storedId ? prev : { key: storedId, data: null, error: null }))
+    ctxRef.rest(`/files?session_id=${encodeURIComponent(storedId)}`).then(
+      data => { if (mine === gen.current) setState({ key: storedId, data, error: null }) },
+      err => { if (mine === gen.current) setState(prev => ({ ...prev, key: storedId, error: String(err?.message || err) })) }
+    )
+  }, [storedId])
+  useEffect(() => {
+    load()
+    if (!storedId) return undefined
+    return ctxRef.setInterval(load, POLL_MS)
+  }, [load])
+  const own = state.key === storedId ? state : { data: null, error: null }
+  return { ...own, loading: Boolean(storedId) && !own.data && !own.error, reload: load }
+}
+
+/**
+ * The files the focused chat's own file tool calls are touching now: tool.start adds them, tool.complete
+ * ends them, and each stays TOUCH_LINGER_MS after its call ends. A finished call reloads the list.
+ * Workers' calls reach the page only as a mirrored row without arguments, so they show on reload.
+ */
+function useTouching(runtimeId, cwd, onDone) {
+  const [touching, setTouching] = useState(() => new Map())
+  const calls = useRef(new Map())
+  const cwdRef = useRef(cwd)
+  cwdRef.current = cwd
+  const doneRef = useRef(onDone)
+  doneRef.current = onDone
+  useEffect(() => {
+    setTouching(new Map())
+    calls.current = new Map()
+    if (!runtimeId) return undefined
+    const timers = new Set()
+    const offStart = ctxRef.onEvent('tool.start', event => {
+      if (event?.session_id !== runtimeId) return
+      const p = event.payload || {}
+      const targets = fileTargets(p.name, p.args)
+      if (!p.tool_id || !targets.length) return
+      const keys = targets.map(({ path, op }) => {
+        const full = resolvePath(path, cwdRef.current)
+        return { key: pathKey(full), path: full, op }
+      })
+      calls.current.set(p.tool_id, keys)
+      setTouching(prev => {
+        const next = new Map(prev)
+        for (const k of keys) next.set(k.key, { path: k.path, op: k.op, live: (prev.get(k.key)?.live || 0) + 1 })
+        return next
+      })
+    })
+    const offDone = ctxRef.onEvent('tool.complete', event => {
+      if (event?.session_id !== runtimeId) return
+      const keys = calls.current.get(event.payload?.tool_id)
+      if (!keys) return
+      calls.current.delete(event.payload.tool_id)
+      doneRef.current?.()
+      const stop = ctxRef.setTimeout(() => {
+        timers.delete(stop)
+        setTouching(prev => {
+          const next = new Map(prev)
+          for (const k of keys) {
+            const cur = next.get(k.key)
+            if (!cur) continue
+            if (cur.live > 1) next.set(k.key, { ...cur, live: cur.live - 1 })
+            else next.delete(k.key)
+          }
+          return next
+        })
+      }, TOUCH_LINGER_MS)
+      timers.add(stop)
+    })
+    return () => {
+      offStart()
+      offDone()
+      timers.forEach(stop => stop())
+    }
+  }, [runtimeId])
+  return touching
 }
 
 /**
@@ -621,7 +746,7 @@ function useLive(runtimeId, onBatchEnded) {
 // ── pieces ───────────────────────────────────────────────────────────────────
 
 /** Clipboard write that never rejects out of a click handler: a refusal is a "Copy failed" toast. */
-async function writeClip(text, t, onToast) {
+async function writeClip(text, t, onToast, done) {
   // An empty clipboard is not a copy: saying "Copied" would hide that there was nothing to paste.
   if (!text) return onToast(t('sw.nothingToCopy'), true)
   let ok = false
@@ -630,7 +755,7 @@ async function writeClip(text, t, onToast) {
   } catch (err) {
     console.warn(`[${ID}] clipboard write failed`, err)
   }
-  onToast(ok ? t('sw.copied') : t('sw.copyFailed'), !ok)
+  onToast(ok ? done || t('sw.copied') : t('sw.copyFailed'), !ok)
 }
 
 function Detail({ t, worker, onToast }) {
@@ -804,6 +929,105 @@ function Flow({ t, batch, now, openWorker, setOpenWorker, onToast }) {
 
 // ── background commands ──────────────────────────────────────────────────────
 
+// ── files: pure helpers (exported for the render check) ────────────────────
+
+/** posixpath.normpath, so a path folds the same way here as in the backend. */
+function normpath(text) {
+  if (!text) return '.'
+  const lead = text.startsWith('//') && !text.startsWith('///') ? 2 : text.startsWith('/') ? 1 : 0
+  const out = []
+  for (const part of text.split('/')) {
+    if (!part || part === '.') continue
+    if (part !== '..' || (!lead && !out.length) || (out.length && out[out.length - 1] === '..')) out.push(part)
+    else if (out.length) out.pop()
+  }
+  return '/'.repeat(lead) + out.join('/') || '.'
+}
+
+/**
+ * One spelling per file — the backend's path_key: forward slashes, dot segments folded, a drive path
+ * lowercased. tests/path_vectors.json holds the cases both sides must agree on.
+ */
+export function pathKey(path) {
+  const text = String(path || '').replace(/\\/g, '/')
+  let folded = text ? normpath(text) : ''
+  if (folded === '.') folded = ''
+  if (text.startsWith('//') && !text.startsWith('///') && !folded.startsWith('//')) folded = `/${folded}`
+  return /^[A-Za-z]:\//.test(folded) ? folded.toLowerCase() : folded
+}
+
+/** A live tool call's path as the backend will record it: a relative path joined to the chat's folder. */
+export function resolvePath(path, cwd) {
+  const text = String(path || '')
+  const unixish = text.replace(/\\/g, '/')
+  if (!cwd || text.startsWith('~') || unixish.startsWith('/') || /^[A-Za-z]:\//.test(unixish)) return text
+  return `${cwd.replace(/[/\\]+$/, '')}${cwd.includes('\\') ? '\\' : '/'}${text}`
+}
+
+/**
+ * The files a live tool call names, as (path, op). A patch in V4A form names its files inside the
+ * patch text; reading that grammar is the backend's job (it asks Hermes' own parser), so such a call
+ * shimmers nothing here and shows up when the list reloads after it.
+ */
+export function fileTargets(name, args) {
+  if (!FILE_TOOLS.has(name) || !args || typeof args !== 'object') return []
+  if (name === 'patch' && (args.mode || 'replace') === 'patch') return []
+  const path = typeof args.path === 'string' ? args.path : ''
+  return path ? [{ path, op: name === 'read_file' ? 'read' : 'write' }] : []
+}
+
+/** What a file's mark says: now, the last change failed, deleted, edited, or only read. */
+export function fileState(f, active) {
+  if (active) return 'active'
+  if (f.last_failed) return 'failed'
+  if (f.last_op === 'delete' && f.deletes) return 'delete'
+  if (f.writes || f.deletes) return 'write'
+  return 'read'
+}
+
+function splitPath(path) {
+  const text = String(path || '')
+  const cut = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'))
+  return cut < 0 ? { dir: '', name: text } : { dir: text.slice(0, cut) || text.slice(0, 1), name: text.slice(cut + 1) }
+}
+
+/** A folder as its group heading: relative to the chat's folder when inside it, else cut from the left. */
+export function dirLabel(dir, cwd, t = enT) {
+  const d = pathKey(dir)
+  const c = cwd ? pathKey(cwd) : ''
+  if (c && d === c) return t('sw.files.here')
+  if (c && d.startsWith(`${c}/`)) return `./${dir.replace(/\\/g, '/').slice(cwd.replace(/[/\\]+$/, '').length + 1)}`
+  return dir.length > DIR_CHARS ? `…${dir.slice(-(DIR_CHARS - 1))}` : dir
+}
+
+/**
+ * The rows the section draws: the backend's files plus any file touched now that the backend has
+ * not recorded yet. Files being touched come first, then the newest; grouped by folder in that order.
+ */
+export function fileGroups(files, touching) {
+  const byKey = new Map((files || []).map(f => [f.key || pathKey(f.path), f]))
+  const now = []
+  for (const [key, tc] of touching) {
+    now.push(byKey.get(key) || {
+      key, path: tc.path, reads: 0, writes: 0, deletes: 0, failed: 0, by_worker: 0, last_op: tc.op, last_failed: false
+    })
+  }
+  const nowKeys = new Set(now.map(f => f.key))
+  const ordered = [...now, ...(files || []).filter(f => !nowKeys.has(f.key || pathKey(f.path)))]
+  return ordered.map(f => ({ ...f, key: f.key || pathKey(f.path), state: fileState(f, nowKeys.has(f.key || pathKey(f.path))) }))
+}
+
+function groupByDir(rows) {
+  const groups = new Map()
+  for (const f of rows) {
+    const { dir, name } = splitPath(f.path)
+    const k = pathKey(dir)
+    if (!groups.has(k)) groups.set(k, { dir, rows: [] })
+    groups.get(k).rows.push({ ...f, name })
+  }
+  return [...groups.values()]
+}
+
 /** First non-empty line of a command, for the one-line row; the full text is the tooltip. */
 export function commandLine(command) {
   return String(command || '').split('\n').map(s => s.trim()).find(Boolean) || ''
@@ -935,6 +1159,71 @@ function ProcSection({ t, procs, now, storedId, openProc, toggleProc, onToast })
   })
 }
 
+const FILE_MARK = {
+  active: () => svg(jsx('circle', { cx: 8, cy: 8, r: 4.5, fill: 'currentColor' })),
+  write: () => svg(jsx('path', { d: 'M3 13l1-3.5 6.5-6.5 2.5 2.5L6.5 12z', fill: 'currentColor' })),
+  delete: () => svg(jsx('path', { d: 'M3.5 8h9', stroke: 'currentColor', strokeWidth: 2.2, strokeLinecap: 'round' })),
+  failed: () => svg(jsx('path', { d: 'M4.5 4.5l7 7M11.5 4.5l-7 7', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' })),
+  read: () => svg(jsx('circle', { cx: 8, cy: 8, r: 3.75, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6 }))
+}
+
+function FileRow({ t, f, onToast }) {
+  const label = t(`sw.files.op.${f.state}`)
+  const counts = t('sw.files.counts', f.reads, f.writes, f.deletes, f.failed)
+  const copy = () => writeClip(f.path, t, onToast, t('sw.files.copied'))
+  return jsx(Tip, {
+    label: `${f.path}\n${label}${counts ? ` · ${counts}` : ''}`,
+    children: jsxs('button', {
+      type: 'button', className: 'sw-fir', 'data-op': f.state, onClick: copy,
+      'aria-label': `${f.name}: ${label}${counts ? `, ${counts}` : ''}`,
+      children: [
+        jsx('span', { className: 'sw-fim', 'aria-hidden': 'true', children: FILE_MARK[f.state]() }, 'm'),
+        jsx('span', { className: 'sw-fin', children: f.name }, 'n'),
+        f.by_worker ? jsx(Tip, { label: t('sw.files.byWorker', f.by_worker), children: jsx('span', { className: 'sw-fiw', children: t('sw.files.worker') }) }, 'w') : null,
+        jsx('span', { className: 'sw-fic', children: counts }, 'c')
+      ]
+    })
+  })
+}
+
+function FilesSection({ t, files, touching, onToast }) {
+  const [showAll, setShowAll] = useState(false)
+  const data = files.data
+  const rows = fileGroups(data?.files, touching)
+  const unreadable = data?.unreadable || 0
+  if (!rows.length && !unreadable && !files.loading) return null
+  const shown = showAll ? rows : rows.slice(0, FILES_PAGE)
+  return jsxs('section', {
+    className: 'sw-files', 'aria-labelledby': 'sw-files-h',
+    children: [
+      jsxs('h3', {
+        className: 'sw-lab sw-plab', id: 'sw-files-h',
+        children: [
+          jsx(Tip, { label: t('sw.files.tip'), children: jsxs('span', { className: 'sw-plt', tabIndex: 0, children: [jsx('span', { className: 'sw-pi', children: ICON.file() }, 'i'), t('sw.files.title')] }) }, 'l'),
+          unreadable ? jsxs('span', { className: 'sw-pu', children: [jsx('span', { className: 'sw-mk', 'data-st': 'failed', 'aria-hidden': 'true', children: MARKS.failed() }, 'm'), t('sw.files.unreadable', unreadable)] }, 'u') : null
+        ]
+      }, 'h'),
+      jsx('p', { className: 'sw-fio', children: t('sw.files.blind') }, 'b'),
+      files.loading && !rows.length
+        ? jsx(Loader, { label: t('sw.files.title') }, 'w')
+        : jsx('div', {
+          className: 'sw-fil',
+          children: groupByDir(shown).map(g => jsxs('div', {
+            className: 'sw-fig',
+            children: [
+              jsx(Tip, { label: g.dir, children: jsx('div', { className: 'sw-fid', tabIndex: 0, children: dirLabel(g.dir, data?.cwd, t) }) }, 'd'),
+              ...g.rows.map(f => jsx(FileRow, { t, f, onToast }, f.key))
+            ]
+          }, g.dir))
+        }, 'l'),
+      !showAll && rows.length > FILES_PAGE
+        ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setShowAll(true), children: t('sw.files.more', rows.length - FILES_PAGE) }, 'more')
+        : null,
+      data?.more ? jsx('p', { className: 'sw-fio', children: t('sw.files.notListed', data.more) }, 'nl') : null
+    ]
+  })
+}
+
 // ── page ─────────────────────────────────────────────────────────────────────
 
 /** A set of open card keys: toggle(key) flips one card, clear() folds them all (on chat change), add(keys) opens some. */
@@ -1029,6 +1318,8 @@ export function Page() {
   }
   const live = useLive(runtimeId, onBatchEnded)
   const procs = useProcesses(storedId)
+  const files = useFiles(storedId)
+  const touching = useTouching(runtimeId, files.data?.cwd, files.reload)
   const [showAll, setShowAll] = useState(false)
   const [toast, setToast] = useState(null)
   const procRows = procs.data?.processes || []
@@ -1093,17 +1384,22 @@ export function Page() {
   const procSection = storedId
     ? jsx(ProcSection, { t, procs, now, storedId, openProc, toggleProc, onToast }, 'procs')
     : null
+  // Keyed by chat: its "show all" folds again when the watched chat changes.
+  const filesSection = storedId
+    ? jsx(FilesSection, { t, files, touching, onToast }, `files-${storedId}`)
+    : null
 
   let body
   if (!storedId && !runtimeId) {
     body = jsx(PanelEmpty, { icon: 'comment-discussion', title: t('sw.noChat.title'), description: t('sw.noChat.body') })
   } else if (history.loading && !history.data && !live.batches.length) {
     body = jsx(Loader, { label: t('sw.title') })
-  } else if (!live.batches.length && !past.length && history.error && procs.error) {
+  } else if (!live.batches.length && !past.length && history.error && procs.error && (files.error || !files.data?.files?.length)) {
     body = jsx('p', { className: 'sw-hint', children: t('sw.err.hint') })
   } else if (!live.batches.length && !past.length && !history.error) {
     body = [
       jsx(PanelEmpty, { icon: 'type-hierarchy-sub', title: t('sw.empty.title'), description: t('sw.empty.body') }, 'empty'),
+      filesSection,
       procSection
     ]
   } else {
@@ -1121,6 +1417,7 @@ export function Page() {
       !showAll && past.length > HISTORY_PAGE
         ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setShowAll(true), children: t('sw.older', past.length - HISTORY_PAGE) }, 'more')
         : null,
+      filesSection,
       procSection
     ]
   }
@@ -1128,9 +1425,10 @@ export function Page() {
   const errors = [
     history.error ? t('sw.err.withDetail', t('sw.err.history'), history.error) : null,
     live.error ? t('sw.err.withDetail', t('sw.err.live'), live.error) : null,
-    procs.error ? t('sw.err.withDetail', t('sw.err.procs'), procs.error) : null
+    procs.error ? t('sw.err.withDetail', t('sw.err.procs'), procs.error) : null,
+    files.error ? t('sw.err.withDetail', t('sw.err.files'), files.error) : null
   ].filter(Boolean)
-  const refreshAll = () => { history.reload(); procs.reload(); live.retry() }
+  const refreshAll = () => { history.reload(); procs.reload(); files.reload(); live.retry() }
   // The header's tint tells one thing: a read failed (red), something runs (yellow), or neither.
   // It used to fall back to green, so a page where nothing could be read looked all fine.
   const headState = errors.length ? 'failed' : runningN || procsRunning ? 'running' : 'idle'
@@ -1569,6 +1867,31 @@ const CSS = `
 .sw-pob .sw-po{padding:0;border:0;border-radius:0;background:transparent;max-height:180px}
 .sw-pol{font-size:11.5px;color:var(--ui-text-secondary)}
 .sw-po-note{font-size:12px;line-height:18px;color:var(--ui-text-secondary)}
+.sw-files{margin-top:6px}
+.sw-fio{margin:0 6px 8px;font-size:11.5px;line-height:16px;color:var(--ui-text-secondary)}
+.sw-fil{display:flex;flex-direction:column;gap:8px}
+.sw-fig{display:flex;flex-direction:column;gap:1px}
+.sw-fid{font:11.5px/18px var(--sw-mono);color:var(--ui-text-secondary);padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+ border-radius:4px;cursor:default}
+/* Each file hangs off its folder: an indent and a rail, the tree the video's mod draws. */
+.sw-fir{position:relative;width:100%;height:28px;display:flex;align-items:center;gap:8px;padding:0 10px 0 22px;border-radius:6px;border:0;
+ background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;overflow:hidden;--sw-ft:var(--ui-text-quaternary)}
+.sw-fir::before{content:"";position:absolute;left:11px;top:0;bottom:0;border-left:1px solid var(--ui-stroke-tertiary)}
+.sw-fir:hover{background:var(--ui-bg-secondary)}
+.sw-fir[data-op=write]{--sw-ft:var(--ui-orange)}
+.sw-fir[data-op=delete],.sw-fir[data-op=failed]{--sw-ft:var(--ui-red)}
+.sw-fir[data-op=active]{--sw-ft:var(--ui-yellow);background:color-mix(in srgb,var(--ui-yellow) 9%,transparent)}
+/* The file being touched now: a band of light sweeps across its row. */
+.sw-fir[data-op=active]::after{content:"";position:absolute;inset:0;pointer-events:none;transform:translateX(-100%);
+ background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--ui-yellow) 24%,transparent),transparent);animation:sw-shim 1.3s ease-in-out infinite}
+@keyframes sw-shim{to{transform:translateX(100%)}}
+@media (prefers-reduced-motion:reduce){.sw-fir[data-op=active]::after{animation:none;display:none}}
+.sw-fim{width:12px;height:12px;flex:none;color:var(--sw-ft)}
+.sw-fin{font:12px var(--sw-mono);min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-fiw{flex:none;font-size:11.5px;line-height:15px;padding:0 5px;border-radius:4px;border:1px solid var(--ui-stroke-tertiary);color:var(--ui-text-secondary)}
+.sw-fic{margin-left:auto;padding-left:6px;flex:none;font-size:11.5px;color:var(--ui-text-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
+@container (max-width:420px){.sw-panel .sw-fic{display:none}}
+.sw-fir:focus-visible,.sw-fid:focus-visible{outline:2px solid var(--ui-stroke-primary);outline-offset:-2px}
 `
 
 function navLabel() {

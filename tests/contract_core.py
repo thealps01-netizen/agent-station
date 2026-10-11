@@ -20,6 +20,12 @@ Checked against the core checkout (`HERMES_AGENT_DIR`, see env.py):
   sdk        every name the page imports from `@hermes/plugin-sdk` is exported, the two
              `host.state` atoms it reads exist, `host.navigate` exists (the progress chip opens the
              page), and `ctx.pet` keeps `say` / `clear` / `visible` (the progress line)
+  files      the file tools keep their names and `path` / `mode` / `patch` arguments (patch mode
+             defaults to "replace"); Hermes' V4A parser keeps `parse_v4a_patch` and its update / add /
+             delete / move operations with `new_path`; `tool.start` / `tool.complete` are declared with
+             `tool_id` / `name` / `args`, and write_file / patch keep their lifecycle even with tool
+             progress off; a compressed result stub still says ` FAILED:` / `BLOCKED, not run`;
+             `ctx.setTimeout` exists (the shimmer's linger)
 
 Running:
   python contract_core.py             exit 0 = contract holds; 1 = something moved (named); 2 = no core
@@ -52,6 +58,12 @@ SDK_FILE = "apps/desktop/src/sdk/index.ts"
 CHILD_RUN_FILE = "tools/delegate_tool_child_run.py"
 PRICING_FILE = "agent/usage_pricing.py"
 PET_FILE = "apps/desktop/src/contrib/plugin.ts"
+FILE_TOOLS_FILE = "tools/file_tools.py"
+PATCH_PARSER_FILE = "tools/patch_parser.py"
+SERVER_FILE = "tui_gateway/server.py"
+COMPRESSOR_FILE = "agent/context_compressor.py"
+FILE_TOOL_NAMES = ("read_file", "write_file", "patch")
+V4A_OPS = ("update", "add", "delete", "move")
 COST_STATUSES = ("actual", "estimated", "included", "unknown")
 PET_MEMBERS = ("say", "clear", "visible")
 
@@ -94,6 +106,9 @@ def _backend_columns() -> dict[str, set[str]]:
                 p.value for p in ast.walk(value) if isinstance(p, ast.Constant) and isinstance(p.value, str))
             sessions |= {c.strip() for c in text.split(",") if c.strip()}
     messages = {"session_id", "role", "content", "id"}
+    if "def list_files" in BACKEND.read_text(encoding="utf-8"):
+        sessions.add("cwd")
+        messages |= {"tool_calls", "tool_call_id", "timestamp"}
     return {"sessions": sessions, "messages": messages}
 
 
@@ -213,6 +228,53 @@ def check(core: Path) -> list[str]:
         for atom in HOST_STATE_ATOMS:
             if not re.search(rf"^\s+{atom}: readonlyAtom", sdk, re.M):
                 problems.append(f"{SDK_FILE}: `host.state.{atom}` is gone — the page scopes everything by it")
+
+    tools = _read(core, FILE_TOOLS_FILE, problems)
+    if tools:
+        for name in FILE_TOOL_NAMES:
+            if f"\"name\": \"{name}\"" not in tools:
+                problems.append(f"{FILE_TOOLS_FILE}: tool `{name}` is gone — the Files section reads its calls")
+        if not re.search(r'"mode": \{[^}]*"default": "replace"', tools, re.S):
+            problems.append(f"{FILE_TOOLS_FILE}: patch's `mode` no longer defaults to \"replace\" — a call without "
+                            "a mode would be read as the wrong form")
+        if not re.search(r'^\s+"patch": \{', tools, re.M):
+            problems.append(f"{FILE_TOOLS_FILE}: patch's `patch` argument is gone — V4A patches would name no file")
+    parser = _read(core, PATCH_PARSER_FILE, problems)
+    if parser:
+        if "def parse_v4a_patch(" not in parser:
+            problems.append(f"{PATCH_PARSER_FILE}: `parse_v4a_patch` is gone — every V4A patch would read as unreadable")
+        enum = re.search(r"class OperationType\(Enum\):(.*?)\n\n", parser, re.S)
+        named = set(re.findall(r'=\s*"([a-z]+)"', enum.group(1))) if enum else set()
+        for op in sorted(set(V4A_OPS) - named):
+            problems.append(f"{PATCH_PARSER_FILE}: V4A operation `{op}` is gone from OperationType")
+        for op in sorted(named - set(V4A_OPS)):
+            problems.append(f"{PATCH_PARSER_FILE}: new V4A operation `{op}` — the backend would count it as a write")
+        if "new_path" not in parser:
+            problems.append(f"{PATCH_PARSER_FILE}: `new_path` is gone — a move's target would be lost")
+    if events:
+        for name in ("tool.start", "tool.complete"):
+            if f"event(\"{name}\"" not in events:
+                problems.append(f"{EVENTS_FILE}: event `{name}` is not declared — the shimmer listens for it")
+        start = re.search(r"class ToolStartPayload\(Payload\):(.*?)\n\n\n", events, re.S)
+        for field in ("tool_id", "name", "args"):
+            if not start or not re.search(rf"^\s+{field}:", start.group(1), re.M):
+                problems.append(f"{EVENTS_FILE}: `ToolStartPayload.{field}` is gone — the shimmer reads it")
+    server = _read(core, SERVER_FILE, problems)
+    lifecycle = re.search(r"_TOOL_LIFECYCLE_UI_TOOLS = frozenset\(\{(.*?)\}\)", server, re.S)
+    for name in ("write_file", "patch"):
+        if server and (not lifecycle or f"\"{name}\"" not in lifecycle.group(1)):
+            problems.append(f"{SERVER_FILE}: `{name}` left _TOOL_LIFECYCLE_UI_TOOLS — with tool progress off an "
+                            "edit would never shimmer")
+    compressor = _read(core, COMPRESSOR_FILE, problems)
+    if compressor:
+        if 'label: str = "FAILED"' not in compressor or 'f" {label}: {preview}"' not in compressor:
+            problems.append(f"{COMPRESSOR_FILE}: a compressed failure no longer says ' FAILED:' — failed edits "
+                            "would read as done")
+        if "BLOCKED, not run" not in compressor:
+            problems.append(f"{COMPRESSOR_FILE}: a compressed refusal no longer says 'BLOCKED, not run' — refused "
+                            "edits would read as done")
+    if plugin_ts and not re.search(r"^\s+setTimeout: \(fn", plugin_ts, re.M):
+        problems.append(f"{PET_FILE}: `ctx.setTimeout` is gone — the shimmer's linger uses it")
     return problems
 
 
@@ -238,6 +300,19 @@ BREAKS = [
     (PRICING_FILE, "\"unknown\"]", "\"unknown\", \"partial\"]", "new cost status `partial`"),
     (PET_FILE, "  pet: PluginPet\n", "  mascot: PluginPet\n", "`ctx.pet` is gone"),
     (PET_FILE, "  say: (text", "  speak: (text", "`PluginPet.say` is gone"),
+    (SCHEMA_FILE, "    tool_calls TEXT,", "    calls TEXT,", "`messages.tool_calls` is gone"),
+    (SCHEMA_FILE, "    cwd TEXT,", "    workdir TEXT,", "`sessions.cwd` is gone"),
+    (FILE_TOOLS_FILE, "\"name\": \"read_file\"", "\"name\": \"file_read\"", "tool `read_file` is gone"),
+    (FILE_TOOLS_FILE, "\"default\": \"replace\"", "\"default\": \"patch\"", "no longer defaults to \"replace\""),
+    (PATCH_PARSER_FILE, "def parse_v4a_patch(", "def parse_patch(", "`parse_v4a_patch` is gone"),
+    (PATCH_PARSER_FILE, "    MOVE = \"move\"\n", "    MOVE = \"move\"\n    COPY = \"copy\"\n", "new V4A operation `copy`"),
+    (PATCH_PARSER_FILE, "    DELETE = \"delete\"\n", "\n", "V4A operation `delete` is gone"),
+    (EVENTS_FILE, "event(\"tool.start\"", "event(\"tool.begin\"", "event `tool.start` is not declared"),
+    (EVENTS_FILE, "    tool_id: str\n    name: str\n    context:", "    id: str\n    name: str\n    context:", "`ToolStartPayload.tool_id` is gone"),
+    (SERVER_FILE, "\"edit_file\", \"patch\", \"write_file\",", "\"edit_file\",", "left _TOOL_LIFECYCLE_UI_TOOLS"),
+    (COMPRESSOR_FILE, 'label: str = "FAILED"', 'label: str = "ERROR"', "no longer says ' FAILED:'"),
+    (COMPRESSOR_FILE, "BLOCKED, not run", "refused", "no longer says 'BLOCKED, not run'"),
+    (PET_FILE, "  setTimeout: (fn", "  delay: (fn", "`ctx.setTimeout` is gone"),
 ]
 
 
@@ -247,7 +322,8 @@ def selftest(core: Path) -> int:
     with tempfile.TemporaryDirectory(prefix="sw-contract-") as tmp:
         fake = Path(tmp)
         rels = {SCHEMA_FILE, DELEGATE_FILE, COMPRESSION_FILE, RESULTS_FILE, REGISTRY_FILE, EVENTS_FILE,
-                STATUS_FILE, SDK_FILE, CHILD_RUN_FILE, PRICING_FILE, PET_FILE} | {str(p.relative_to(core)).replace("\\", "/")
+                STATUS_FILE, SDK_FILE, CHILD_RUN_FILE, PRICING_FILE, PET_FILE, FILE_TOOLS_FILE, PATCH_PARSER_FILE,
+                SERVER_FILE, COMPRESSOR_FILE} | {str(p.relative_to(core)).replace("\\", "/")
                                            for p in (core / CONTRACTS_DIR).glob("*.py")}
         for rel in rels:
             (fake / rel).parent.mkdir(parents=True, exist_ok=True)

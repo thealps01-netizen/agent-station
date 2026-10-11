@@ -21,12 +21,20 @@ Routes (mounted at /api/plugins/subagent-watch/):
                                     the child was not delegated from that conversation
   GET /processes?session_id=<id> -> that conversation's background processes, running and finished
   GET /process_output?session_id=<id>&process_id=<proc_...> -> a finished process's output tail
+  GET /files?session_id=<id>     -> the files that conversation and its workers read or wrote with
+                                    the file tools (read_file, write_file, patch); see list_files
+
+Files are read from the tool calls state.db recorded — the same messages the chat shows. Edits made
+through terminal commands or code runs carry no file path Hermes records, so they never appear here;
+the page says so next to the list.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import posixpath
 from contextlib import closing
 import re
 import sqlite3
@@ -46,6 +54,10 @@ OUTPUT_TAIL = 8000  # last chars of a finished process's output served to the de
 STALE_S = 1800  # a worker silent this long (no heartbeat, no message) with no end is not running
 PROC_ID = re.compile(r"proc_\w+")
 _RECEIPTS: dict[tuple[str, float, int], dict | bool] = {}
+FILE_TOOLS = ("read_file", "write_file", "patch")
+MAX_FILES = 400  # a conversation that touched more lists its newest MAX_FILES and says how many more
+_FILES_CACHE: dict[tuple, dict] = {}
+_DRIVE = re.compile(r"^[A-Za-z]:/")
 
 
 def _home() -> Path:
@@ -498,6 +510,197 @@ def read_process_output(conn: sqlite3.Connection, session_id: str, process_id: s
     }
 
 
+def path_key(path: str) -> str:
+    """One spelling per file: forward slashes, dot segments folded, a drive path lowercased.
+
+    The page applies the same rule to a live tool call's path (desktop/plugin.js pathKey), so the
+    file the agent is touching now is matched to its row; tests/path_vectors.json holds the cases
+    both sides must agree on.
+    """
+    text = str(path or "")
+    text = text.replace("\\", "/")
+    unc = text.startswith("//") and not text.startswith("///")  # three or more slashes fold to one
+    folded = posixpath.normpath(text) if text else ""
+    if folded == ".":
+        folded = ""
+    if unc and not folded.startswith("//"):
+        folded = "/" + folded
+    return folded.lower() if _DRIVE.match(folded) else folded
+
+
+def _absolute(path: str, cwd: str | None) -> str:
+    """A tool's path as the tool read it: ~ expanded, a relative path joined to the session's cwd."""
+    text = os.path.expanduser(path) if path.startswith("~") else path
+    unixish = text.replace("\\", "/")
+    if unixish.startswith("/") or _DRIVE.match(unixish) or not cwd:
+        return text
+    sep = "\\" if "\\" in cwd else "/"
+    return cwd.rstrip("/\\") + sep + text
+
+
+def _patch_targets(args: dict) -> list[tuple[str, str]] | None:
+    """(path, op) per file a patch call names; None when its V4A text cannot be read.
+
+    Replace mode names one file. Patch mode is parsed by Hermes' own V4A parser, never a copy of its
+    grammar: an update or add writes, a delete deletes, a move deletes its source and writes its target.
+    """
+    if args.get("mode", "replace") != "patch":
+        path = args.get("path")
+        return [(path, "write")] if isinstance(path, str) and path else None
+    text = args.get("patch")
+    if not isinstance(text, str):
+        return None
+    try:
+        from tools.patch_parser import parse_v4a_patch
+
+        ops, error = parse_v4a_patch(text)
+    except Exception as exc:  # noqa: BLE001 - a changed core parser must not become a 500
+        log.warning("subagent-watch: V4A parser unavailable (%s: %s)", type(exc).__name__, exc)
+        return None
+    if error or not ops:
+        return None
+    out = []
+    for op in ops:
+        kind = getattr(getattr(op, "operation", None), "value", None)
+        if kind == "move":
+            out += [(op.file_path, "delete"), (op.new_path, "write")]
+        else:
+            out.append((op.file_path, "delete" if kind == "delete" else "write"))
+    return [(p, o) for p, o in out if isinstance(p, str) and p] or None
+
+
+def _targets(name: str, args) -> list[tuple[str, str]] | None:
+    if not isinstance(args, dict):
+        return None
+    if name == "patch":
+        return _patch_targets(args)
+    path = args.get("path")
+    if not isinstance(path, str) or not path:
+        return None
+    return [(path, "read" if name == "read_file" else "write")]
+
+
+def _failed(result: str | None) -> bool:
+    """A tool result that reports a failure.
+
+    The file tools answer {"error": ...} or {"success": false}. Once a conversation is compressed,
+    Hermes rewrites old results in state.db as one-line stubs (agent/context_compressor.py) that keep
+    the outcome: "[patch] ... FAILED: <error>" (" FAILED" when no message), or "... BLOCKED, not run" / "... not run" for a refused call.
+    """
+    head = (result or "")[:400].lstrip()
+    if head.startswith("["):
+        line = head.split("\n", 1)[0]
+        end = line.rstrip()
+        return " FAILED:" in line or end.endswith((" FAILED", "not run")) or "not run;" in line
+    if not head.startswith("{"):
+        return False
+    try:
+        data = json.loads(result)
+    except ValueError:
+        return head.startswith('{"error"')
+    return isinstance(data, dict) and (bool(data.get("error")) or data.get("success") is False)
+
+
+def _worker_ids(conn: sqlite3.Connection, owners: list[str]) -> list[str]:
+    """Every session of the workers delegated from `owners`, nested workers and continuations included."""
+    found: list[str] = []
+    seen = set(owners)
+    frontier = list(owners)
+    for _ in range(MAX_CHAIN):
+        if not frontier:
+            break
+        marks = ",".join("?" * len(frontier))
+        rows = conn.execute(
+            f"select {_WORKER_COLUMNS} from sessions "
+            f"where json_extract(model_config, '$._delegate_from') in ({marks})", frontier).fetchall()
+        frontier = []
+        for row in rows:
+            for link in _chain(conn, row):
+                if link["id"] not in seen:
+                    seen.add(link["id"])
+                    found.append(link["id"])
+                    frontier.append(link["id"])
+    return found
+
+
+def list_files(conn: sqlite3.Connection, session_id: str) -> dict:
+    """The files one conversation (and its workers) read or wrote with the file tools, newest first.
+
+    Each file: how often it was read and written, when it was last touched, whether its last write
+    failed, whether a worker touched it. Calls whose arguments cannot be read are counted, never
+    dropped. The answer is cached until a new message lands in any of the sessions it covers.
+    """
+    ids = _lineage(conn, session_id)
+    workers = _worker_ids(conn, ids)
+    every = ids + workers
+    marks = ",".join("?" * len(every))
+    stamp = conn.execute(f"select count(*) n, max(id) m from messages where session_id in ({marks})", every).fetchone()
+    cwd_row = conn.execute(
+        f"select cwd from sessions where id in ({','.join('?' * len(ids))}) and cwd is not null and cwd != '' "
+        "order by started_at desc limit 1", ids).fetchone()
+    cwd = cwd_row["cwd"] if cwd_row else None
+    key = (session_id, tuple(every), stamp["n"], stamp["m"], cwd)
+    cached = _FILES_CACHE.get(key)
+    if cached is not None:
+        return cached
+    cwds = {r["id"]: r["cwd"] for r in conn.execute(f"select id, cwd from sessions where id in ({marks})", every)}
+    results = {r["tool_call_id"]: r["content"] for r in conn.execute(
+        f"select tool_call_id, substr(content, 1, 2000) content from messages where session_id in ({marks}) "
+        "and role = 'tool' and tool_call_id is not null", every)}
+    worker_set = set(workers)
+    files: dict[str, dict] = {}
+    calls = unreadable = 0
+    rows = conn.execute(
+        f"select session_id, tool_calls, timestamp from messages where session_id in ({marks}) "
+        "and tool_calls is not null and tool_calls != '' order by id", every)
+    for row in rows:
+        try:
+            batch = json.loads(row["tool_calls"])
+        except ValueError:
+            continue
+        for call in batch if isinstance(batch, list) else []:
+            fn = call.get("function") if isinstance(call, dict) else None
+            name = fn.get("name") if isinstance(fn, dict) else None
+            if name not in FILE_TOOLS:
+                continue
+            calls += 1
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (TypeError, ValueError):
+                args = None
+            targets = _targets(name, args)
+            if not targets:
+                unreadable += 1
+                continue
+            failed = _failed(results.get(call.get("id") or call.get("call_id")))
+            for raw, op in targets:
+                path = _absolute(raw, cwds.get(row["session_id"]) or cwd)
+                k = path_key(path)
+                f = files.setdefault(k, {"key": k, "path": path, "reads": 0, "writes": 0, "deletes": 0, "failed": 0,
+                                         "first_at": row["timestamp"], "last_at": row["timestamp"], "last_op": op,
+                                         "last_failed": False, "by_worker": 0})
+                f["path"] = path
+                if failed:
+                    f["failed"] += 1
+                elif op == "read":
+                    f["reads"] += 1
+                elif op == "delete":
+                    f["deletes"] += 1
+                else:
+                    f["writes"] += 1
+                f["by_worker"] += 1 if row["session_id"] in worker_set else 0
+                f["last_at"] = row["timestamp"]
+                f["last_op"] = op
+                f["last_failed"] = failed
+    ordered = sorted(files.values(), key=lambda f: f["last_at"] or 0, reverse=True)
+    answer = {"session_id": session_id, "cwd": cwd, "files": ordered[:MAX_FILES],
+              "more": max(0, len(ordered) - MAX_FILES), "calls": calls, "unreadable": unreadable}
+    if len(_FILES_CACHE) > 32:
+        _FILES_CACHE.clear()
+    _FILES_CACHE[key] = answer
+    return answer
+
+
 @router.get("/children")
 def children(session_id: str) -> dict:
     with closing(_connect()) as conn:
@@ -520,3 +723,10 @@ def processes(session_id: str) -> dict:
 def process_output(session_id: str, process_id: str) -> dict:
     with closing(_connect()) as conn:
         return read_process_output(conn, session_id, process_id)
+
+
+
+@router.get("/files")
+def files(session_id: str) -> dict:
+    with closing(_connect()) as conn:
+        return list_files(conn, session_id)
