@@ -3,6 +3,45 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.7.0 — 2026-10-11
+
+Two looks, one layout. The 1.6.0 deck tied agents to files with letters and colours, which read as a
+code to learn; the page now names each agent by what it is doing and shows one agent at a time.
+
+### Changed
+
+- **Two looks: Cockpit (default) and Terminal.** A small COCKPIT | TERMINAL toggle in the header
+  switches them; the choice is kept per user (`ctx.storage`) and falls back to Cockpit when storage is
+  missing or fails. Cockpit takes only the app theme's tokens (its accent is your theme's accent);
+  Terminal is a fixed phosphor-green palette with ASCII sprite boxes and `[RUN]` / `[OK ]` / `[ERR]`
+  tags. The status-bar chip follows the chosen look.
+- **The main agent is a unit too,** the first one, tagged MAIN and selected by default. Each unit's
+  icon is what it is doing — editing (pencil), reading (eye), running a command (prompt), waiting
+  (hourglass), done (check), failed (cross), stopped (square), idle. No letter badges anywhere.
+- **One focus panel** below the units shows the selected agent. The main agent: what it is working
+  on now (the file name slides in when it changes), the files it changed (a bar as long as the edit
+  count; EDIT ×n / FAILED / DELETED), the files it only read (first rows, then Show N more), and the
+  note that terminal and code-run changes are not listed (Review › Last turn). A subagent: its task
+  (Show all), model · effort chip, its answer, its changed and read files (from `/files` `who` /
+  `editors`), Copy answer, Open its chat, tools · tokens · cost. Hover a file for its full path,
+  click to copy it.
+- **Run picker** replaces the Earlier list: "Current run ▾" lists earlier runs with mini status
+  cells, time ago, done/total and cost (+ Show N older runs); an earlier run is shown calmly with
+  Back to now.
+- **Tabs:** Agents | Commands (the badge counts running commands). The Commands tab says once what
+  these are and opens each command in place: exit code, folder, output tail, Copy output.
+- **More than 8 subagents become a swarm:** the main agent on top ("waiting on N"), failed ones by
+  name, working ones as small cells (hover names them, click selects), waiting and done collapsed.
+  At narrow widths units wrap; nothing scrolls sideways.
+- **Motion:** a finishing unit closes its ring and the score counts up, a failing one shakes red, the
+  busy main agent breathes; Terminal retypes its tag and blinks a cursor. All of it is off under
+  reduced motion.
+
+### Removed
+
+- Agent letters and colours, the live log, the separate Files section and the Earlier list — their
+  information lives in the units, the focus panel and the run picker.
+
 ## 1.6.0 — 2026-10-11
 
 A redesign: the page read as a plain admin list, every part the same weight, and nothing said which

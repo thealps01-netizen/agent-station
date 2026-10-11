@@ -1,12 +1,14 @@
 # Subagent Watch
 
-A Hermes **Desktop** plugin. A read-only page for the `delegate_task` workers of the focused chat —
-the running batch as a command deck (one unit per agent, its status and what it does right now; each
-agent's letter and colour also mark its files and its lines in a live log), earlier batches as a list, each worker's full output and recorded
-cost on demand — plus the chat's background shell commands (`terminal(background=true)`), running and
-finished, and the files the chat read or edited with the file tools, with the one being touched right
-now shimmering. A status-bar chip (and, with a pet on screen, a line in its bubble) shows the running
-batch's progress and cost while the page is closed.
+A Hermes **Desktop** plugin. A read-only page for the `delegate_task` workers of the focused chat, in
+two looks — **Cockpit** (default, takes your theme's accent) and **Terminal** (fixed phosphor green),
+switched in the header and remembered. The main agent and each subagent are units whose icon says what
+they are doing (editing, reading, running a command, waiting, done, failed, stopped); one focus panel
+shows the selected agent — what it works on now, the files it changed and read, a subagent's task,
+model, answer and cost, with Copy answer and Open its chat. Earlier runs sit in a run picker; more
+than eight subagents turn into a grouped swarm. A Commands tab lists the chat's background shell
+commands (`terminal(background=true)`), running and finished. A status-bar chip (and, with a pet on
+screen, a line in its bubble) shows the running batch's progress and cost while the page is closed.
 
 Plugin id `subagent-watch` · label **Subagents** · route `/subagent-watch` · MIT.
 
@@ -15,7 +17,12 @@ page comes from and why each status rule is what it is.
 
 ## Screenshots
 
-![Subagent Watch — preview.png](tests/preview.png)
+Every screen of the page, drawn by the page itself (`tests/preview.mjs`) and measured in the app's
+engine (`tests/shot.cjs`):
+
+| Cockpit (default) | Terminal |
+|---|---|
+| ![Subagent Watch — Cockpit](tests/preview.png) | ![Subagent Watch — Terminal](tests/preview-terminal.png) |
 
 ## Install
 
@@ -56,7 +63,7 @@ python audit_static.py              # i18n, a11y, colours, silent catches, read-
 python contract_core.py             # everything read from the core still exists (--selftest)
 python release_gate.py              # version / changelog / installed copy rules each fire
 python canary_audit.py              # every mutation must turn its gate red
-node preview.mjs && <electron> shot.cjs preview.html preview.png   # 6 frames (380 px, 480 px, status-bar chip) + WCAG / overflow / overlap gate
+node preview.mjs && <electron> shot.cjs preview.html preview.png   # 11 screens × 2 looks (incl. 380 px, the chip, a 40-agent swarm) + WCAG / overflow / overlap gate
 ```
 
 A rule that has never failed is not evidence: `canary_audit.py`, `release_gate.py` and

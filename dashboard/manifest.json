@@ -1,7 +1,7 @@
 {
   "name": "subagent-watch",
   "label": "Subagent Watch",
-  "description": "Read-only view of delegate_task workers: the live batch as a tree, earlier batches as a list, full worker output on demand, each worker's recorded cost; a status-bar progress chip; plus the chat's background shell commands.",
-  "version": "1.6.0",
+  "description": "Read-only view of delegate_task workers in two looks (Cockpit, Terminal): the main agent and each subagent as a unit, one focus panel with its files, answer and cost, earlier runs in a picker, a status-bar progress chip, plus the chat's background shell commands.",
+  "version": "1.7.0",
   "api": "plugin_api.py"
 }
