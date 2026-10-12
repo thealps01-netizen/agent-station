@@ -1243,11 +1243,16 @@ function Files({ t, theme, mine, nowRows = [], verbOf, files, onToast, empty }) 
   // each heading counts exactly the rows under it.
   const nowKeys = new Set(nowRows.map(f => f.key))
   const changed = mine.changed.filter(f => !nowKeys.has(f.key))
-  return [
-    jsx(NowFiles, { t, rows: nowRows, cwd, verbOf, onToast }, 'n'),
-    jsx(ChangedFiles, { t, theme, count: changed.length, rows: changed, cwd, onToast }, 'c'),
-    jsx(ReadFiles, { t, rows: mine.read.filter(f => !nowKeys.has(f.key)), cwd, onToast }, 'r')
-  ]
+  // One wrapper so every list shares the same columns (Terminal): names, folders, blocks and
+  // labels start at the same place in all three, and a column no row uses takes no room.
+  return jsxs('div', {
+    className: 'sw-flist',
+    children: [
+      jsx(NowFiles, { t, rows: nowRows, cwd, verbOf, onToast }, 'n'),
+      jsx(ChangedFiles, { t, theme, count: changed.length, rows: changed, cwd, onToast }, 'c'),
+      jsx(ReadFiles, { t, rows: mine.read.filter(f => !nowKeys.has(f.key)), cwd, onToast }, 'r')
+    ]
+  })
 }
 
 // ── focus panel ──────────────────────────────────────────────────────────────
@@ -2683,11 +2688,22 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-fsec[data-sec=none]>.sw-k{position:static;padding:0}
 .sw-page[data-theme=terminal] .sw-fsec[data-sec=none]{border:0;padding:0}
 .sw-page[data-theme=terminal] .sw-fh{gap:0}
-.sw-page[data-theme=terminal] .sw-fh .sw-k::after{content:"·";margin:0 .7ch}
 .sw-page[data-theme=terminal] .sw-leg{margin:0;font-size:12.5px}
-.sw-page[data-theme=terminal] .sw-leg::before{display:none}
+/* the dot separates the heading from its legend, so a heading with no legend ends clean */
+.sw-page[data-theme=terminal] .sw-leg{gap:0}
+.sw-page[data-theme=terminal] .sw-leg::before{content:"·";width:auto;height:auto;margin:0 .7ch;background:none;transform:none;color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-fgrid{display:block}
-.sw-page[data-theme=terminal] .sw-ft{display:grid;width:100%;grid-template-columns:14px minmax(0,1.3fr) minmax(0,1fr) 64px 76px 30px;gap:8px;align-items:center;min-height:20px;padding:0 4px;background:none;box-shadow:none}
+.sw-page[data-theme=terminal] .sw-fl{margin-left:0;text-align:left}
+.sw-flist{display:contents}
+/* Terminal: one grid for all file lists; each list and row borrows its columns (subgrid). Columns are
+   as wide as their longest entry (a long name or folder is cut at 32 / 24 characters), the spare width
+   goes to the end — no gap in the middle of a row. */
+.sw-page[data-theme=terminal] .sw-flist{display:grid;grid-template-columns:14px fit-content(32ch) fit-content(24ch) 64px max-content max-content 1fr;column-gap:14px}
+.sw-page[data-theme=terminal] .sw-flist>.sw-fsec{grid-column:1/-1;display:grid;grid-template-columns:subgrid;column-gap:normal;align-content:start}
+.sw-page[data-theme=terminal] .sw-flist>.sw-fsec>*{grid-column:1/-1}
+.sw-page[data-theme=terminal] .sw-flist .sw-fgrid{display:grid;grid-template-columns:subgrid;column-gap:normal;row-gap:0}
+.sw-page[data-theme=terminal] .sw-flist>.sw-fsec>.sw-more{grid-column:2/-1;margin-left:0}
+.sw-page[data-theme=terminal] .sw-ft{display:grid;width:100%;grid-column:1/-1;grid-template-columns:subgrid;column-gap:normal;align-items:center;min-height:20px;padding:0 4px;background:none;box-shadow:none}
 .sw-page[data-theme=terminal] .sw-ft:hover{background:color-mix(in srgb,var(--a) 10%,transparent)}
 .sw-page[data-theme=terminal] .sw-ft::before{content:"";grid-column:1;grid-row:1}
 .sw-page[data-theme=terminal] .sw-ft.is-now{background:color-mix(in srgb,var(--run) 12%,transparent);box-shadow:none}

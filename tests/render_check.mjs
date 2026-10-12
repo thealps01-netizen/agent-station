@@ -1073,6 +1073,18 @@ check(rowOf('a.py')?.querySelector('.sw-fd')?.textContent === './src' && rowOf('
   'a card names its folder relative to the chat; an only-read file is a row like a changed one (one block per read); the full path is the tooltip')
 check(/\.sw-page\[data-theme=terminal\] \.sw-ft\{display:grid;width:100%;/.test(css),
   'a Terminal file row fills the line (a button sizes to its content, so rows would not line up)')
+{
+  const fl = fq('.sw-focus .sw-flist')
+  check(fl && fl.querySelectorAll(':scope > .sw-fsec').length >= 1 && !fq('.sw-focus .sw-fsec[data-sec=changed]:not(.sw-flist > *)')
+    && /\.sw-page\[data-theme=terminal\] \.sw-flist\{display:grid;grid-template-columns:14px fit-content\(32ch\) fit-content\(24ch\) 64px max-content max-content 1fr;/.test(css)
+    && /\.sw-page\[data-theme=terminal\] \.sw-flist>\.sw-fsec\{grid-column:1\/-1;display:grid;grid-template-columns:subgrid;/.test(css)
+    && /\.sw-page\[data-theme=terminal\] \.sw-flist \.sw-fgrid\{display:grid;grid-template-columns:subgrid;/.test(css)
+    && /\.sw-page\[data-theme=terminal\] \.sw-ft\{[^}]*grid-template-columns:subgrid/.test(css),
+    `all Terminal file lists share one set of columns sized to their content; the spare width goes to the end (${fl?.children.length} lists)`)
+  check(/\.sw-page\[data-theme=terminal\] \.sw-fl\{margin-left:0;text-align:left\}/.test(css)
+    && !/\.sw-page\[data-theme=terminal\] \.sw-fh \.sw-k::after/.test(css) && /\.sw-page\[data-theme=terminal\] \.sw-leg::before\{content:"·"/.test(css),
+    'Terminal labels start in one column; the heading dot belongs to the legend, so Only read ends clean')
+}
 check(rowOf('a.py')?.getAttribute('aria-label') === 'a.py in ./src: 3 edits', `a row is named for a screen reader (${rowOf('a.py')?.getAttribute('aria-label')})`)
 check(fqa('.sw-focus .sw-fnote').map(e => e.textContent).join('|') === '2 older files not listed|1 tool call could not be read',
   'unreadable calls and files past the list are said, never silently dropped')
