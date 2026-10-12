@@ -85,6 +85,9 @@ const READ_ROWS = 6
 const PIPS = 8
 // A subagent's task is shown up to this many characters before "Show all".
 const TASK_CHARS = 180
+// Text that comes from the run (a command, a task, an error) is never laid out in full: a label is
+// one line ending in an ellipsis, and its tooltip holds at most TIP_CHARS of it.
+const TIP_CHARS = 300
 // An answer longer than this (or than ANSWER_LINES lines) opens folded to ANSWER_LINES lines.
 const ANSWER_CHARS = 360
 const ANSWER_LINES = 6
@@ -404,6 +407,18 @@ export function modelLabel(model) {
 }
 
 /** Chip text: the model label, then the reasoning effort when the worker ran with one. */
+/** A tooltip's text: the whole of a short text, the first TIP_CHARS of a long one. */
+export function tipText(text) {
+  const s = String(text ?? '').trim()
+  return s.length > TIP_CHARS ? `${s.slice(0, TIP_CHARS - 1)}…` : s
+}
+
+/** One line of run text: cut with an ellipsis by CSS, the whole of it (capped) in the tooltip. */
+function OneLine({ text, className = '' }) {
+  const s = String(text ?? '')
+  return jsx(Tip, { label: tipText(s), children: jsx('span', { className: `sw-1l ${className}`.trim(), tabIndex: 0, children: s }) })
+}
+
 export function modelChip(model, effort) {
   const m = modelLabel(model)
   return m && effort ? `${m} · ${effort}` : m
@@ -977,7 +992,7 @@ function Unit({ t, theme, u, selected, onSelect, flash, waitingOn }) {
       jsx('span', { className: 'sw-us', children: term ? tag : word }, `s-${term ? tag : word}`)
     ]
   })
-  return jsx(Tip, { label: [goal || u.name, unitLine(t, u)].filter(Boolean).join('\n'), children: button })
+  return jsx(Tip, { label: [tipText(goal || u.name), tipText(unitLine(t, u))].filter(Boolean).join('\n'), children: button })
 }
 
 /** A swarm cell: a small unit, named by its tooltip and its accessible name. */
@@ -1289,8 +1304,8 @@ function Hero({ t, theme, u, verb, head, full, file, where, chip, cursor }) {
           // Keyed by its text: a new verb types in again.
           jsx('div', { className: 'sw-verb', children: verb }, `v-${verb}`),
           // One line: a long task or command ends in an ellipsis; the whole of it is in the tooltip.
-          full ? jsx(Tip, { label: full, children: headline(0) }, 'h') : headline(undefined),
-          jsxs('div', { className: 'sw-meta', children: [where, chip ? ' ' : null, chip] }, 'm')
+          full ? jsx(Tip, { label: tipText(full), children: headline(0) }, 'h') : headline(undefined),
+          jsxs('div', { className: 'sw-meta', children: [where ? jsx(OneLine, { text: where, className: 'sw-metat' }, 'w') : null, chip] }, 'm')
         ]
       }, 't')
     ]
@@ -1502,10 +1517,10 @@ function RunBar({ t, view, runs, onPick, onBack }) {
     children: [
       jsx('button', {
         type: 'button', className: 'sw-pick', 'aria-haspopup': 'menu', 'aria-expanded': open, 'aria-label': t('sw.run.pick'), onClick: () => setOpen(v => !v),
-        children: [jsx('span', { children: view.name }, 'n'), jsx('span', { className: 'sw-pickv', 'aria-hidden': 'true', children: ICON.chev(true) }, 'v')]
+        children: [jsx('span', { className: 'sw-pickn', children: view.name }, 'n'), jsx('span', { className: 'sw-pickv', 'aria-hidden': 'true', children: ICON.chev(true) }, 'v')]
       }, 'p'),
       view.kind === 'live' ? jsx('span', { className: 'sw-ld', 'aria-hidden': 'true' }, 'ld') : null,
-      jsx('span', { className: 'sw-runm', children: view.meta }, 'm'),
+      jsx(OneLine, { text: view.meta, className: 'sw-runm' }, 'm'),
       view.kind === 'past' ? jsx('button', { type: 'button', className: 'sw-back', onClick: onBack, children: t('sw.run.back') }, 'b') : null,
       open ? jsxs('div', {
         className: 'sw-menu', role: 'menu', 'aria-label': t('sw.run.pick'),
@@ -1657,7 +1672,7 @@ function ProcDetail({ t, p, now, storedId, onToast }) {
               chips.length || cut ? jsxs('div', {
                 className: 'sw-cmeta',
                 children: [
-                  ...chips.map(([k, v]) => jsxs('span', { className: 'sw-cchip', children: [jsx('span', { children: k }, 'k'), jsx('b', { children: v }, 'v')] }, k)),
+                  ...chips.map(([k, v]) => jsxs('span', { className: 'sw-cchip', children: [jsx('span', { children: k }, 'k'), jsx(OneLine, { text: v, className: 'sw-cchipv' }, 'v')] }, k)),
                   cut ? jsx('span', { className: 'sw-cmcut', children: t('sw.proc.commandCut', command.length) }, 'cut') : null
                 ]
               }, 'm') : null,
@@ -2113,7 +2128,7 @@ export function Page() {
               className: 'sw-err', role: 'alert',
               children: [
                 jsx('b', { className: 'sw-errt', children: t('sw.err.title') }, 't'),
-                jsx('ul', { children: errors.map(e => jsx('li', { children: e }, e)) }, 'l'),
+                jsx('ul', { children: errors.map(e => jsx('li', { children: jsx(OneLine, { text: e }) }, e)) }, 'l'),
                 // Recovery sits beside the failure, not only as an unlabeled icon in the header.
                 jsx('div', { className: 'sw-erra', children: jsx(IconButton, { label: t('sw.retry'), icon: ICON.refresh, onClick: refreshAll, disabled: !storedId, text: true }) }, 'retry')
               ]
@@ -2448,6 +2463,7 @@ const CSS = `${TM_PALETTE}
 /* alert, empty states */
 .sw-err{margin:0 0 12px;padding:10px 12px;font-size:12.5px;line-height:1.45;background:color-mix(in srgb,var(--bad) 10%,var(--bg));border-left:3px solid var(--bad)}
 .sw-err ul{margin:2px 0 8px;padding-left:16px;color:var(--ink)}
+.sw-err li{min-width:0}
 .sw-page[data-theme=terminal] .sw-err{background:var(--bg);border:1px solid var(--tm-badline)}
 .sw-errt{font-weight:600}
 .sw-hint{display:flex;flex-direction:column;align-items:center;gap:4px;padding:26px 8px;text-align:center;color:var(--dim)}
@@ -2468,7 +2484,9 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-pick{padding:0;box-shadow:none;text-transform:lowercase;letter-spacing:0}
 .sw-page[data-theme=terminal] .sw-pick::before{content:"run:";color:var(--tm-hi)}
 .sw-ld{width:7px;height:7px;flex:none;background:var(--run);box-shadow:0 0 8px var(--run);transform:rotate(45deg);animation:sw-pulse 1.6s ease-in-out infinite}
-.sw-runm{min-width:0}
+.sw-runm{flex:1 1 0}
+.sw-pick{max-width:100%;min-width:0}
+.sw-pickn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw-back{margin-left:auto;font:12px var(--mono)!important;letter-spacing:.08em;text-transform:uppercase;color:var(--ink)!important;padding:3px 8px!important;box-shadow:inset 0 0 0 1px var(--a)}
 .sw-page[data-theme=terminal] .sw-back{box-shadow:none;text-transform:lowercase;letter-spacing:0;color:var(--a)!important;padding:0!important}
 .sw-page[data-theme=terminal] .sw-back::before{content:"[← "}.sw-page[data-theme=terminal] .sw-back::after{content:"]"}
@@ -2596,7 +2614,10 @@ const CSS = `${TM_PALETTE}
 .sw-head.is-file{font:700 22px/1.2 var(--mono);text-shadow:0 0 16px color-mix(in srgb,var(--c,var(--run)) 60%,transparent)}
 .sw-head code{font-family:var(--mono)}
 .sw-nowf{display:inline-block;animation:sw-slide .45s ease-out}
-.sw-meta{font-size:12.5px;color:var(--dim);overflow-wrap:anywhere}
+.sw-1l{display:block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-width:0;font-size:12.5px;color:var(--dim)}
+.sw-metat{flex:0 1 auto}
+.sw-meta .sw-model{flex:none}
 .sw-model{display:inline-block;max-width:100%;vertical-align:1px;font:11.5px var(--mono);padding:1px 7px;box-shadow:inset 0 0 0 1px var(--line);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sw-page[data-theme=terminal] .sw-hero{grid-template-columns:64px minmax(0,1fr);gap:14px;margin-top:8px}
 .sw-page[data-theme=terminal] .sw-por{width:58px;height:auto;display:flex;flex-direction:column;align-items:center;gap:2px}
@@ -2744,7 +2765,7 @@ const CSS = `${TM_PALETTE}
 .sw-cmeta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font:12px var(--mono);color:var(--dim)}
 .sw-cchip{display:inline-flex;gap:6px;align-items:baseline;min-width:0;max-width:100%;padding:2px 8px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 30%,transparent)}
 .sw-cchip>span{flex:none;letter-spacing:.1em;text-transform:uppercase}
-.sw-cchip b{min-width:0;font-weight:500;color:var(--ink);overflow-wrap:anywhere}
+.sw-cchipv{font-weight:500;color:var(--ink)}
 .sw-cmcut{flex-basis:100%;font-family:inherit}
 .sw-cmnote{margin:8px 0 0;color:var(--dim)}
 .sw-crt{position:relative;margin-top:8px;overflow:hidden;font:12px/1.6 var(--mono);background:color-mix(in srgb,var(--a) 3%,var(--bg));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 25%,transparent)}
@@ -2789,7 +2810,7 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-quiet{padding:8px;letter-spacing:.04em}
 /* toast */
 .sw-live{position:absolute;right:20px;top:92px;z-index:10;pointer-events:none}
-.sw-toast{padding:8px 10px;font-size:12.5px;background:var(--raised);color:var(--ink);box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--a)}
+.sw-toast{max-width:min(360px,90%);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;overflow-wrap:anywhere;padding:8px 10px;font-size:12.5px;background:var(--raised);color:var(--ink);box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--a)}
 .sw-toast.is-bad{box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--bad)}
 /* narrow: docked beside the chat */
 @container (max-width:460px){

@@ -585,7 +585,8 @@ check(q('.sw-pu')?.textContent === '1 record could not be read and is not listed
 check(rest.includes('/process_output?session_id=st-1&process_id=proc_bad'), 'opening a command reads its output for THIS chat')
 check(q('.sw-cmo .sw-out')?.textContent === 'tail of proc_bad in st-1' && q('.sw-cmo .sw-pc')?.textContent === 'FULL proc_bad'
   && q('.sw-cmo .sw-exit')?.dataset.st === 'failed' && q('.sw-cmo .sw-exit b')?.textContent === '1' && q('.sw-cmo .sw-exit')?.getAttribute('aria-label') === 'exit 1'
-  && qa('.sw-cmo .sw-cchip').map(c => c.textContent).join('|') === 'dir/w|ran5s',
+  && qa('.sw-cmo .sw-cchip').map(c => c.textContent).join('|') === 'dir/w|ran5s'
+  && qa('.sw-cmo .sw-cchip').every(c => c.querySelector('.sw-cchipv.sw-1l')?.dataset.tip),
   `an opened row: its exit code on a big status hex, dir and ran chips, the full command, the output tail (${qa('.sw-cmo .sw-cchip').map(c => c.textContent)})`)
 check(q('.sw-cmo .sw-crt[data-state=output] .sw-ol')?.dataset.n === '1' && /1 line$/.test(q('.sw-cmo .sw-crth')?.textContent || ''), 'the output sits in a CRT box with numbered lines')
 check(/last/.test(q('.sw-cmo .sw-outl')?.textContent || ''), 'a cut output says it is the end only')
@@ -674,6 +675,19 @@ check(liveNames() === 'Main agent=running,one=running,one-a=running,two=failed,t
 check(q('.sw-pick')?.textContent === 'Current run' && q('.sw-ld') && !q('.sw-panel')?.dataset.calm, 'a live run is the current run, with its live mark')
 check(unitNamed('one')?.dataset.icon === 'run' && /running a command npm test/.test(unitNamed('one')?.dataset.tip || '') && unitNamed('three')?.dataset.icon === 'wait',
   `a running unit's icon is what it does now, its tooltip on what (${unitNamed('one')?.dataset.tip})`)
+// run text is never laid out in full: a long command is one line with an ellipsis and a capped tooltip
+{
+  const longCmd = `python - <<'EOF' ${'s=s.replace(x, y) '.repeat(60)}EOF`
+  await emit('subagent.tool', 'rt-1', { subagent_id: 's1', tool_name: 'terminal', tool_preview: longCmd })
+  check((unitNamed('one')?.dataset.tip || '').length <= 2 * 300 + 1, `a unit's tooltip holds at most 300 characters of each run text (${(unitNamed('one')?.dataset.tip || '').length})`)
+  await act(async () => { unitNamed('one').click() })
+  const meta = q('.sw-focus .sw-meta .sw-metat')
+  check(meta?.classList.contains('sw-1l') && meta.textContent.includes('running a command python') && (meta.dataset.tip || '').length === 300 && meta.dataset.tip.endsWith('…')
+    && /\.sw-1l\{[^}]*overflow:hidden;text-overflow:ellipsis;white-space:nowrap\}/.test(css) && !/\.sw-meta\{[^}]*overflow-wrap:anywhere/.test(css),
+    `a focused subagent's status line is one line cut with an ellipsis; its tooltip holds the first 300 characters (${(meta?.dataset.tip || '').length})`)
+  await act(async () => { units()[0].click() })
+  await emit('subagent.tool', 'rt-1', { subagent_id: 's1', tool_name: 'terminal', tool_preview: 'npm test' })
+}
 check(units()[0].getAttribute('aria-label') === 'Main agent: waiting on 3' && units()[0].dataset.icon === 'wait',
   `the main agent waits on its working and waiting subagents (${units()[0].getAttribute('aria-label')})`)
 check(q('.sw-bign')?.textContent === '0' && q('.sw-big small')?.textContent === '/4' && qa('.sw-score .sw-seg i').map(i => i.dataset.st).join() === 'running,running,failed,queued',
@@ -766,6 +780,7 @@ await quiet(async () => {
   check(items.includes('earlier runs — backend 503') && items.includes('background commands — procs 503') && items.includes('live updates stopped — gateway down'),
     `one alert lists each source that failed (${items.join(' | ')})`)
 }
+check(qa('.sw-err li').length && qa('.sw-err li').every(li => li.querySelector('.sw-1l')), 'each failed source is one line; a long error is cut, its text in the tooltip')
 check(q('.sw-err .sw-ib.is-text')?.textContent === 'Try again' && q('.sw-bd .sw-empty')?.textContent === 'Nothing to show while every read fails.'
   && !/Try again/.test(q('.sw-bd')?.textContent || ''),
   `the alert carries Try again; the empty view below does not repeat it (${q('.sw-bd')?.textContent.slice(0, 160)})`)
