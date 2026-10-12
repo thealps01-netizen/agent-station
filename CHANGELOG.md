@@ -5,31 +5,23 @@ All notable changes to subagent-watch. The top `## <version>` heading is checked
 
 ## 1.7.0 — 2026-10-11
 
-Three looks, one layout. The 1.6.0 deck tied agents to files with letters and colours, which read as a
+One look, one layout. The 1.6.0 deck tied agents to files with letters and colours, which read as a
 code to learn; the page now names each agent by what it is doing and shows one agent at a time.
 
 ### Changed
 
-- **Three looks, chosen in Settings › Plugins › Subagent Watch** (no toggle on the page): **Dot
-  matrix** (the default — near-monochrome rounded tiles, colour only for working and failed, one dot
-  per edit or read, the score, cost, stat tiles and exit codes in dot-matrix type), **Live map** (the
-  chat's files drawn as a tree; each agent a ring beside the file it works on now, a solid beam while
-  it edits and a dotted one while it reads; finished agents park top right, failed ones bottom left;
-  more than eight subagents become dots, the tree keeps the 30 most recent files with '+N older' per
-  folder; redrawn for a narrow panel, never scaled) and **Terminal**. The choice applies at once and
-  is kept per user (`ctx.storage`); a kept Cockpit (an earlier 1.7.0 build's look, now removed) reads
-  as Dot matrix, and a missing or failing storage falls back to it. Run text is never laid out in
-  full: one line with an ellipsis, the whole of it (up to 300 characters) in the tooltip.
-- **Every look takes only the app theme's tokens.** Dot matrix and Live map use your theme's accent;
-  Terminal is a CRT look whose ink and glow are that same accent (its statuses the theme's green, red
-  and yellow, its ground derived from the theme background), with ASCII sprite boxes and `[RUN]` /
-  `[OK ]` / `[ERR]` tags. No colour is hard-coded anywhere — the static audit's former exception for
-  a fixed Terminal palette is gone. The status-bar chip follows the chosen look.
-- **The main agent is a unit too,** the first one, named Main agent (Terminal: ★) and selected by default. Each unit's
-  icon is what it is doing — editing (pencil), reading (eye), running a command (prompt), waiting
-  (hourglass), done (check), failed (cross), stopped (square), idle. No letter badges anywhere.
-- **One focus panel** below the units shows the selected agent. Its top is a hero: a big portrait
-  in its status ring (Terminal: a bordered sprite box) tagged MAIN or with its status, a verb line
+- **One look: Terminal.** A CRT console whose ink and glow are your theme's accent (its statuses the
+  theme's green, red and yellow, its ground derived from the theme background), with ASCII sprite
+  boxes and `[RUN]` / `[OK ]` / `[ERR]` tags. No colour is hard-coded anywhere — the static audit's
+  former exception for a fixed Terminal palette is gone. The status-bar chip takes the same look.
+  Looks tried during 1.7.0 (Cockpit, Dot matrix, Live map) were removed; a choice an earlier build kept
+  in `ctx.storage` reads as Terminal. Run text is never laid out in full: one line with an ellipsis,
+  the whole of it (up to 300 characters) in the tooltip.
+- **The main agent is a unit too,** the first one, starred (★ main-agent) and selected by default.
+  Each unit's sprite is what it is doing — editing, reading, running a command, waiting, done, failed,
+  stopped, idle. No letter badges anywhere.
+- **One focus panel** below the units shows the selected agent. Its top is a hero: a bordered
+  portrait with its status glyph, tagged MAIN or with its status tag, a verb line
   (▶ EDITING NOW, ✕ STOPPED WITH AN ERROR, …), a large headline — the file the main agent works on
   now, a subagent's task — and where / how long, with a subagent's model · effort chip. Labelled stat
   tiles follow: the main agent's on task (its first to last file touch) / files touched / changed /
@@ -45,16 +37,15 @@ code to learn; the page now names each agent by what it is doing and shows one a
   cells, time ago, done/total and cost (+ Show N older runs); an earlier run is shown calmly with
   Back to now.
 - **Tabs:** Agents | Commands (the badge counts running commands). The Commands tab says once what
-  these are and opens each command in place: its exit code on a big status hex (Terminal: an EXIT
-  box), dir / ran chips, the output tail in a CRT box with line numbers and error lines highlighted,
+  these are and opens each command in place: its exit code in an EXIT box, dir / ran chips, the output tail in a CRT box with line numbers and error lines highlighted,
   Copy output / Copy command. While it runs a radar says its output appears when it finishes; while
   the output is read a scan bar runs; an unreadable output says NO SIGNAL with Try again; an empty
   one says — IT PRINTED NOTHING —.
 - **More than 8 subagents become a swarm:** the main agent on top ("waiting on N"), failed ones by
   name, working ones as small cells (hover names them, click selects), waiting and done collapsed.
   At narrow widths units wrap; nothing scrolls sideways.
-- **Motion:** a finishing unit closes its ring and the score counts up, a failing one shakes red, the
-  busy main agent breathes; Terminal retypes its tag and blinks a cursor. When a panel opens its
+- **Motion:** the score counts up as units finish, a failing one shakes red, the busy main agent
+  breathes; a unit retypes its tag and the headline blinks a cursor. When a panel opens its
   numbers count up, the file cards appear in turn, a light sweeps the NOW card and the answer
   reveals. All of it is off under reduced motion.
 

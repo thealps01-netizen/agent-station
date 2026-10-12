@@ -3,8 +3,7 @@
  *
  * Run: cd tests && node render_check.mjs && node preview.mjs      (writes preview.html, exit 0 = ok)
  *
- * It draws the ELEVEN SCREENS of the approved design, each in ALL THREE looks (Dot matrix left, Live map, Terminal
- * right), in jsdom with the real React — the page's REAL output, never a hand-drawn mock — through
+ * It draws the ELEVEN SCREENS of the approved design in the Terminal look, in jsdom with the real React — the page's REAL output, never a hand-drawn mock — through
  * the same SDK stub the render check writes (`.out/sdk-stub.mjs`):
  *    1. Live, the main agent selected: what it works on now, its changed and read files.
  *    2. A failed subagent selected: task, answer, files, buttons; a copy shows its toast.
@@ -38,7 +37,7 @@ const HERE = fileURLToPath(HERE_URL).replace(/\\/g, '/')
 const STUB = `${HERE_URL.href}.out/sdk-stub.mjs`
 const SRC = `${HERE}../desktop/plugin.js`
 export const SCREENS = 11
-export const LOOKS = ['dots', 'map', 'terminal']
+export const LOOKS = ['terminal']
 
 try {
   readFileSync(`${HERE}.out/sdk-stub.mjs`, 'utf8')
@@ -50,15 +49,6 @@ writeFileSync(`${HERE}.out/plugin-preview.mjs`, readFileSync(SRC, 'utf8').replac
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true })
 global.window = dom.window
-// jsdom lays nothing out: the Live map measures its width with a ResizeObserver, so this one reports
-// the width the frame's panel content will have in the browser (frame − border − page and panel padding).
-let frameWidth = 640
-const contentWidth = () => frameWidth - 2 - 40 - 36
-globalThis.ResizeObserver = class {
-  constructor(cb) { this.cb = cb }
-  observe(el) { Object.defineProperty(el, 'clientWidth', { configurable: true, get: contentWidth }); this.cb([]) }
-  disconnect() {}
-}
 global.document = dom.window.document
 Object.defineProperty(global, 'navigator', { value: dom.window.navigator, configurable: true })
 global.IS_REACT_ACT_ENVIRONMENT = true
@@ -204,7 +194,6 @@ async function liveRun(emit) {
 
 async function frame(screen, look, label, opts = {}, steps = async () => {}) {
   const { ctx, registered, emit } = makeCtx(look, opts)
-  frameWidth = opts.narrow ? 380 : 640
   stub.state.listFails = Boolean(opts.fail)
   stub.state.list['rt-1'] = []
   stub.atoms.focusedSessionId.set(opts.noChat ? null : 'rt-1')
@@ -248,7 +237,7 @@ const TITLES = {
 for (const look of LOOKS) {
   await frame(1, look, TITLES[1], { live: true })
   await frame(2, look, TITLES[2], { live: true }, async ({ qa, q }) => {
-    const failed = qa('.sw-agents button:is(.sw-unit,.sw-magent)').find(u => u.dataset.st === 'failed')
+    const failed = qa('.sw-agents button.sw-unit').find(u => u.dataset.st === 'failed')
     await click(failed)
     await click(q('.sw-focus .sw-btns .sw-ib'))
     await tick(10)
@@ -257,7 +246,7 @@ for (const look of LOOKS) {
   await frame(4, look, TITLES[4], {}, async ({ q, qa }) => {
     await click(q('.sw-pick'))
     await click(qa('.sw-menu [role=menuitem]').at(-1))
-    await click(qa('.sw-agents button:is(.sw-unit,.sw-magent)')[1])
+    await click(qa('.sw-agents button.sw-unit')[1])
   })
   await frame(5, look, TITLES[5], {}, async ({ q, qa }) => {
     await click(q('[role=tab][data-tab=commands]'))
@@ -320,10 +309,8 @@ for (const look of LOOKS) {
     for (let i = 0; i < 20; i++) await emit('subagent.complete', { subagent_id: `w${i}`, status: 'completed', duration_seconds: 60 + i, cost_usd: 0.05 })
     for (let i = 20; i < 23; i++) await emit('subagent.complete', { subagent_id: `w${i}`, status: 'error', summary: 'boom', duration_seconds: 30, cost_usd: 0.02 })
     for (let i = 23; i < 30; i++) await emit('subagent.tool', { subagent_id: `w${i}`, tool_name: ['patch', 'read_file', 'terminal'][i % 3], tool_preview: `src/${SWARM_NAMES[i]}.ts` })
-    const n = look === 'map'
-      ? (q('.sw-map')?.querySelectorAll('button.sw-magent').length || 1) - 1
-      : [...q('.sw-swarm')?.querySelectorAll('.sw-gh em') || []].reduce((s, e) => s + Number(e.textContent), 0)
-    if (n !== 40) problems.push(`11/${look}: the swarm ${look === 'map' ? 'map draws' : 'groups hold'} ${n} subagents, not 40`)
+    const n = [...q('.sw-swarm')?.querySelectorAll('.sw-gh em') || []].reduce((s, e) => s + Number(e.textContent), 0)
+    if (n !== 40) problems.push(`11/${look}: the swarm groups hold ${n} subagents, not 40`)
   })
 }
 stub.state.listFails = false
@@ -355,13 +342,13 @@ if (!appCss) console.log(`warning: ${styles}`)
 const DARK_SEEDS = ':root.dark { --theme-background-seed: #0d0d0e; --theme-sidebar-seed: #0a0a0b;'
   + ' --theme-card-seed: #161618; --theme-neutral-card: #161618; --theme-foreground: #f4f4f6; }'
 
-// One row per screen: Cockpit left, Terminal right, each frame in the order it was drawn.
+// One row per screen, one column per look, each frame in the order it was drawn.
 const cell = f => `<section class="swp-wrap${f.narrow ? ' is-narrow' : ''}${f.bar ? ' is-bar' : ''}" data-screen="${f.screen}" data-look="${f.look}">
   <p class="swp-label">${f.label}</p>
   <div class="swp-frame">${f.bar ? `<div class="swp-bar">${f.html}</div>` : f.html}</div>
 </section>`
 const body = Array.from({ length: SCREENS }, (_, i) => i + 1).map(s => `<div class="swp-row" data-row="${s}">
-${LOOKS.map(look => `<div class="swp-col" data-col="${look}"><p class="swp-look">${({ dots: 'Dot matrix (default)', map: 'Live map', terminal: 'Terminal' })[look]}</p>
+${LOOKS.map(look => `<div class="swp-col" data-col="${look}"><p class="swp-look">${({ terminal: 'Terminal' })[look]}</p>
 ${frames.filter(f => f.screen === s && f.look === look).map(cell).join('\n')}</div>`).join('\n')}
 </div>`).join('\n')
 

@@ -10,13 +10,13 @@
  *   reported  `chip` (ink on its own tone) and `quiet` (the host's faint ladder, owned by the theme).
  * It also fails on any ERROR the page logs in the engine, and on a clipped status label.
  *
- * COVERAGE: the preview must hold all eleven screens of the approved design in ALL THREE looks (Dot matrix, Live map and
+ * COVERAGE: the preview must hold all eleven screens of the approved design in every look (now only
  * Terminal) — a screen missing in any look is RED, so a dropped frame cannot pass quietly. Every
  * frame of every look is measured; the narrow (380 px) frames must not scroll sideways either.
  *
  * Usage (from tests/):  node preview.mjs && <electron> shot.cjs preview.html preview.png
  *   <electron> = $HERMES_ELECTRON, or <core>/apps/desktop/node_modules/electron/dist/electron(.exe)
- * Output: one PNG per look — <out> (Dot matrix, the one the README shows) and <out>-terminal.png — plus
+ * Output: one PNG per look — <out> (Terminal, the one the README shows; any further look <out>-<look>.png) — plus
  * <out>.measure.json and <out>.contrast.json beside them (both git-ignored).
  */
 const { app, BrowserWindow } = require('electron')
@@ -26,10 +26,10 @@ const path = require('path')
 const [htmlArg, outArg] = process.argv.slice(2)
 const htmlPath = htmlArg || path.join(__dirname, 'preview.html')
 const outPath = outArg || path.join(__dirname, 'preview.png')
-const WIDTH = 1340 // two 640 px columns, Cockpit and Terminal, side by side
+const WIDTH = 1340 // room for two 640 px look columns side by side
 const SHOT_WIDTH = 690 // one look per PNG
 const SCREENS = 11
-const LOOKS = ['dots', 'map', 'terminal']
+const LOOKS = ['terminal']
 
 app.disableHardwareAcceleration()
 
@@ -229,7 +229,7 @@ app.whenReady().then(async () => {
   // One PNG per look: the other column is hidden, the window narrowed to one column.
   const shots = []
   for (const look of LOOKS) {
-    const file = look === 'dots' ? outPath : outPath.replace(/\.png$/i, `-${look}.png`)
+    const file = look === 'terminal' ? outPath : outPath.replace(/\.png$/i, `-${look}.png`)
     await win.webContents.executeJavaScript(`(() => { let s = document.getElementById('swp-only'); if (!s) { s = document.createElement('style'); s.id = 'swp-only'; document.head.appendChild(s) }
       s.textContent = '.swp-col:not([data-col=${look}]){display:none}'; return 0 })()`)
     win.setContentSize(SHOT_WIDTH, 900)

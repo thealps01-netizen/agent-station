@@ -78,10 +78,6 @@ jobs:
         working-directory: tests
         run: node render_check.mjs
 
-      - name: Live map layout (jsdom)
-        working-directory: tests
-        run: node livemap_check.mjs
-
       - name: Static audit (includes the release gate)
         working-directory: tests
         run: python audit_static.py

@@ -19,12 +19,10 @@
  *   Commands  shell commands the agent started with terminal(background=true), running and
  *             finished, from the backend's /processes; a row opens its exit code, folder and the
  *             end of its output (/process_output).
- *   Looks     three looks over the same page, chosen in Settings > Plugins > Subagent Watch (no
- *             toggle on the page): Dot matrix (the default; near-monochrome tiles, dot meters and
- *             dot-matrix numbers, theme tokens only), Live map (the same panels; the agents drawn on a
- *             tree of the chat's files) and Terminal (a CRT palette derived from the same theme tokens
- *             in TM_PALETTE). The choice is kept in the plugin's ctx.storage; a missing or failing
- *             storage falls back to Dot matrix and never breaks the page.
+ *   Look      Terminal: a CRT palette derived from the app theme's tokens (TM_PALETTE), ASCII sprites
+ *             and [RUN] / [OK ] tags. The look machinery (THEMES, the kept choice in ctx.storage) stays
+ *             for a second look; any kept value an earlier version wrote (Cockpit, Dot matrix, Live
+ *             map) reads as Terminal.
  *   Progress  the focused chat's running batch as a status-bar chip (finished/total, a bar, the
  *             cost so far) and, when a pet is on screen, as a line in its speech bubble. Fed by
  *             a small tracker of its own, so it shows while the page is closed.
@@ -95,9 +93,7 @@ const ANSWER_CHARS = 360
 const ANSWER_LINES = 6
 // How long a unit that just finished (or failed) plays its moment.
 const FLASH_MS = 1400
-const THEMES = ['dots', 'map', 'terminal']
-// Looks kept by an earlier version, read as the one that replaced them.
-const THEME_RENAMED = { cockpit: 'dots' }
+const THEMES = ['terminal']
 const THEME_KEY = 'theme'
 // The main agent's unit key: never a subagent id or a session id.
 const MAIN = 'main'
@@ -105,700 +101,6 @@ const MAIN = 'main'
 let ctxRef = null
 // The stored id of the chat the page watches (see useWatchedChat), for reads deep in the tree.
 const WatchedChat = createContext(null)
-
-// ── live map: the chat's files as a tree, each agent beside the file it works on ──────────────
-
-
-const MAP_CAP = 30
-const MAP_SWARM = 8
-const MAP_NARROW = 460
-const MAP_CW = 7
-const MAP_CWB = 7.7
-const MAP_LINE = 16
-const MAP_PAD = 8
-const MAP_LABEL_GAP = 8
-const MAP_ANGLES = [0, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180]
-const MAP_SIDES = ['b', 't', 'r', 'l', 'br', 'bl', 'tr', 'tl']
-
-function mapT(key, ...args) {
-  const v = String(key).split('.').reduce((at, k) => at?.[k], BUNDLES.en)
-  return typeof v === 'function' ? v(...args) : (v ?? key)
-}
-
-function mapCut(text, n) {
-  const s = String(text ?? '').replace(/\s+/g, ' ').trim()
-  return s.length > n ? `${s.slice(0, Math.max(1, n - 1))}…` : s
-}
-
-function mapSplit(path) {
-  const s = String(path || '').replace(/(.)[\\/]+$/, '$1')
-  const cut = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'))
-  return cut < 0 ? { dir: '', name: s } : { dir: s.slice(0, cut) || s.slice(0, 1), name: s.slice(cut + 1) }
-}
-
-function mapDirName(dir, n) {
-  const parts = String(dir || '').split(/[\\/]+/).filter(Boolean)
-  if (!parts.length) return dir ? mapCut(dir, n) : '.'
-  const two = parts.slice(-2).join('/')
-  return mapCut(two.length <= n ? two : parts[parts.length - 1], n)
-}
-
-function mapState(f) {
-  if (f.last_failed) return 'failed'
-  if (f.deletes > 0 && f.last_op === 'delete') return 'deleted'
-  if ((f.editors && f.editors.length) || f.writes > 0) return 'edit'
-  return 'read'
-}
-
-const mapRad = d => (d * Math.PI) / 180
-const mapRect = (x0, y0, x1, y1) => ({ x0, y0, x1, y1 })
-const mapDisc = (x, y, r) => mapRect(x - r, y - r, x + r, y + r)
-const mapHit = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
-const mapCmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
-
-function mapFits(box, obs, W, H, m) {
-  if (box.x0 < m || box.y0 < m || box.x1 > W - m || box.y1 > H - m) return false
-  for (const o of obs) if (mapHit(box, o)) return false
-  return true
-}
-
-function mapRowW(row) {
-  return Math.ceil(row.reduce((w, p) => w + p.text.length * (p.bold ? MAP_CWB : MAP_CW), 0)) + 4
-}
-
-function mapLabelBox(x, y, side, w, h, gap) {
-  const d = Math.round(gap * 0.72)
-  let x0
-  let y0
-  let anchor
-  if (side === 'r') { x0 = x + gap; y0 = y - 9; anchor = 'start' }
-  else if (side === 'l') { x0 = x - gap - w; y0 = y - 9; anchor = 'end' }
-  else if (side === 't') { x0 = x - w / 2; y0 = y - gap - h; anchor = 'middle' }
-  else if (side === 'b') { x0 = x - w / 2; y0 = y + gap; anchor = 'middle' }
-  else if (side === 'tr') { x0 = x + d; y0 = y - d - h; anchor = 'start' }
-  else if (side === 'tl') { x0 = x - d - w; y0 = y - d - h; anchor = 'end' }
-  else if (side === 'br') { x0 = x + d; y0 = y + d; anchor = 'start' }
-  else { x0 = x - d - w; y0 = y + d; anchor = 'end' }
-  x0 = Math.round(x0)
-  y0 = Math.round(y0)
-  const tx = anchor === 'start' ? x0 + 2 : anchor === 'end' ? x0 + w - 2 : x0 + w / 2
-  return { box: mapRect(x0, y0, x0 + w, y0 + h), x: tx, y: y0 + 13, anchor }
-}
-
-function mapPlaceLabel(c, at, rows, sides, gap, extra) {
-  const w = Math.max(...rows.map(mapRowW))
-  const h = rows.length * MAP_LINE + 2
-  for (const side of sides) {
-    const L = mapLabelBox(at.x, at.y, side, w, h, gap)
-    // Labels keep a clear gap between them: two names that touch read as one pair, and as anyone's.
-    const apart = mapRect(L.box.x0 - MAP_LABEL_GAP, L.box.y0 - MAP_LABEL_GAP, L.box.x1 + MAP_LABEL_GAP, L.box.y1 + MAP_LABEL_GAP)
-    if (mapFits(L.box, c.obs, c.W, c.H, 3) && !c.labels.some(o => mapHit(apart, o.box))) {
-      c.obs.push(L.box)
-      const label = { id: `${extra.kind}:${extra.of}`, ...extra, x: L.x, y: L.y, anchor: L.anchor, box: L.box, rows }
-      c.labels.push(label)
-      return label
-    }
-  }
-  return null
-}
-
-function mapRoomFor(c, x, y, r, sides, w) {
-  const disc = mapDisc(x, y, r)
-  return sides.some(side => {
-    const L = mapLabelBox(x, y, side, w, MAP_LINE + 2, r + 7)
-    return !mapHit(L.box, disc) && mapFits(L.box, c.obs, c.W, c.H, 3)
-  })
-}
-
-function mapSeek(c, ax, ay, ux, uy, dists, pad, r, room) {
-  const free = (x, y) => mapFits(mapDisc(x, y, r + pad), c.obs, c.W, c.H, 2)
-  const base = Math.atan2(uy, ux)
-  const near = ok => {
-    for (const dist of dists) {
-      for (const da of MAP_ANGLES) {
-        const x = Math.round(ax + Math.cos(base + mapRad(da)) * dist)
-        const y = Math.round(ay + Math.sin(base + mapRad(da)) * dist)
-        if (ok(x, y)) return { x, y }
-      }
-    }
-    return null
-  }
-  const spiral = (ok, far) => {
-    for (let rad = 12; rad < far; rad += 8) {
-      for (let k = 0; k < 24; k++) {
-        const x = Math.round(ax + Math.cos(base + (k * Math.PI) / 12) * rad)
-        const y = Math.round(ay + Math.sin(base + (k * Math.PI) / 12) * rad)
-        if (ok(x, y)) return { x, y }
-      }
-    }
-    return null
-  }
-  if (room) {
-    const both = (x, y) => free(x, y) && room(x, y)
-    const p = near(both) || spiral(both, Math.max(...dists) + 60)
-    if (p) return p
-  }
-  return near(free) || spiral(free, Math.max(c.W, c.H))
-}
-
-function mapNameRows(name, cap, sel) {
-  return [[{ text: mapCut(name, cap), tone: sel ? 'sel' : 'name', bold: true }]]
-}
-
-function mapAttempt(base, H) {
-  const { W, narrow, dense, main, subs, selected, t, nowOf } = base
-  const c = { W, H, obs: [], labels: [] }
-  const agents = []
-  const beams = []
-  const nameCap = narrow ? 16 : 22
-  let ok = true
-  const dirs = base.dirs.map(d => ({ ...d, leaves: d.leaves.map(l => ({ ...l })), hidden: d.hidden }))
-  const other = { n: base.other.n, dirs: new Set(base.other.dirs) }
-  const cx = Math.round(W / 2)
-  const cy = Math.round(H / 2)
-
-  const groups = { done: [], failed: [], waiting: [] }
-  const tree = []
-  for (const u of subs) {
-    if (u.status === 'running') tree.push(u)
-    else if (u.status === 'completed') groups.done.push(u)
-    else if (u.status === 'failed' || u.status === 'stopped') groups.failed.push(u)
-    else groups.waiting.push(u)
-  }
-
-  const nameAgent = (a, u, sides) => {
-    for (const extra of [0, 8, 18]) {
-      for (const cap of [22, nameCap, 12, 8]) {
-        const rows = mapNameRows(u.name, cap, a.selected)
-        const L = mapPlaceLabel(c, a, rows, sides, a.r + (a.selected ? 11 : 7) + extra, { kind: 'agent', of: a.key, full: String(u.name || '') })
-        if (L) return true
-      }
-    }
-    return false
-  }
-
-  if (!dense) {
-    const corner = {
-      done: { x: W - 22, y: 22, dy: 30, side: 'l' },
-      failed: { x: 22, y: H - 22, dy: -30, side: 'r' },
-      waiting: { x: W - 22, y: H - 22, dy: -30, side: 'l' }
-    }
-    for (const kind of ['done', 'failed', 'waiting']) {
-      groups[kind].forEach((u, i) => {
-        const k = corner[kind]
-        const a = { key: u.key, x: k.x, y: k.y + i * k.dy, r: 11, size: 'ring', parked: kind, named: false, selected: u.key === selected, status: u.status, main: false, leaf: null }
-        agents.push(a)
-        c.obs.push(mapDisc(a.x, a.y, a.r + MAP_PAD))
-      })
-    }
-    for (const kind of ['done', 'failed', 'waiting']) {
-      groups[kind].forEach(u => {
-        const a = agents.find(x => x.key === u.key)
-        const word = ` · ${t(`sw.map.word.${u.status}`)}`
-        for (const cap of [22, nameCap, 12, 8]) {
-          const rows = [[{ text: mapCut(u.name, cap), tone: a.selected ? 'sel' : u.status === 'failed' ? 'badname' : 'name', bold: true }, { text: word, tone: u.status === 'failed' ? 'bad' : 'dim' }]]
-          if (mapPlaceLabel(c, a, rows, [corner[kind].side], a.r + 9, { kind: 'agent', of: a.key, full: `${u.name}${word}` })) {
-            a.named = true
-            break
-          }
-        }
-      })
-    }
-  } else {
-    const S = 14
-    const M = 14
-    const cols = { done: narrow ? 5 : 6, failed: narrow ? 6 : 8, waiting: narrow ? 6 : 8 }
-    const spot = {
-      done: (col, row) => [W - M - col * S, M + row * S],
-      failed: (col, row) => [M + col * S, H - M - row * S],
-      waiting: (col, row) => [W - M - col * S, H - M - row * S]
-    }
-    for (const kind of ['done', 'failed', 'waiting']) {
-      const list = groups[kind]
-      if (!list.length) continue
-      const placed = list.map((u, i) => {
-        const [x, y] = spot[kind](i % cols[kind], Math.floor(i / cols[kind]))
-        const a = { key: u.key, x, y, r: 5, size: 'dot', parked: kind, named: false, selected: u.key === selected, status: u.status, main: false, leaf: null }
-        agents.push(a)
-        return a
-      })
-      const xs = placed.map(a => a.x)
-      const ys = placed.map(a => a.y)
-      const box = mapRect(Math.min(...xs) - 9, Math.min(...ys) - 9, Math.max(...xs) + 9, Math.max(...ys) + 9)
-      c.obs.push(box)
-      const nf = list.filter(u => u.status === 'failed').length
-      const text = kind === 'done' ? t('sw.map.park.done', list.length) : kind === 'waiting' ? t('sw.map.park.waiting', list.length) : t('sw.map.park.failed', nf, list.length - nf)
-      const rows = [[{ text, tone: kind === 'failed' ? 'bad' : 'dim' }]]
-      const w = mapRowW(rows[0])
-      const spots = kind === 'done'
-        ? [[box.x0 - 2 - w, M - 9], [box.x1 - w, box.y1 + 2]]
-        : kind === 'waiting'
-          ? [[box.x0 - 2 - w, H - M - 9], [box.x1 - w, box.y0 - MAP_LINE - 4]]
-          : [[box.x1 + 2, H - M - 9], [box.x0, box.y0 - MAP_LINE - 4]]
-      for (const [x0, y0] of spots) {
-        const b = mapRect(Math.round(x0), Math.round(y0), Math.round(x0) + w, Math.round(y0) + MAP_LINE + 2)
-        if (!mapFits(b, c.obs, W, H, 3)) continue
-        c.obs.push(b)
-        const anchor = kind === 'failed' ? 'start' : 'end'
-        c.labels.push({ id: `park:${kind}`, kind: 'park', of: kind, full: text, x: anchor === 'start' ? b.x0 + 2 : b.x1 - 2, y: b.y0 + 13, anchor, box: b, rows })
-        break
-      }
-    }
-    for (const a of agents) {
-      if (!a.selected) continue
-      const u = subs.find(x => x.key === a.key)
-      a.named = nameAgent(a, u, MAP_SIDES)
-    }
-  }
-
-  c.obs.push(mapDisc(cx, cy, 9))
-
-  const n = dirs.length
-  const rx = narrow ? W * 0.27 : Math.min(W * 0.25, 175)
-  const ry = narrow ? H * 0.24 : H * 0.25
-  const start = narrow ? 235 : 200
-  const shownDirs = []
-  dirs.forEach((d, i) => {
-    const a0 = start + (n ? (i * 360) / n : 0)
-    for (const s of [1, 0.9, 1.12, 0.8, 1.25, 0.65, 1.4]) {
-      for (const da of [0, 9, -9, 18, -18]) {
-        const a = mapRad(a0 + da)
-        const x = Math.round(cx + Math.cos(a) * rx * s)
-        const y = Math.round(cy + Math.sin(a) * ry * s)
-        if (mapFits(mapDisc(x, y, 9), c.obs, W, H, 26)) {
-          d.x = x
-          d.y = y
-          c.obs.push(mapDisc(x, y, 6))
-          shownDirs.push(d)
-          return
-        }
-      }
-    }
-    other.n += d.leaves.length + d.hidden
-    other.dirs.add(d.key)
-    if (d.leaves.some(l => l.isNow)) ok = false
-  })
-
-  const placedLeaf = new Map()
-  for (const d of shownDirs) {
-    const ang = Math.atan2(d.y - cy, d.x - cx)
-    const k = d.leaves.length
-    const spread = k > 1 ? Math.min(mapRad(narrow ? 30 : 26), mapRad(150) / (k - 1)) : 0
-    const R0 = narrow ? 40 : 48
-    const R1 = narrow ? 13 : 16
-    const order = d.leaves.map((l, j) => j).sort((p, q) => (d.leaves[q].isNow - d.leaves[p].isNow) || p - q)
-    const kept = []
-    for (const j of order) {
-      const l = d.leaves[j]
-      const th = ang + (j - (k - 1) / 2) * spread
-      const rad = R0 + (j % 2) * R1
-      let spotAt = null
-      search: for (const s of [1, 1.3, 0.8, 1.6, 0.62, 1.9]) {
-        for (const dt of [0, 0.16, -0.16, 0.32, -0.32]) {
-          const x = Math.round(d.x + Math.cos(th + dt) * rad * s)
-          const y = Math.round(d.y + Math.sin(th + dt) * rad * s * 0.9)
-          if (mapFits(mapDisc(x, y, 8), c.obs, W, H, 10)) { spotAt = { x, y }; break search }
-        }
-      }
-      if (!spotAt) {
-        d.hidden++
-        if (l.isNow) ok = false
-        continue
-      }
-      l.x = spotAt.x
-      l.y = spotAt.y
-      l.r = l.isNow ? 6.5 : l.state === 'edit' || l.state === 'failed' ? 5.5 : l.state === 'deleted' ? 4.5 : 4
-      l.folder = d.key
-      l.fx = d.x
-      l.fy = d.y
-      c.obs.push(mapDisc(l.x, l.y, l.isNow ? 12 : 7))
-      kept.push(l)
-      placedLeaf.set(l.pk, l)
-    }
-    d.leaves = kept.sort((p, q) => mapCmp(p.pk, q.pk))
-  }
-
-  for (const d of shownDirs) {
-    const sides = d.x >= cx ? ['l', 'bl', 'tl', 'b', 't', 'r', 'br', 'tr'] : ['r', 'br', 'tr', 'b', 't', 'l', 'bl', 'tl']
-    const nameRow = [{ text: d.label, tone: 'dir' }]
-    const olderRow = d.hidden ? [{ text: t('sw.map.older', d.hidden), tone: 'dim' }] : null
-    const both = olderRow ? [nameRow, olderRow] : [nameRow]
-    if (!mapPlaceLabel(c, d, both, sides, 8, { kind: 'dir', of: d.key, full: d.dir || d.label })) {
-      mapPlaceLabel(c, d, [nameRow], sides, 8, { kind: 'dir', of: d.key, full: d.dir || d.label })
-      if (olderRow) mapPlaceLabel(c, d, [olderRow], sides, 8, { kind: 'older', of: d.key, full: olderRow[0].text })
-    }
-  }
-
-  const treeUnits = [main, ...tree.filter(u => u.key === selected), ...tree.filter(u => u.key !== selected)].filter(Boolean)
-  for (const u of treeUnits) {
-    const isMain = u === main
-    const sel = u.key === selected
-    const size = isMain || !dense || sel ? 'ring' : 'dot'
-    const r = isMain ? 18 : size === 'dot' ? 5 : 15
-    const pad = size === 'dot' ? 4 : MAP_PAD
-    const leaf = nowOf.has(u.key) ? placedLeaf.get(nowOf.get(u.key)) : null
-    const want = size === 'ring' ? mapRowW(mapNameRows(u.name, Math.min(String(u.name || '').length, nameCap), sel)[0]) : 0
-    const room = size === 'ring' ? (x, y) => mapRoomFor(c, x, y, r + (sel ? 4 : 0), MAP_SIDES, want) : null
-    let at
-    if (leaf) {
-      let ux = leaf.x - leaf.fx
-      let uy = leaf.y - leaf.fy
-      const len = Math.hypot(ux, uy) || 1
-      ux /= len
-      uy /= len
-      const dists = size === 'dot' ? [30, 37, 45, 54, 22] : [r + 40, r + 52, r + 66, r + 82, r + 30]
-      at = mapSeek(c, leaf.x, leaf.y, ux, uy, dists, pad, r, room)
-    } else {
-      at = mapSeek(c, cx, cy, 0, isMain ? 1 : -1, [r + 30, r + 46, r + 64, r + 86, r + 110], pad, r, room)
-    }
-    if (!at) {
-      ok = false
-      at = { x: Math.min(W - r - 2, Math.max(r + 2, cx)), y: Math.min(H - r - 2, Math.max(r + 2, cy + 40)) }
-    }
-    const a = { key: u.key, x: at.x, y: at.y, r, size, parked: null, named: false, selected: sel, status: u.status, main: isMain, leaf: leaf ? leaf.key : null }
-    agents.push(a)
-    if (size === 'ring') a.named = nameAgent(a, u, MAP_SIDES)
-    c.obs.push(mapDisc(a.x, a.y, r + pad))
-    if (leaf && u.status === 'running') {
-      const dx = leaf.x - a.x
-      const dy = leaf.y - a.y
-      const len = Math.hypot(dx, dy) || 1
-      const s0 = r + (size === 'dot' ? 2 : 3)
-      const s1 = leaf.r + 3
-      beams.push({
-        from: a.key, to: leaf.key, op: u.act === 'edit' ? 'edit' : 'read', dot: size === 'dot',
-        x1: Math.round(a.x + (dx / len) * s0), y1: Math.round(a.y + (dy / len) * s0),
-        x2: Math.round(leaf.x - (dx / len) * s1), y2: Math.round(leaf.y - (dy / len) * s1)
-      })
-    }
-  }
-
-  const workers = new Set(treeUnits.filter(u => u === main || u.key === selected || !dense).map(u => nowOf.get(u.key)).filter(Boolean))
-  const rank = l => (l.isNow ? 0 : l.state === 'failed' ? 1 : l.state === 'deleted' ? 2 : l.state === 'edit' ? 3 : 9)
-  const leaves = shownDirs.flatMap(d => d.leaves)
-  const named = leaves
-    .filter(l => rank(l) < 9 && (!dense || workers.has(l.pk)))
-    .sort((p, q) => rank(p) - rank(q) || mapCmp(p.pk, q.pk))
-    .slice(0, dense ? 3 : narrow ? 6 : 10)
-  for (const l of named) {
-    const out = l.x >= l.fx
-    const sides = out ? ['r', 'tr', 'br', 't', 'b', 'l', 'tl', 'bl'] : ['l', 'tl', 'bl', 't', 'b', 'r', 'tr', 'br']
-    const tone = l.isNow ? 'now' : l.state
-    const tail = l.state === 'failed' ? ` · ${t('sw.map.leaf.failed')}` : l.state === 'deleted' ? ` · ${t('sw.map.leaf.deleted')}` : ''
-    placing: for (const gap of [9, 16]) {
-      for (const cap of [narrow ? 18 : 24, 12]) {
-        const rows = [[{ text: mapCut(l.name, cap) + tail, tone }]]
-        if (mapPlaceLabel(c, l, rows, sides, gap, { kind: 'leaf', of: l.key, full: l.path })) break placing
-      }
-    }
-  }
-
-  if (other.n) {
-    const text = t('sw.map.otherDirs', other.n, other.dirs.size)
-    for (const gap of [12, 26, 44, 66]) {
-      if (mapPlaceLabel(c, { x: cx, y: cy }, [[{ text, tone: 'dim' }]], MAP_SIDES, gap, { kind: 'other', of: 'root', full: text })) break
-    }
-  }
-  if (!leaves.length) {
-    const text = t('sw.map.empty')
-    mapPlaceLabel(c, { x: cx, y: cy }, [[{ text, tone: 'dim' }]], ['t', 'b', 'r', 'l'], 12, { kind: 'empty', of: 'root', full: text })
-  }
-
-  const hidden = shownDirs.filter(d => d.hidden).map(d => ({ folder: d.key, n: d.hidden }))
-  if (other.n) hidden.push({ folder: null, n: other.n })
-  const legend = []
-  if (leaves.some(l => l.isNow)) legend.push('now')
-  for (const s of ['edit', 'read', 'failed', 'deleted']) if (leaves.some(l => !l.isNow && l.state === s)) legend.push(s)
-  if (beams.some(b => b.op === 'edit')) legend.push('beamEdit')
-  if (beams.some(b => b.op === 'read')) legend.push('beamRead')
-  const order = new Map(base.order.map((k, i) => [k, i]))
-  agents.sort((p, q) => order.get(p.key) - order.get(q.key))
-
-  return {
-    ok, width: W, height: H, narrow, dense,
-    root: { x: cx, y: cy },
-    folders: shownDirs.map(d => ({ key: d.key, dir: d.dir, label: d.label, x: d.x, y: d.y, hidden: d.hidden })),
-    leaves: leaves.map(l => ({ key: l.key, path: l.path, name: l.name, folder: l.folder, x: l.x, y: l.y, r: l.r, fx: l.fx, fy: l.fy, state: l.state, isNow: l.isNow })),
-    agents, beams, labels: c.labels, hidden,
-    hiddenTotal: hidden.reduce((s, h) => s + h.n, 0),
-    shown: leaves.length, totalFiles: base.total, legend
-  }
-}
-
-export function mapLayout({ units = [], files = [], width = 680, selected = null, t = mapT } = {}) {
-  const W = Math.max(280, Math.round(Number(width) || 680))
-  const narrow = W < MAP_NARROW
-  const list = (units || []).filter(Boolean)
-  const main = list.find(u => u.main) || list[0] || null
-  const subs = list.filter(u => u !== main)
-  const dense = subs.length > MAP_SWARM
-
-  const byPath = new Map()
-  for (const f of files || []) {
-    const pk = pathKey(f.path)
-    if (!pk || byPath.has(pk)) continue
-    byPath.set(pk, { key: f.key || pk, pk, path: String(f.path), state: mapState(f), at: Number(f.last_at ?? f.first_at) || 0, isNow: false })
-  }
-  const nowOf = new Map()
-  for (const u of list) {
-    if (u.status !== 'running' || !u.nowPath) continue
-    const pk = pathKey(u.nowPath)
-    if (!pk) continue
-    if (!byPath.has(pk)) byPath.set(pk, { key: pk, pk, path: String(u.nowPath), state: u.act === 'edit' ? 'edit' : 'read', at: Infinity, isNow: false })
-    byPath.get(pk).isNow = true
-    nowOf.set(u.key, pk)
-  }
-  const all = [...byPath.values()].sort((a, b) => (b.isNow - a.isNow) || (b.at - a.at) || mapCmp(a.pk, b.pk))
-
-  const maxDirs = narrow ? 6 : 8
-  const perDir = narrow ? 5 : dense ? 6 : 7
-  const dirs = new Map()
-  const other = { n: 0, dirs: new Set() }
-  let shown = 0
-  for (const leaf of all) {
-    const { dir, name } = mapSplit(leaf.path)
-    const dk = pathKey(dir) || '.'
-    leaf.name = name || leaf.path
-    let d = dirs.get(dk)
-    if (!d) {
-      if (dirs.size < maxDirs && shown < MAP_CAP) {
-        d = { key: dk, dir, label: mapDirName(dir, narrow ? 14 : 20), leaves: [], hidden: 0 }
-        dirs.set(dk, d)
-      } else {
-        other.n++
-        other.dirs.add(dk)
-        continue
-      }
-    }
-    if (shown < MAP_CAP && d.leaves.length < perDir) {
-      d.leaves.push(leaf)
-      shown++
-    } else d.hidden++
-  }
-  for (const d of dirs.values()) d.leaves.sort((p, q) => mapCmp(p.pk, q.pk))
-
-  const base = {
-    W, narrow, dense, main, subs, selected, t, nowOf, other, total: byPath.size,
-    dirs: [...dirs.values()], order: [main, ...subs].filter(Boolean).map(u => u.key)
-  }
-  const tall = narrow ? (dense ? 540 : 460) : dense ? 480 : shown > 16 ? 440 : 400
-  let lay = null
-  for (const grow of [0, 60, 120, 200, 320]) {
-    lay = mapAttempt(base, tall + grow)
-    if (lay.ok) break
-  }
-  return lay
-}
-
-function mapRows(label) {
-  return label.rows.map((row, i) => jsx('text', {
-    className: 'sw-mlab', x: label.x, y: label.y + i * MAP_LINE, textAnchor: label.anchor,
-    children: row.map((p, j) => jsx('tspan', { 'data-tone': p.tone, children: p.text }, j))
-  }, i))
-}
-
-function mapLabelNode(label) {
-  const shown = label.rows.map(r => r.map(p => p.text).join('')).join(' ')
-  const g = jsx('g', { className: 'sw-mlabel', 'data-kind': label.kind, children: mapRows(label) })
-  return label.full && label.full !== shown ? jsx(Tip, { label: tipText(label.full), children: g }, label.id) : jsx('g', { className: 'sw-mlabel', 'data-kind': label.kind, children: mapRows(label) }, label.id)
-}
-
-function LiveMap({ t, units, files, selected, onSelect }) {
-  const tt = t || mapT
-  const wrap = useRef(null)
-  const [width, setWidth] = useState(680)
-  const [hover, setHover] = useState(null)
-  useEffect(() => {
-    const el = wrap.current
-    if (!el || typeof ResizeObserver === 'undefined') return undefined
-    const read = () => {
-      const w = Math.floor(el.clientWidth)
-      if (w > 0) setWidth(w)
-    }
-    read()
-    const ro = new ResizeObserver(read)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-  const lay = useMemo(() => mapLayout({ units, files, width, selected, t: tt }), [units, files, width, selected, tt])
-  const unitOf = useMemo(() => new Map((units || []).map(u => [u.key, u])), [units])
-  const pick = useCallback(key => { if (onSelect) onSelect(key) }, [onSelect])
-  const W = lay.width
-  const H = lay.height
-
-  const branches = lay.folders.map(d => {
-    const mx = (lay.root.x + d.x) / 2 + (d.y - lay.root.y) * 0.12
-    const my = (lay.root.y + d.y) / 2 - (d.x - lay.root.x) * 0.12
-    return jsx('path', { className: 'sw-mbranch', d: `M${lay.root.x},${lay.root.y} Q${Math.round(mx)},${Math.round(my)} ${d.x},${d.y}` }, d.key)
-  })
-  const twigs = lay.leaves.map(l => jsx('line', { className: 'sw-mtwig', x1: l.fx, y1: l.fy, x2: l.x, y2: l.y }, l.key))
-  const beams = lay.beams.map(b => {
-    const d = `M${b.x1},${b.y1} L${b.x2},${b.y2}`
-    return jsxs('g', {
-      className: 'sw-mbeamg',
-      children: [
-        jsx('path', { className: 'sw-mbeam', 'data-op': b.op, 'data-dot': b.dot ? 'true' : undefined, 'data-agent': b.from, d }, 'b'),
-        b.op === 'edit' && !b.dot ? jsx('path', { className: 'sw-mflow', d }, 'f') : null
-      ]
-    }, `${b.from}>${b.to}`)
-  })
-  const leaves = lay.leaves.map(l => jsx(Tip, {
-    label: tipText(l.path),
-    children: jsxs('g', {
-      className: 'sw-mleaf', 'data-path': l.path, 'data-state': l.state, 'data-now': l.isNow ? 'true' : undefined,
-      children: [
-        l.isNow ? jsx('circle', { className: 'sw-mhalo', cx: l.x, cy: l.y, r: 14 }, 'h') : null,
-        l.isNow ? jsx('circle', { className: 'sw-mpulse', cx: l.x, cy: l.y, r: 9 }, 'p') : null,
-        jsx('circle', { className: 'sw-mdot', cx: l.x, cy: l.y, r: l.r }, 'd')
-      ]
-    })
-  }, l.key))
-  const dirs = lay.folders.map(d => jsx(Tip, {
-    label: tipText(d.dir || d.label),
-    children: jsx('circle', { className: 'sw-mdir', 'data-dir': d.key, cx: d.x, cy: d.y, r: 3.5 })
-  }, d.key))
-
-  const hovered = hover && lay.agents.find(a => a.key === hover && !a.named)
-  let hoverLabel = null
-  if (hovered && unitOf.get(hovered.key)) {
-    const text = mapCut(unitOf.get(hovered.key).name, 26)
-    const w = mapRowW([{ text, bold: true }])
-    const x = Math.min(W - 4 - w / 2, Math.max(4 + w / 2, hovered.x))
-    const above = hovered.y - hovered.r - 8 > 14
-    hoverLabel = jsx('text', {
-      className: 'sw-mlab sw-mhov', x, y: above ? hovered.y - hovered.r - 8 : hovered.y + hovered.r + 18, textAnchor: 'middle',
-      children: jsx('tspan', { 'data-tone': 'name', children: text })
-    }, 'hover')
-  }
-
-  const buttons = lay.agents.map(a => {
-    const u = unitOf.get(a.key)
-    if (!u) return null
-    return jsx(Tip, {
-      label: tipText(u.line || u.name),
-      children: jsx('button', {
-        type: 'button', className: 'sw-magent', 'data-key': a.key, 'data-st': u.status, 'data-size': a.size,
-        'data-main': a.main ? 'true' : undefined, 'data-parked': a.parked || undefined,
-        'aria-pressed': selected === a.key, 'aria-label': `${u.name}: ${u.line || ''}`,
-        style: { left: `${a.x - a.r}px`, top: `${a.y - a.r}px`, width: `${a.r * 2}px`, height: `${a.r * 2}px` },
-        onClick: () => pick(a.key),
-        onMouseEnter: () => setHover(a.key), onMouseLeave: () => setHover(h => (h === a.key ? null : h)),
-        onFocus: () => setHover(a.key), onBlur: () => setHover(h => (h === a.key ? null : h)),
-        children: a.size === 'dot' ? null : jsx('span', { className: 'sw-mic', 'aria-hidden': 'true', children: u.icon || null })
-      })
-    }, a.key)
-  })
-
-  const legend = lay.legend.map(k => jsxs('span', {
-    children: [jsx('i', { className: 'sw-mkey', 'data-k': k }, 'i'), tt(`sw.map.legend.${k}`)]
-  }, k))
-  if (lay.hiddenTotal) legend.push(jsx('span', { className: 'sw-mcap', children: tt('sw.map.capped', lay.shown, lay.totalFiles) }, 'cap'))
-
-  return jsxs('div', {
-    ref: wrap, className: 'sw-map', role: 'group', 'aria-label': tt('sw.map.label'), 'data-narrow': lay.narrow ? 'true' : undefined,
-    children: [
-      jsxs('div', {
-        className: 'sw-mstage', style: { width: `${W}px`, height: `${H}px` },
-        children: [
-          jsxs('svg', {
-            className: 'sw-msvg', width: W, height: H, viewBox: `0 0 ${W} ${H}`, 'aria-hidden': 'true',
-            children: [
-              jsx('g', { children: branches }, 'br'),
-              jsx('g', { children: twigs }, 'tw'),
-              jsx('g', { children: beams }, 'bm'),
-              jsx('g', { children: dirs }, 'dr'),
-              jsx('circle', { className: 'sw-mroot', cx: lay.root.x, cy: lay.root.y, r: 6 }, 'root'),
-              jsx('g', { children: leaves }, 'lf'),
-              jsx('g', { children: lay.labels.map(mapLabelNode) }, 'lb'),
-              hoverLabel
-            ]
-          }, 'svg'),
-          ...buttons
-        ]
-      }, 'stage'),
-      legend.length ? jsx('div', { className: 'sw-mlegend', children: legend }, 'legend') : null
-    ]
-  })
-}
-
-const MAP_CSS = `
-.sw-page .sw-map{position:relative;width:100%;min-width:0;max-width:100%;overflow:hidden;margin:6px 0 2px;
- --m-branch:color-mix(in srgb,var(--dim) 34%,var(--bg));--m-twig:color-mix(in srgb,var(--dim) 24%,var(--bg));
- --m-read:color-mix(in srgb,var(--dim) 58%,var(--bg));--m-node:color-mix(in srgb,var(--dim) 52%,var(--bg))}
-.sw-page .sw-map [data-st=running]{--c:var(--run)}
-.sw-page .sw-map [data-st=completed]{--c:var(--ok)}
-.sw-page .sw-map [data-st=failed]{--c:var(--bad)}
-.sw-page .sw-map [data-st=stopped],.sw-page .sw-map [data-st=queued],.sw-page .sw-map [data-st=idle]{--c:var(--idle)}
-.sw-page .sw-map .sw-mstage{position:relative;max-width:100%}
-.sw-page .sw-map .sw-msvg{position:absolute;left:0;top:0;display:block;overflow:visible}
-.sw-page .sw-map .sw-mbranch{fill:none;stroke:var(--m-branch);stroke-width:1.8}
-.sw-page .sw-map .sw-mtwig{stroke:var(--m-twig);stroke-width:1.1}
-.sw-page .sw-map .sw-mroot{fill:color-mix(in srgb,var(--dim) 66%,var(--bg))}
-.sw-page .sw-map .sw-mdir{fill:var(--m-node)}
-.sw-page .sw-map .sw-mdot{fill:var(--m-read)}
-.sw-page .sw-map .sw-mleaf[data-state=edit] .sw-mdot{fill:var(--ink)}
-.sw-page .sw-map .sw-mleaf[data-state=failed] .sw-mdot{fill:var(--bad)}
-.sw-page .sw-map .sw-mleaf[data-state=deleted] .sw-mdot{fill:none;stroke:var(--dim);stroke-width:1.2;stroke-dasharray:2 2}
-.sw-page .sw-map .sw-mleaf[data-now] .sw-mdot{fill:var(--run);stroke:none}
-.sw-page .sw-map .sw-mhalo{fill:color-mix(in srgb,var(--run) 20%,transparent)}
-.sw-page .sw-map .sw-mpulse{fill:none;stroke:var(--run);stroke-width:1;transform-box:fill-box;transform-origin:center;animation:sw-mpulse 2.4s ease-out infinite}
-.sw-page .sw-map .sw-mbeam{fill:none;stroke:var(--run);stroke-width:1.6;stroke-linecap:round}
-.sw-page .sw-map .sw-mbeam[data-op=read]{stroke-width:1.4;stroke-dasharray:2.5 4;animation:sw-mflow 1.6s linear infinite}
-.sw-page .sw-map .sw-mbeam[data-dot]{stroke-width:1.2;opacity:.9}
-.sw-page .sw-map .sw-mflow{fill:none;stroke:color-mix(in srgb,var(--run) 25%,var(--ink));stroke-width:1.6;stroke-dasharray:2 12;stroke-linecap:round;animation:sw-mflow 1.6s linear infinite}
-.sw-page .sw-map .sw-mlab{font-size:12px;fill:var(--dim);paint-order:stroke;stroke:var(--bg);stroke-width:4px;stroke-linejoin:round;white-space:pre}
-.sw-page .sw-map .sw-mlabel{cursor:default}
-.sw-page .sw-map [data-tone=name]{fill:var(--ink);font-size:12.5px;font-weight:600}
-.sw-page .sw-map [data-tone=sel]{fill:color-mix(in srgb,var(--a) 72%,var(--ink));font-size:12.5px;font-weight:600}
-.sw-page .sw-map [data-tone=badname]{fill:color-mix(in srgb,var(--bad) 40%,var(--ink));font-size:12.5px;font-weight:600}
-.sw-page .sw-map [data-tone=bad],.sw-page .sw-map [data-tone=failed]{fill:color-mix(in srgb,var(--bad) 45%,var(--ink))}
-.sw-page .sw-map [data-tone=now]{fill:color-mix(in srgb,var(--run) 45%,var(--ink))}
-.sw-page .sw-map [data-tone=edit],.sw-page .sw-map [data-tone=dir]{fill:var(--dim)}
-.sw-page .sw-map [data-tone=deleted],.sw-page .sw-map [data-tone=dim]{fill:var(--dim)}
-.sw-page .sw-map .sw-mhov{pointer-events:none}
-.sw-page .sw-map .sw-magent{position:absolute;box-sizing:border-box;display:grid;place-items:center;padding:0;margin:0;border-radius:50%;
- border:1.6px solid var(--c);background:color-mix(in srgb,var(--c) 11%,var(--bg));color:var(--c);cursor:pointer;
- transition:left .55s ease,top .55s ease,box-shadow .2s}
-.sw-page .sw-map .sw-magent[data-st=queued],.sw-page .sw-map .sw-magent[data-st=idle]{border-style:dashed}
-.sw-page .sw-map .sw-magent[data-st=failed]{background:color-mix(in srgb,var(--bad) 18%,var(--bg))}
-.sw-page .sw-map .sw-mic{display:grid;place-items:center;width:14px;height:14px;pointer-events:none}
-.sw-page .sw-map .sw-mic svg{width:100%;height:100%;display:block}
-.sw-page .sw-map .sw-magent[data-main] .sw-mic{width:16px;height:16px}
-.sw-page .sw-map .sw-magent[data-parked] .sw-mic{width:12px;height:12px}
-.sw-page .sw-map .sw-magent[data-size=dot]{background:var(--c);border:1.5px solid var(--bg)}
-.sw-page .sw-map .sw-magent[data-size=dot][data-st=queued]{background:var(--bg);border:1.2px dashed var(--c)}
-.sw-page .sw-map .sw-magent[data-size=dot]::before{content:"";position:absolute;inset:-4px;border-radius:50%}
-.sw-page .sw-map .sw-magent:hover{box-shadow:0 0 0 4px var(--bg),0 0 0 5px color-mix(in srgb,var(--ink) 55%,transparent)}
-.sw-page .sw-map .sw-magent[aria-pressed=true],.sw-page .sw-map .sw-magent[aria-pressed=true]:hover{box-shadow:0 0 0 5px var(--bg),0 0 0 6.4px var(--a)}
-.sw-page .sw-map .sw-magent[data-size=dot][aria-pressed=true]{box-shadow:0 0 0 2px var(--bg),0 0 0 3.4px var(--a)}
-.sw-page .sw-map .sw-magent[data-st=running][data-size=ring]::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:1.3px solid transparent;
- border-top-color:color-mix(in srgb,var(--c) 80%,transparent);animation:sw-morbit 3.2s linear infinite}
-.sw-page .sw-map .sw-mlegend{display:flex;flex-wrap:wrap;align-items:center;gap:4px 16px;padding:4px 2px 0;font-size:12px;line-height:1.5;color:var(--dim);min-width:0}
-.sw-page .sw-map .sw-mlegend>span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;min-width:0}
-.sw-page .sw-map .sw-mlegend .sw-mcap{flex:1 1 auto;justify-content:flex-end;overflow:hidden;text-overflow:ellipsis;display:block;text-align:right}
-.sw-page .sw-map[data-narrow] .sw-mlegend .sw-mcap{flex-basis:100%;text-align:left}
-.sw-page .sw-map .sw-mkey{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none}
-.sw-page .sw-map .sw-mkey[data-k=now]{background:var(--run)}
-.sw-page .sw-map .sw-mkey[data-k=edit]{background:var(--ink)}
-.sw-page .sw-map .sw-mkey[data-k=read]{background:var(--m-read)}
-.sw-page .sw-map .sw-mkey[data-k=failed]{background:var(--bad)}
-.sw-page .sw-map .sw-mkey[data-k=deleted]{box-sizing:border-box;border:1.3px dashed var(--dim)}
-.sw-page .sw-map .sw-mkey[data-k=beamEdit],.sw-page .sw-map .sw-mkey[data-k=beamRead]{width:18px;height:0;border-radius:0;border-top:2px solid var(--run)}
-.sw-page .sw-map .sw-mkey[data-k=beamRead]{border-top-style:dotted}
-@keyframes sw-mflow{to{stroke-dashoffset:-28}}
-@keyframes sw-mpulse{0%{transform:scale(.6);opacity:.6}100%{transform:scale(1.6);opacity:0}}
-@keyframes sw-morbit{to{transform:rotate(360deg)}}
-.sw-panel[data-calm] .sw-map *,.sw-panel[data-calm] .sw-map *::before,.sw-panel[data-calm] .sw-map *::after{animation:none!important;transition:none!important}
-.sw-panel[data-calm] .sw-map .sw-mpulse,.sw-panel[data-calm] .sw-map .sw-mflow,.sw-panel[data-calm] .sw-map .sw-magent::after{display:none}
-@media (prefers-reduced-motion:reduce){
- .sw-page .sw-map *,.sw-page .sw-map *::before,.sw-page .sw-map *::after{animation:none!important;transition:none!important}
- .sw-page .sw-map .sw-mpulse,.sw-page .sw-map .sw-mflow,.sw-page .sw-map .sw-magent::after{display:none}
-}
-`
-
-
-// A stable empty list: the map lays out again only when its input changes.
-const MAP_NO_FILES = []
 
 const BUNDLES = {
   en: {
@@ -808,55 +110,6 @@ const BUNDLES = {
         untitled: id => `Chat …${id}`,
         held: 'held',
         heldTip: 'You clicked inside this page, so it keeps showing this chat. Click a chat to follow it again.'
-      },
-      theme: {
-        label: 'Look', dots: 'Dot matrix', map: 'Live map', terminal: 'Terminal', isDefault: 'Default',
-        about: {
-          dots: 'Calm tiles, one dot per edit, numbers in dot-matrix type. Colour only marks working and failed.',
-          map: 'The chat\u2019s files as a tree, each agent beside the file it works on now.',
-          terminal: 'A console in your accent colour: aligned text rows, ASCII sprites, blinking cursor.'
-        }
-      },
-      map: {
-        label: 'Live map: the files of this chat and the agents working on them',
-        legend: {
-          now: 'being worked on',
-          edit: 'changed',
-          read: 'only read',
-          failed: 'edit failed',
-          deleted: 'deleted',
-          beamEdit: 'editing',
-          beamRead: 'reading'
-        },
-        capped: (shown, total) => `Showing the ${shown} most recent of ${total} files`,
-        older: n => `+${n} older`,
-        otherDirs: (n, d) => `+${n} in ${d} more folder${d === 1 ? '' : 's'}`,
-        empty: 'No files touched yet',
-        leaf: {
-          failed: 'edit failed',
-          deleted: 'deleted'
-        },
-        word: {
-          completed: 'done',
-          failed: 'failed',
-          stopped: 'stopped',
-          queued: 'waiting',
-          idle: 'idle',
-          running: 'working'
-        },
-        park: {
-          done: n => `${n} done`,
-          failed: (f, s) => (s ? (f ? `${f} failed · ${s} stopped` : `${s} stopped`) : `${f} failed`),
-          waiting: n => `${n} waiting to start`
-        }
-      },
-      unit: {
-        time: (time, status) => status === 'running' ? `on task ${time}` : status === 'completed' ? `took ${time}` : status === 'failed' ? `after ${time}` : time
-      },
-      settings: {
-        title: 'Subagent Watch',
-        intro: 'How the Subagents page draws a chat\u2019s agents, their files and background commands.',
-        note: 'Applies at once to the open page and the status-bar chip.'
       },
       tabs: {
         label: 'Sections', agents: 'Agents', commands: 'Commands',
@@ -1319,19 +572,18 @@ function Cells({ statuses, className = 'sw-cells' }) {
   })
 }
 
-// ── look: Dot matrix / Live map / Terminal ───────────────────────────────────
+// ── look: Terminal ───────────────────────────────────────────────────────────
 //
 // The chosen look is kept in the plugin's own storage (ctx.storage). Storage is a convenience: when
-// it is missing, holds something else, or throws, the page draws Dot matrix and keeps working. A look
-// an earlier version kept (Cockpit) reads as the one that replaced it.
+// it is missing, holds something else, or throws, the page draws Terminal and keeps working. A look an
+// earlier version kept (Cockpit, Dot matrix, Live map) is no longer a look, so it reads as Terminal too.
 
 let themeNow = null
 const themeSubs = new Set()
 
 function readTheme() {
   try {
-    const raw = ctxRef?.storage?.get?.(THEME_KEY, THEMES[0])
-    const kept = THEME_RENAMED[raw] || raw
+    const kept = ctxRef?.storage?.get?.(THEME_KEY, THEMES[0])
     return THEMES.includes(kept) ? kept : THEMES[0]
   } catch (err) {
     console.warn(`[${ID}] could not read the kept look; using ${THEMES[0]}`, err)
@@ -1357,62 +609,6 @@ function useTheme() {
     themeSubs.forEach(fn => fn())
   }, [])
   return [theme, choose]
-}
-
-// ── dot-matrix numbers (Dot matrix and Live map) ─────────────────────────────
-
-// 7-row glyphs; a text with any other character is printed as text only.
-const DM_GLYPHS = {
-  0: ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
-  1: ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
-  2: ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
-  3: ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
-  4: ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
-  5: ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
-  6: ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
-  7: ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
-  8: ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
-  9: ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
-  '/': ['00001', '00010', '00010', '00100', '01000', '01000', '10000'],
-  $: ['00100', '01111', '10100', '01110', '00101', '11110', '00100'],
-  '.': ['0', '0', '0', '0', '0', '0', '1'],
-  '~': ['00000', '00000', '01000', '10101', '00010', '00000', '00000'],
-  '?': ['01110', '10001', '00001', '00110', '00100', '00000', '00100'],
-  '-': ['00000', '00000', '00000', '11111', '00000', '00000', '00000'],
-  h: ['10000', '10000', '10110', '11001', '10001', '10001', '10001'],
-  m: ['00000', '00000', '11010', '10101', '10101', '10101', '10101'],
-  s: ['00000', '00000', '01111', '10000', '01110', '00001', '11110'],
-  k: ['10000', '10000', '10010', '10100', '11000', '10100', '10010'],
-  ' ': ['00', '00', '00', '00', '00', '00', '00']
-}
-
-/** The dots of a text in DM_GLYPHS, or null when a character has no glyph. */
-export function dotMatrix(text) {
-  const chars = [...String(text ?? '')]
-  if (!chars.length || chars.some(c => !DM_GLYPHS[c])) return null
-  const dots = []
-  let x = 0
-  chars.forEach((c, ci) => {
-    const g = DM_GLYPHS[c]
-    for (let i = 0; i < g[0].length; i++) for (let y = 0; y < 7; y++) dots.push({ x: x + i, y, on: g[y][i] === '1' })
-    x += g[0].length + (ci < chars.length - 1 ? 1 : 0)
-  })
-  return { dots, cols: x }
-}
-
-/** A number in dot-matrix type, drawn beside its text (the text stays for readers and the Terminal look). */
-function DotNum({ text, size = 5, className = '' }) {
-  const m = dotMatrix(text)
-  if (!m) return null
-  const step = size + 2
-  return jsx('svg', {
-    className: `sw-dm ${className}`.trim(), 'aria-hidden': 'true', width: m.cols * step - 2, height: 7 * step - 2,
-    viewBox: `0 0 ${m.cols * step - 2} ${7 * step - 2}`,
-    children: m.dots.map((d, i) => jsx('circle', {
-      cx: d.x * step + size / 2, cy: d.y * step + size / 2, r: size / 2, className: d.on ? 'on' : 'off',
-      style: d.on ? { animationDelay: `${d.x * 24}ms` } : undefined
-    }, i))
-  })
 }
 
 // ── data hooks ───────────────────────────────────────────────────────────────
@@ -1761,45 +957,25 @@ function statusWord(t, u, waitingOn) {
   return t(`sw.act.${u.act || 'think'}`)
 }
 
-/** What a unit does or did, and for how long: ['editing plugin.js', '3m 10s'], ['done', '5m 12s']. */
-function unitParts(t, u) {
+/** One line on what a unit does or did: 'editing plugin.js · 3m 10s', 'done · 5m 12s'. */
+function unitLine(t, u) {
   const time = u.status === 'stopped' || u.main ? '' : fmtDuration(u.duration, t)
   const what = u.status === 'running' && u.rec?.last_tool
     ? [toolVerb(t, u.rec.last_tool), shortTarget(u.rec.tool_preview)].filter(Boolean).join(' ')
     : u.status === 'running' ? t(`sw.act.${u.act || 'think'}`) : t(`sw.st.${u.status}`)
-  return [what, time]
-}
-
-/** One line on what a unit does or did: 'editing plugin.js · 3m 10s', 'done · 5m 12s'. */
-function unitLine(t, u) {
-  return unitParts(t, u).filter(Boolean).join(' · ')
+  return [what, time].filter(Boolean).join(' · ')
 }
 
 function Unit({ t, theme, u, selected, onSelect, flash, waitingOn }) {
   const icon = unitIcon(u)
   const word = statusWord(t, u, waitingOn)
   const tag = t(`sw.tag.${u.status === 'running' ? u.act || 'think' : u.status}`)
-  const term = theme === 'terminal'
   const goal = String(u.rec?.goal || '').trim()
-  const [what, time] = unitParts(t, u)
-  const tile = term ? null : [
-    jsxs('span', {
-      className: 'sw-utop', 'aria-hidden': 'true',
-      children: [
-        jsx('span', { className: 'sw-ic', children: ICON[icon]() }, 'i'),
-        jsx('span', { className: 'sw-us', children: word }, `s-${word}`),
-        jsx('i', { className: 'sw-sd' }, 'd')
-      ]
-    }, 'top'),
-    jsx('span', { className: 'sw-un', children: u.name }, 'n'),
-    jsx('span', { className: 'sw-ua', children: what }, 'a'),
-    time ? jsx('span', { className: 'sw-utm', children: t('sw.unit.time', time, u.status) }, 'tm') : null
-  ]
   const button = jsxs('button', {
     type: 'button', className: `sw-unit${selected ? ' is-sel' : ''}${flash ? ` is-${flash}` : ''}`,
     'data-st': u.status, 'data-icon': icon, 'data-main': u.main ? 'true' : undefined, 'data-batch': u.batch,
     'aria-pressed': selected, 'aria-label': `${u.name}: ${word}`, onClick: () => onSelect(u.key),
-    children: tile || [
+    children: [
       jsx('pre', { className: 'sw-spr', 'aria-hidden': 'true', children: sprite(icon) }, 'v'),
       jsx('span', { className: 'sw-un', children: `${u.main ? '★ ' : ''}${slugName(u.name)}` }, 'n'),
       // Keyed by its text: a new status mounts anew, so the Terminal look types it again.
@@ -1894,35 +1070,22 @@ function Swarm({ t, theme, main, subs, selected, onSelect, flash, waitingOn }) {
 }
 
 /** The big score: subagents done / all, one cell per subagent, what the subagents spent. */
-function Score({ t, theme, subs }) {
-  const dm = theme !== 'terminal'
+function Score({ t, subs }) {
   const done = subs.filter(u => u.status === 'completed').length
   const sum = sumCost(subs.map(u => u.rec))
   const cost = fmtCost(sum.usd, sum.status, t)
-  const legend = ['completed', 'running', 'queued', 'failed', 'stopped']
-    .map(st => [st, subs.filter(u => u.status === st).length]).filter(([, n]) => n)
   return jsxs('div', {
     className: 'sw-score', role: 'group', 'aria-label': subs.length ? t('sw.score.label', done, subs.length) : t('sw.score.none'),
     children: [
       jsxs('div', {
         className: 'sw-sbig',
         children: [
-          jsx('div', { className: 'sw-k', children: t(dm ? (subs.length ? 'sw.score.done' : 'sw.score.none') : 'sw.score.status') }, 'k'),
+          jsx('div', { className: 'sw-k', children: t('sw.score.status') }, 'k'),
           // Keyed by the count: a new count mounts anew and rolls up into place.
-          dm && !subs.length ? null : jsxs('div', {
-            className: 'sw-big',
-            children: [
-              dm && subs.length ? jsx(DotNum, { text: `${done}/${subs.length}`, size: 6 }, `dm-${done}-${subs.length}`) : null,
-              jsx('span', { className: 'sw-bign', children: done }, `n-${done}`), jsx('small', { children: `/${subs.length}` }, 't')
-            ]
-          }, 'b'),
-          dm && legend.length ? jsx('div', {
-            className: 'sw-sleg',
-            children: legend.map(([st, n]) => jsx('span', { 'data-st': st, children: t('sw.score.leg', n, t(`sw.st.${st}`)) }, st))
-          }, 'l') : null
+          jsxs('div', { className: 'sw-big', children: [jsx('span', { className: 'sw-bign', children: done }, `n-${done}`), jsx('small', { children: `/${subs.length}` }, 't')] }, 'b')
         ]
       }, 'b'),
-      dm ? null : jsxs('div', {
+      jsxs('div', {
         className: 'sw-sseg',
         children: [
           jsx('div', { className: 'sw-k', children: subs.length ? t('sw.score.done') : t('sw.score.none') }, 'k'),
@@ -1935,10 +1098,7 @@ function Score({ t, theme, subs }) {
           jsx('div', { className: 'sw-k', children: t('sw.score.spent') }, 'k'),
           jsx(Tip, {
             label: t('sw.cost.tip', sum.priced, sum.included, sum.unknown),
-            children: jsxs('b', {
-              className: 'sw-money', tabIndex: 0,
-              children: [dm ? jsx(DotNum, { text: cost || '-', size: 4 }, `dm-${cost}`) : null, jsx('span', { className: 'sw-moneyt', children: cost || '—' }, 't')]
-            })
+            children: jsx('b', { className: 'sw-money', tabIndex: 0, children: cost || '—' })
           }, 'v')
         ]
       }, '$') : null
@@ -2146,16 +1306,15 @@ function Hero({ t, theme, u, verb, head, full, file, where, chip, cursor }) {
  * Labelled stat tiles. A whole number counts up from 0 as the panel opens (a CSS counter, so the
  * reduced-motion lock stops it); any other value rolls in. The real value is always in the DOM.
  */
-function Tiles({ tiles, theme }) {
-  const dm = theme && theme !== 'terminal'
+function Tiles({ tiles }) {
   return jsx('div', {
     className: 'sw-tiles',
     children: tiles.map(x => jsxs('div', {
       className: 'sw-tile', 'data-k': x.k, 'data-tone': x.tone,
       children: [
         Number.isInteger(x.n) && x.n >= 0
-          ? jsx('b', { className: 'sw-tn', 'data-count': x.n, style: { '--sw-n': x.n }, children: [dm ? jsx(DotNum, { text: String(x.n), size: 3 }, 'dm') : null, jsx('span', { children: String(x.n) }, 't')] }, `n-${x.n}`)
-          : jsx('b', { className: 'sw-tn', children: [dm ? jsx(DotNum, { text: x.v || '-', size: 3 }, 'dm') : null, jsx('span', { children: x.v || '—' }, 't')] }, `v-${x.v}`),
+          ? jsx('b', { className: 'sw-tn', 'data-count': x.n, style: { '--sw-n': x.n }, children: jsx('span', { children: String(x.n) }) }, `n-${x.n}`)
+          : jsx('b', { className: 'sw-tn', children: jsx('span', { children: x.v || '—' }) }, `v-${x.v}`),
         jsx('span', { className: 'sw-tl', children: x.label }, 'l')
       ]
     }, x.k))
@@ -2211,8 +1370,7 @@ function MainPanel({ t, theme, main, files, touching, tool, waitingOn, onToast }
           { k: 'touched', label: t('sw.tile.touched'), n: touched },
           { k: 'changed', label: t('sw.tile.changed'), n: mine.changed.length },
           { k: 'read', label: t('sw.tile.read'), n: mine.read.length, tone: 'idle' }
-        ],
-        theme
+        ]
       }, 'tiles'),
       jsx(Files, { t, theme, mine, nowRows: now, verbOf, files, onToast, empty: t('sw.focus.noFiles') }, 'f'),
       more ? jsx('p', { className: 'sw-fnote', children: t('sw.file.notListed', more) }, 'more') : null,
@@ -2286,8 +1444,7 @@ function SubPanel({ t, theme, u, parentName, files, onToast }) {
           { k: 'tools', label: t('sw.tile.tools'), n: rec.tool_calls ?? rec.tool_count ?? 0 },
           { k: 'tokens', label: t('sw.tile.tokens'), v: fmtTokens(rec.tokens, t) },
           { k: 'cost', label: t('sw.tile.cost'), v: cost }
-        ],
-        theme
+        ]
       }, 'tiles'),
       goal ? jsxs('p', {
         className: 'sw-task',
@@ -2422,17 +1579,14 @@ export function outputLines(text) {
 }
 
 /** The big mark beside an opened command: its exit code in a status hex (Terminal: a bordered EXIT box), a radar while it runs. */
-function ExitMark({ t, theme, p }) {
+function ExitMark({ t, p }) {
   if (p.status === 'running') return jsx('span', { className: 'sw-radar', role: 'img', 'aria-label': t('sw.proc.status.running') })
   const known = p.exit_code !== null && p.exit_code !== undefined
   const code = known ? String(p.exit_code) : '?'
   return jsxs('span', {
     className: 'sw-exit', 'data-st': p.status, role: 'img',
     'aria-label': p.status === 'stopped' ? t('sw.proc.killed') : known ? t('sw.proc.exit', code) : t('sw.proc.noExit'),
-    children: [
-      theme !== 'terminal' ? jsx(DotNum, { text: code, size: 5 }, 'dm') : null,
-      jsx('b', { children: code }, 'b'), jsx('span', { children: t(p.status === 'stopped' ? 'sw.proc.killedTag' : 'sw.proc.exitTag') }, 's')
-    ]
+    children: [jsx('b', { children: code }, 'b'), jsx('span', { children: t(p.status === 'stopped' ? 'sw.proc.killedTag' : 'sw.proc.exitTag') }, 's')]
   })
 }
 
@@ -2883,14 +2037,6 @@ export function Page() {
   const loading = !noChat && history.loading && !history.data && !live.batches.length
   const nothing = !isLive && !past.length && history.error && procs.error && (files.error || !files.data?.files?.length)
   const swarm = subs.length > SWARM_AT
-  // Live map: the agents as the map draws them; laid out again only when what it shows changes.
-  const mainNow = calm ? '' : [...touching.values()].pop()?.path || ''
-  const mapRows = theme === 'map' ? units.map(u => ({
-    key: u.key, main: Boolean(u.main), name: u.name, status: u.status, act: u.act || null, who: u.main ? '' : u.sid || '',
-    nowPath: u.main ? mainNow : u.status === 'running' ? subNowPath(u.rec) : '', line: unitLine(t, u), icon: unitIcon(u)
-  })) : []
-  const mapSig = mapRows.map(u => [u.key, u.status, u.act, u.nowPath, u.line, u.icon].join('\u0001')).join('\u0002')
-  const mapUnits = useMemo(() => mapRows.map(u => ({ ...u, icon: (ICON[u.icon] || ICON.idle)() })), [mapSig])
 
   let body
   if (noChat) {
@@ -2910,10 +2056,8 @@ export function Page() {
       className: 'sw-agents', role: 'tabpanel', id: 'sw-tab-agents', 'aria-labelledby': 'sw-tabb-agents',
       children: [
         view ? jsx(RunBar, { t, view, runs, onPick: pickRun, onBack: () => pickRun('now') }, 'run') : null,
-        jsx(Score, { t, theme, subs }, 'score'),
-        theme === 'map'
-          ? jsx(LiveMap, { t, units: mapUnits, files: files.data?.files || MAP_NO_FILES, selected: sel.key, onSelect: setSelected }, `map-${view?.key || 'now'}`)
-          : swarm
+        jsx(Score, { t, subs }, 'score'),
+        swarm
           ? jsx(Swarm, { t, theme, main, subs, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, `swarm-${view?.key || 'now'}`)
           : subs.length
             ? jsx(Units, { t, theme, units, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, 'units')
@@ -2951,7 +2095,7 @@ export function Page() {
   return jsx(WatchedChat.Provider, { value: storedId, children: jsxs('div', {
     className: 'sw-page', ref: pageRef, 'data-theme': theme,
     children: [
-      jsx('style', { children: CSS + MAP_CSS }, 'css'),
+      jsx('style', { children: CSS }, 'css'),
       jsxs('div', {
         className: 'sw-panel', 'data-calm': calm ? 'true' : undefined, 'data-tab': tab,
         children: [
@@ -3624,163 +2768,6 @@ const CSS = `${TM_PALETTE}
 .sw-live{position:absolute;right:20px;top:92px;z-index:10;pointer-events:none}
 .sw-toast{width:max-content;max-width:min(360px,calc(100cqw - 40px));display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;overflow-wrap:anywhere;padding:8px 10px;font-size:12.5px;background:var(--raised);color:var(--ink);box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--a)}
 .sw-toast.is-bad{box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--bad)}
-/* Dot matrix (Live map shares its panels): near-monochrome rounded tiles; colour marks only working (accent)
-   and failed (red); dots count edits and reads; the big numbers are in dot-matrix type */
-.sw-page:not([data-theme=terminal]) .sw-panel{border-radius:16px;box-shadow:inset 0 0 0 1px var(--line)}
-.sw-page:not([data-theme=terminal]) .sw-k{font-size:12px;font-weight:500;letter-spacing:.12em;color:var(--dim)}
-.sw-page:not([data-theme=terminal]) .sw-ht{font-family:inherit;font-size:15px;font-weight:650;letter-spacing:0;text-transform:none}
-.sw-page:not([data-theme=terminal]) .sw-held{padding:1px 10px;border-radius:999px;font-family:inherit;font-size:12.5px;letter-spacing:0;text-transform:none}
-.sw-page:not([data-theme=terminal]) .sw-ib:not(.is-text){width:28px;height:28px;border-radius:50%;background:var(--tile);box-shadow:none}
-.sw-page:not([data-theme=terminal]) .sw-ib.is-text{width:auto;height:30px;padding:0 14px;white-space:nowrap;border-radius:999px;clip-path:none;font-family:inherit;font-size:13px;font-weight:550;letter-spacing:0;text-transform:none;
- background:var(--raised);box-shadow:inset 0 0 0 1px var(--line)}
-.sw-page:not([data-theme=terminal]) .sw-ib.is-text:hover{background:color-mix(in srgb,var(--ink) 13%,var(--bg))}
-.sw-page:not([data-theme=terminal]) .sw-ib.is-text.is-pri{background:var(--ink);color:var(--bg);box-shadow:none}
-.sw-page:not([data-theme=terminal]) .sw-ib.is-text.is-pri:hover{background:color-mix(in srgb,var(--ink) 85%,var(--bg))}
-.sw-page:not([data-theme=terminal]) .sw-ib.is-text:focus-visible{outline-color:var(--a);outline-offset:2px}
-.sw-page:not([data-theme=terminal]) .sw-tabs{display:inline-flex;gap:2px;padding:3px;border-radius:999px;background:var(--tile);border-bottom:0}
-.sw-page:not([data-theme=terminal]) .sw-tab{margin:0;padding:5px 14px;border-radius:999px;font-family:inherit;font-size:13px;letter-spacing:0;text-transform:none}
-.sw-page:not([data-theme=terminal]) .sw-tab[aria-selected=true]{background:color-mix(in srgb,var(--ink) 13%,var(--bg));font-weight:600}
-.sw-page:not([data-theme=terminal]) .sw-tabn{padding:0 6px;border-radius:999px;background:color-mix(in srgb,var(--a) 24%,var(--bg));color:var(--ink)}
-.sw-page:not([data-theme=terminal]) .sw-err{border-radius:12px}
-.sw-page:not([data-theme=terminal]) .sw-hint b{font-family:inherit;font-size:14px;letter-spacing:0;text-transform:none}
-.sw-page:not([data-theme=terminal]) .sw-sks{gap:10px}
-.sw-page:not([data-theme=terminal]) .sw-sk{width:120px;height:72px;border-radius:18px;clip-path:none;background:var(--tile)}
-.sw-page:not([data-theme=terminal]) .sw-pick{padding:5px 12px;border-radius:999px;background:var(--tile);box-shadow:none;font-family:inherit!important;font-size:13px!important;letter-spacing:0;text-transform:none}
-.sw-page:not([data-theme=terminal]) .sw-ld{border-radius:50%;transform:none;box-shadow:none}
-.sw-page:not([data-theme=terminal]) .sw-back{padding:4px 12px!important;border-radius:999px;background:var(--tile);box-shadow:inset 0 0 0 1px var(--line);font-family:inherit!important;font-size:12.5px!important;letter-spacing:0;text-transform:none}
-.sw-page:not([data-theme=terminal]) .sw-menu{border-radius:16px;box-shadow:0 18px 44px color-mix(in srgb,var(--bg) 70%,transparent),inset 0 0 0 1px var(--line)}
-.sw-page:not([data-theme=terminal]) .sw-mr{border-radius:10px}
-.sw-page:not([data-theme=terminal]) .sw-mr:hover,.sw-page:not([data-theme=terminal]) .sw-mr.is-on{background:color-mix(in srgb,var(--ink) 9%,transparent)}
-.sw-page:not([data-theme=terminal]) .sw-mini{gap:3px}
-.sw-page:not([data-theme=terminal]) .sw-mini i,.sw-page:not([data-theme=terminal]) .sw-seg i{flex:none;width:8px;height:8px;max-width:none;border-radius:50%;transform:none}
-.sw-page:not([data-theme=terminal]) .sw-mini i:is([data-st=queued],[data-st=idle]),.sw-page:not([data-theme=terminal]) .sw-seg i:is([data-st=queued],[data-st=idle]){background:none;box-shadow:inset 0 0 0 1.5px var(--idle)}
-.sw-page:not([data-theme=terminal]) .sw-more,.sw-page:not([data-theme=terminal]) .sw-fold{font-family:inherit!important;font-size:12.5px!important;letter-spacing:0;text-transform:none;text-decoration-color:var(--dim)}
-/* Dot matrix: score tiles */
-.sw-page:not([data-theme=terminal]) .sw-score{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:10px;align-items:stretch}
-.sw-page:not([data-theme=terminal]) .sw-score>.sw-sbig .sw-seg{display:none}
-.sw-page:not([data-theme=terminal]) .sw-sleg{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:12px;color:var(--dim)}
-.sw-page:not([data-theme=terminal]) .sw-sleg span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
-.sw-page:not([data-theme=terminal]) .sw-sleg span::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--c)}
-.sw-page:not([data-theme=terminal]) .sw-sleg span:is([data-st=queued],[data-st=idle])::before{background:none;box-shadow:inset 0 0 0 1.5px var(--idle)}
-.sw-page:not([data-theme=terminal]) .sw-score>div{min-width:0;padding:14px 16px 13px;border-radius:18px;background:var(--tile)}
-.sw-page:not([data-theme=terminal]) .sw-spent{text-align:left}
-.sw-page:not([data-theme=terminal]) .sw-big{margin-top:12px;font:inherit;line-height:1;text-shadow:none}
-.sw-page:not([data-theme=terminal]) .sw-money{display:block;margin-top:12px;font:inherit}
-.sw-page:not([data-theme=terminal]) .sw-dm~.sw-bign,.sw-page:not([data-theme=terminal]) .sw-dm~small,.sw-page:not([data-theme=terminal]) .sw-dm~.sw-moneyt,.sw-page:not([data-theme=terminal]) .sw-exit .sw-dm~b{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-.sw-page:not([data-theme=terminal]) .sw-seg{flex-wrap:wrap;gap:5px;height:auto;margin:14px 0 0}
-.sw-dm{display:block;max-width:100%;height:auto;overflow:visible}
-.sw-dm circle.on{fill:var(--ink)}
-.sw-dm circle.off{fill:var(--off)}
-.sw-page .sw-dm circle.on{animation:sw-dot .35s ease-out backwards}
-/* Dot matrix: agent tiles, split into even rows (4 a row, 2 when docked narrow) */
-.sw-page:not([data-theme=terminal]) .sw-units{--sw-cols:var(--sw-c4,var(--sw-n));grid-template-columns:repeat(var(--sw-cols),minmax(0,1fr));justify-content:stretch;gap:10px;margin:10px 0 0}
-.sw-page:not([data-theme=terminal]) .sw-unit{width:auto;min-width:0;display:flex;flex-direction:column;align-items:stretch;gap:0;padding:13px 14px 12px!important;text-align:left!important;border-radius:18px;background:var(--tile)}
-.sw-page:not([data-theme=terminal]) .sw-unit:hover{background:var(--raised)}
-.sw-page:not([data-theme=terminal]) .sw-unit.is-sel{background:var(--raised);box-shadow:inset 0 0 0 1.5px var(--a)}
-.sw-page:not([data-theme=terminal]) .sw-utop{display:flex;align-items:center;gap:8px;min-width:0}
-.sw-page:not([data-theme=terminal]) .sw-unit .sw-ic{flex:none;width:20px;height:20px;color:var(--c);filter:none}
-.sw-page:not([data-theme=terminal]) .sw-unit .sw-us{min-width:0;margin-left:auto;overflow:hidden;text-overflow:ellipsis;font:500 12px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
-.sw-page:not([data-theme=terminal]) .sw-unit[data-st=failed] .sw-us{color:var(--bad)}
-.sw-page:not([data-theme=terminal]) .sw-sd{flex:none;width:8px;height:8px;border-radius:50%;background:var(--c)}
-.sw-page:not([data-theme=terminal]) .sw-unit:is([data-st=queued],[data-st=idle]) .sw-sd{background:none;box-shadow:inset 0 0 0 1.5px var(--idle)}
-.sw-page:not([data-theme=terminal]) .sw-unit[data-st=stopped] .sw-sd{border-radius:2px}
-.sw-page:not([data-theme=terminal]) .sw-unit[data-st=running] .sw-sd{animation:sw-pulse 2.4s ease-in-out infinite}
-.sw-page:not([data-theme=terminal]) .sw-unit.is-done .sw-sd{animation:sw-close .9s ease-out}
-.sw-page:not([data-theme=terminal]) .sw-unit .sw-un{display:block;margin-top:12px;font-size:14.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sw-page:not([data-theme=terminal]) .sw-ua{font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sw-page:not([data-theme=terminal]) .sw-utm{margin-top:8px;font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sw-page:not([data-theme=terminal]) .sw-solo{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}
-.sw-page:not([data-theme=terminal]) .sw-solo .sw-units{grid-template-columns:minmax(0,1fr);margin:0}
-.sw-page:not([data-theme=terminal]) .sw-nosub{display:flex;align-items:center;min-width:0;padding:14px 16px;border-radius:18px;box-shadow:inset 0 0 0 1px var(--line);font-size:13px}
-.sw-page:not([data-theme=terminal]) .sw-gmain .sw-unit{width:min(100%,260px)}
-.sw-page:not([data-theme=terminal]) .sw-cell{width:30px;height:30px;border-radius:9px;clip-path:none;background:var(--tile)!important;box-shadow:inset 0 0 0 1px var(--line)}
-.sw-page:not([data-theme=terminal]) .sw-cell::after{display:none}
-.sw-page:not([data-theme=terminal]) .sw-cell svg{color:var(--c)}
-.sw-page:not([data-theme=terminal]) .sw-cell.is-sel{background:var(--raised)!important;box-shadow:inset 0 0 0 1.5px var(--a)}
-.sw-page:not([data-theme=terminal]) .sw-frow{padding:8px 12px!important;border-left:0!important;border-radius:12px;background:var(--tile)!important}
-.sw-page:not([data-theme=terminal]) .sw-frow::before{content:"";flex:none;width:8px;height:8px;border-radius:50%;background:var(--c)}
-/* Dot matrix: focus panel */
-.sw-page:not([data-theme=terminal]) .sw-focus{padding:16px 18px 18px;border-radius:18px;background:var(--tile)}
-.sw-page:not([data-theme=terminal]) .sw-ph::after{height:0;background:none;border-top:1px dashed var(--line)}
-.sw-page:not([data-theme=terminal]) .sw-hero{grid-template-columns:minmax(0,1fr)}
-.sw-page:not([data-theme=terminal]) .sw-hero>.sw-por{display:none}
-.sw-page:not([data-theme=terminal]) .sw-por{width:84px;height:84px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;border-radius:20px;background:var(--raised)}
-.sw-page:not([data-theme=terminal]) .sw-pring,.sw-page:not([data-theme=terminal]) .sw-phx{display:none}
-.sw-page:not([data-theme=terminal]) .sw-por .sw-ic{width:28px;height:28px;color:var(--c);filter:none}
-.sw-page:not([data-theme=terminal]) .sw-ptag{position:static;transform:none;padding:0;background:none;box-shadow:none;font:500 11.5px var(--mono);letter-spacing:.1em;color:var(--dim)}
-.sw-page:not([data-theme=terminal]) .sw-por[data-st=failed] .sw-ptag{color:var(--bad)}
-.sw-page:not([data-theme=terminal]) .sw-verb{letter-spacing:.12em;color:var(--dim)}
-.sw-page:not([data-theme=terminal]) .sw-head.is-file{font:600 20px/1.25 var(--mono);text-shadow:none}
-.sw-page:not([data-theme=terminal]) .sw-model{border-radius:999px}
-.sw-page:not([data-theme=terminal]) .sw-tile{display:flex;flex-direction:column-reverse;justify-content:flex-end;gap:8px;padding:10px 12px 12px;border-radius:14px;background:var(--raised)}
-.sw-page:not([data-theme=terminal]) .sw-tn{font:inherit;line-height:1;text-shadow:none}
-.sw-page:not([data-theme=terminal]) .sw-tn[data-count]::before{content:none}
-.sw-page:not([data-theme=terminal]) .sw-tn .sw-dm~span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-.sw-page:not([data-theme=terminal]) .sw-tn .sw-dm circle.on{fill:var(--ink)}
-.sw-page:not([data-theme=terminal]) .sw-tile[data-tone=bad] .sw-dm circle.on{fill:var(--bad)}
-.sw-page:not([data-theme=terminal]) .sw-tl{font:500 12px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sw-page:not([data-theme=terminal]) .sw-tile::before{display:none}
-.sw-page:not([data-theme=terminal]) .sw-tile[data-tone=bad] .sw-tn{color:var(--bad)}
-.sw-page:not([data-theme=terminal]) .sw-task{padding:0;border-left:0;font-size:13.5px}
-.sw-page:not([data-theme=terminal]) .sw-ans{padding:12px 14px 10px 16px;border-radius:12px;background:var(--raised)}
-.sw-page:not([data-theme=terminal]) .sw-ans::after,.sw-page:not([data-theme=terminal]) .sw-sig{display:none}
-.sw-page:not([data-theme=terminal]) .sw-ans::before{top:10px;bottom:10px;left:0;width:2px;height:auto;border:0;border-radius:2px;background:var(--c)}
-.sw-page:not([data-theme=terminal]) .sw-ansh{color:var(--dim)}
-/* Dot matrix: file lists share one set of content-sized columns, like Terminal's; one dot per edit
-   (filled) or read (ring), the file worked on now in the accent */
-.sw-page:not([data-theme=terminal]) .sw-flist{display:grid;grid-template-columns:14px fit-content(32ch) fit-content(24ch) max-content max-content max-content 1fr;column-gap:16px}
-.sw-page:not([data-theme=terminal]) .sw-flist>.sw-fsec{grid-column:1/-1;display:grid;grid-template-columns:subgrid;column-gap:normal;align-content:start}
-.sw-page:not([data-theme=terminal]) .sw-flist>.sw-fsec>*{grid-column:1/-1}
-.sw-page:not([data-theme=terminal]) .sw-flist .sw-fgrid{display:grid;grid-template-columns:subgrid;column-gap:normal;row-gap:0}
-.sw-page:not([data-theme=terminal]) .sw-flist>.sw-fsec>.sw-more{grid-column:2/-1;margin-left:0}
-.sw-page:not([data-theme=terminal]) .sw-ft{display:grid;width:100%;grid-column:1/-1;grid-template-columns:subgrid;column-gap:normal;align-items:center;min-height:32px;padding:0;overflow:visible;
- font-family:inherit;font-size:13.5px;background:none;box-shadow:none;clip-path:none;border-top:1px dashed var(--line)}
-.sw-page:not([data-theme=terminal]) .sw-fgrid>.sw-ft:first-child{border-top:0}
-.sw-page:not([data-theme=terminal]) .sw-ft:hover{background:color-mix(in srgb,var(--ink) 5%,transparent);box-shadow:none}
-.sw-page:not([data-theme=terminal]) .sw-ft::before{content:"";grid-column:1;grid-row:1}
-.sw-page:not([data-theme=terminal]) .sw-ft.is-now{background:none;box-shadow:none}
-.sw-page:not([data-theme=terminal]) .sw-ft.is-now::before{justify-self:center;width:6px;height:6px;border-radius:50%;background:var(--a)}
-.sw-page:not([data-theme=terminal]) .sw-ft.is-now::after{display:none}
-.sw-page:not([data-theme=terminal]) .sw-pipr{display:contents}
-.sw-page:not([data-theme=terminal]) .sw-fn{grid-column:2;grid-row:1;padding:0!important;font-weight:400}
-.sw-page:not([data-theme=terminal]) .sw-ft.is-now .sw-fn{font-weight:600}
-.sw-page:not([data-theme=terminal]) .sw-fd{grid-column:3;grid-row:1;font-family:inherit;font-size:12.5px}
-.sw-page:not([data-theme=terminal]) .sw-pips{grid-column:4;grid-row:1;gap:4px}
-.sw-page:not([data-theme=terminal]) .sw-pips i{width:7px;height:7px;border-radius:50%;transform:none;background:var(--off);box-shadow:none}
-.sw-page:not([data-theme=terminal]) .sw-pips i.on{background:var(--ink);box-shadow:none}
-.sw-page:not([data-theme=terminal]) .sw-ft[data-op=read] .sw-pips i.on{background:none;box-shadow:inset 0 0 0 1.5px var(--dim)}
-.sw-page:not([data-theme=terminal]) .sw-ft.is-now .sw-pips i.on{background:var(--a)}
-.sw-page:not([data-theme=terminal]) .sw-ft.is-now[data-op=read] .sw-pips i.on{background:none;box-shadow:inset 0 0 0 1.5px var(--a)}
-.sw-page:not([data-theme=terminal]) .sw-ft[data-op=failed] .sw-pips i.on{background:var(--bad)}
-.sw-page:not([data-theme=terminal]) .sw-fl{grid-column:5;grid-row:1;margin:0;text-align:left;font-family:inherit;font-size:12.5px;letter-spacing:0;text-transform:none}
-.sw-page:not([data-theme=terminal]) .sw-nowb{grid-column:6;grid-row:1;position:static;font:600 11.5px var(--mono);letter-spacing:.1em;color:color-mix(in srgb,var(--a) 50%,var(--ink))}
-.sw-page:not([data-theme=terminal]) .sw-leg::before{width:7px;height:7px;border-radius:50%;transform:none;background:var(--ink)}
-/* Dot matrix: commands */
-.sw-page:not([data-theme=terminal]) .sw-cmr{border-left:0!important;border-radius:12px;background:var(--tile)!important}
-.sw-page:not([data-theme=terminal]) .sw-cmd{border-radius:50%;transform:none}
-.sw-page:not([data-theme=terminal]) .sw-cmo{margin-top:4px;border-left:0;border-radius:12px;background:var(--tile)}
-.sw-page:not([data-theme=terminal]) .sw-exit{width:76px;height:84px;clip-path:none;border-radius:16px;background:color-mix(in srgb,var(--c) 12%,var(--bg));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 40%,transparent)}
-.sw-page:not([data-theme=terminal]) .sw-exit .sw-dm circle.on{fill:var(--c)}
-.sw-page:not([data-theme=terminal]) .sw-exit span{font-family:inherit;font-size:12px;letter-spacing:0;text-transform:none;color:var(--dim)}
-.sw-page:not([data-theme=terminal]) .sw-cchip{border-radius:999px;background:var(--raised);box-shadow:none}
-.sw-page:not([data-theme=terminal]) .sw-cchip>span{letter-spacing:0;text-transform:none}
-.sw-page:not([data-theme=terminal]) .sw-crt{border-radius:10px;background:var(--bg);box-shadow:inset 0 0 0 1px var(--line)}
-.sw-page:not([data-theme=terminal]) .sw-crt::after{display:none}
-.sw-page:not([data-theme=terminal]) .sw-pc{border-radius:10px}
-.sw-page:not([data-theme=terminal]) .sw-quiet{letter-spacing:0}
-.sw-page:not([data-theme=terminal]) .sw-toast{padding:8px 14px;border-radius:14px;background:var(--ink);color:var(--bg);font-weight:600;box-shadow:0 10px 26px color-mix(in srgb,var(--bg) 60%,transparent)}
-.sw-page:not([data-theme=terminal]) .sw-toast.is-bad{background:var(--raised);color:var(--ink);box-shadow:0 10px 26px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--bad)}
-/* Dot matrix docked narrow: 2 tiles a row; file rows keep name, dots and label (the folder and NOW give way) */
-@container (max-width:460px){
- .sw-page:not([data-theme=terminal]) .sw-panel .sw-units{--sw-cols:var(--sw-c2,var(--sw-n))}
- .sw-page:not([data-theme=terminal]) .sw-panel .sw-units>.sw-unit:last-child:nth-child(odd):not(:first-child){grid-column:1/-1}
- .sw-page:not([data-theme=terminal]) .sw-panel .sw-score{grid-template-columns:minmax(0,1fr)}
- .sw-page:not([data-theme=terminal]) .sw-panel .sw-flist{grid-template-columns:12px fit-content(22ch) 0 max-content max-content 0 1fr;column-gap:8px}
- .sw-page:not([data-theme=terminal]) .sw-panel .sw-fd,.sw-page:not([data-theme=terminal]) .sw-panel .sw-nowb{display:none}
- .sw-page:not([data-theme=terminal]) .sw-panel .sw-pips{gap:3px}
- .sw-page:not([data-theme=terminal]) .sw-panel .sw-pips i{width:5px;height:5px}
- .sw-page:not([data-theme=terminal]) .sw-panel .sw-exit{width:60px;height:68px}
-}
 /* narrow: docked beside the chat */
 @container (max-width:460px){
  .sw-panel .sw-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -3815,8 +2802,6 @@ const CSS = `${TM_PALETTE}
 @keyframes sw-pulse{50%{opacity:.45}}
 @keyframes sw-skp{50%{opacity:.5}}
 @keyframes sw-count{from{--sw-n:0}}
-@keyframes sw-dot{from{opacity:0}}
-@keyframes sw-close{from{transform:scale(2.2);opacity:.4}}
 @keyframes sw-in{from{opacity:0;transform:translateY(6px)}}
 @keyframes sw-sweep{from{left:-40%}to{left:100%}}
 @keyframes sw-reveal{from{clip-path:inset(0 0 100% 0)}}
@@ -3824,110 +2809,6 @@ const CSS = `${TM_PALETTE}
 @media (prefers-reduced-motion:reduce){.sw-page *,.sw-page *::before,.sw-page *::after{animation:none!important;transition:none!important}}
 `
 
-// ── Settings › Plugins › Subagent Watch ──────────────────────────────────────
-
-/** A small drawing of a look for its card in Settings. */
-function LookSketch({ id }) {
-  if (id === 'terminal') {
-    return jsx('span', {
-      className: 'sw-sk3 sw-sk3-term', 'aria-hidden': 'true',
-      children: ['$ subagent-watch', '[RUN] fix-tests', '[OK ] audit', '_'].map((l, i) => jsx('span', { children: l }, i))
-    })
-  }
-  if (id === 'map') {
-    return jsx('span', {
-      className: 'sw-sk3 sw-sk3-map', 'aria-hidden': 'true',
-      children: jsxs('svg', {
-        viewBox: '0 0 120 64', width: 120, height: 64,
-        children: [
-          jsx('path', { d: 'M14 32 H40 M40 32 V14 H66 M40 32 V50 H66 M66 14 H92 M66 50 H92', className: 'br' }, 'b'),
-          ...[[92, 14], [66, 14], [92, 50], [66, 50]].map(([x, y], i) => jsx('circle', { cx: x, cy: y, r: 3, className: i === 0 ? 'lf on' : 'lf' }, `l${i}`)),
-          jsx('path', { d: 'M106 24 L94 16', className: 'bm' }, 'bm'),
-          jsx('circle', { cx: 108, cy: 26, r: 5, className: 'ag' }, 'a'),
-          jsx('circle', { cx: 14, cy: 32, r: 5, className: 'ag main' }, 'm')
-        ]
-      })
-    })
-  }
-  return jsx('span', {
-    className: 'sw-sk3 sw-sk3-dots', 'aria-hidden': 'true',
-    children: [0, 1, 2].map(i => jsxs('span', {
-      className: 'tl',
-      children: [jsx('i', { className: i === 0 ? 'run' : i === 2 ? 'bad' : '' }, 'd'), jsx('b', {}, 'b'), jsx('em', {}, 'e')]
-    }, i))
-  })
-}
-
-/** Settings › Plugins › Subagent Watch: the look of the page, applied at once. */
-export function LookSettings() {
-  const t = usePluginI18n(ID)
-  const [theme, setTheme] = useTheme()
-  return jsxs('div', {
-    className: 'sw-set',
-    children: [
-      jsx('style', { children: SETTINGS_CSS }, 'css'),
-      jsx('p', { className: 'sw-setp', children: t('sw.settings.intro') }, 'i'),
-      jsx('h3', { className: 'sw-seth', id: 'sw-look-h', children: t('sw.theme.label') }, 'h'),
-      jsx('div', {
-        className: 'sw-looks', role: 'radiogroup', 'aria-labelledby': 'sw-look-h',
-        children: THEMES.map(id => jsxs('button', {
-          type: 'button', role: 'radio', className: 'sw-look', 'data-look': id, 'aria-checked': theme === id,
-          onClick: () => setTheme(id),
-          children: [
-            jsx(LookSketch, { id }, 's'),
-            jsxs('span', {
-              className: 'sw-lookt',
-              children: [
-                jsx('b', { children: t(`sw.theme.${id}`) }, 'n'),
-                id === THEMES[0] ? jsx('span', { className: 'sw-lookdef', children: t('sw.theme.isDefault') }, 'd') : null,
-                jsx('span', { className: 'sw-lookr', 'aria-hidden': 'true' }, 'r')
-              ]
-            }, 't'),
-            jsx('span', { className: 'sw-lookd', children: t(`sw.theme.about.${id}`) }, 'a')
-          ]
-        }, id))
-      }, 'g'),
-      jsx('p', { className: 'sw-setn', children: t('sw.settings.note') }, 'n')
-    ]
-  })
-}
-
-// Settings › Plugins › Subagent Watch: the host's tokens only, so the page reads like the rest of Settings.
-const SETTINGS_CSS = `
-.sw-set{max-width:760px;font-size:13px;color:var(--ui-text-primary)}
-.sw-setp{margin:0 0 18px;line-height:1.45;color:var(--ui-text-secondary)}
-.sw-seth{margin:0 0 10px;font-size:13px;font-weight:600}
-.sw-looks{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
-.sw-look{display:flex;flex-direction:column;gap:10px;min-width:0;padding:12px;border:0;border-radius:12px;text-align:left;font:inherit;color:inherit;cursor:pointer;
- background:transparent;box-shadow:inset 0 0 0 1px var(--ui-stroke-secondary)}
-.sw-look:hover{box-shadow:inset 0 0 0 1px var(--ui-text-tertiary)}
-.sw-look[aria-checked=true]{box-shadow:inset 0 0 0 2px var(--ui-accent)}
-.sw-look:focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}
-.sw-lookt{display:flex;align-items:center;gap:8px;min-width:0}
-.sw-lookt b{font-weight:600}
-.sw-lookdef{padding:0 7px;border-radius:999px;font-size:12px;color:var(--ui-text-secondary);box-shadow:inset 0 0 0 1px var(--ui-stroke-secondary)}
-.sw-lookr{flex:none;width:14px;height:14px;margin-left:auto;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--ui-text-tertiary)}
-.sw-look[aria-checked=true] .sw-lookr{box-shadow:inset 0 0 0 4px var(--ui-accent)}
-.sw-lookd{font-size:12.5px;line-height:1.45;color:var(--ui-text-secondary)}
-.sw-setn{margin:14px 0 0;font-size:12.5px;color:var(--ui-text-secondary)}
-.sw-sk3{display:block;height:76px;overflow:hidden;border-radius:8px;background:var(--dt-background);box-shadow:inset 0 0 0 1px var(--ui-stroke-tertiary)}
-.sw-sk3-dots{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:10px}
-.sw-sk3-dots .tl{display:flex;flex-direction:column;gap:6px;padding:7px;border-radius:9px;background:color-mix(in srgb,var(--ui-text-primary) 7%,var(--dt-background))}
-.sw-sk3-dots i{width:6px;height:6px;border-radius:50%;background:var(--ui-text-primary)}
-.sw-sk3-dots i.run{background:var(--ui-accent)}
-.sw-sk3-dots i.bad{background:var(--ui-red)}
-.sw-sk3-dots b{width:80%;height:5px;border-radius:3px;background:color-mix(in srgb,var(--ui-text-primary) 45%,transparent)}
-.sw-sk3-dots em{width:55%;height:4px;border-radius:2px;background:color-mix(in srgb,var(--ui-text-primary) 22%,transparent)}
-.sw-sk3-map{display:grid;place-items:center}
-.sw-sk3-map .br{fill:none;stroke:color-mix(in srgb,var(--ui-text-primary) 35%,transparent);stroke-width:1.5}
-.sw-sk3-map .lf{fill:color-mix(in srgb,var(--ui-text-primary) 60%,transparent)}
-.sw-sk3-map .lf.on{fill:var(--ui-accent)}
-.sw-sk3-map .bm{fill:none;stroke:var(--ui-accent);stroke-width:1.5;stroke-dasharray:3 2}
-.sw-sk3-map .ag{fill:var(--dt-background);stroke:var(--ui-accent);stroke-width:2}
-.sw-sk3-map .ag.main{stroke:var(--ui-text-primary)}
-.sw-sk3-term{display:flex;flex-direction:column;justify-content:center;gap:1px;padding:8px 10px;font:12px/1.3 ui-monospace,"Cascadia Mono",Consolas,monospace;
- color:color-mix(in srgb,var(--ui-accent) 70%,var(--ui-text-primary));background:color-mix(in srgb,var(--ui-accent) 6%,var(--dt-background))}
-`
 
 function navLabel() {
   const viaApp = ctxRef?.i18n?.t?.('sw.title')
@@ -3944,9 +2825,6 @@ export default {
     ctx.i18n?.register?.(BUNDLES)
     ctx.register({ id: 'page', area: 'routes', data: { path: ROUTE }, render: () => jsx(Page, {}) })
     ctx.register({ id: 'nav', area: 'sidebar.nav', data: { path: ROUTE, label: navLabel(), codicon: 'type-hierarchy-sub' } })
-    // The look is chosen in Settings › Plugins, never on the page itself (an older host without settings
-    // pages keeps the default look).
-    ctx.registerSettingsPage?.({ id: 'look', title: BUNDLES.en.sw.settings.title, icon: 'type-hierarchy-sub', render: () => jsx(LookSettings, {}) })
     ctx.register({ id: 'progress', area: STATUSBAR_AREAS.right, order: 125, render: () => jsx(ProgressChip, {}) })
     for (const type of SUBAGENT_EVENTS) ctx.onEvent(type, event => trackEvent(type, event))
     // A pet shown later, or a chat switch, gets the current line at once.
