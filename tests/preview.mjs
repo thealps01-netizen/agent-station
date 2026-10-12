@@ -38,7 +38,7 @@ const HERE = fileURLToPath(HERE_URL).replace(/\\/g, '/')
 const STUB = `${HERE_URL.href}.out/sdk-stub.mjs`
 const SRC = `${HERE}../desktop/plugin.js`
 export const SCREENS = 11
-export const LOOKS = ['cockpit', 'terminal']
+export const LOOKS = ['dots', 'terminal']
 
 try {
   readFileSync(`${HERE}.out/sdk-stub.mjs`, 'utf8')
@@ -349,7 +349,7 @@ const cell = f => `<section class="swp-wrap${f.narrow ? ' is-narrow' : ''}${f.ba
   <div class="swp-frame">${f.bar ? `<div class="swp-bar">${f.html}</div>` : f.html}</div>
 </section>`
 const body = Array.from({ length: SCREENS }, (_, i) => i + 1).map(s => `<div class="swp-row" data-row="${s}">
-${LOOKS.map(look => `<div class="swp-col" data-col="${look}"><p class="swp-look">${look === 'cockpit' ? 'Cockpit (default)' : 'Terminal'}</p>
+${LOOKS.map(look => `<div class="swp-col" data-col="${look}"><p class="swp-look">${({ dots: 'Dot matrix (default)', map: 'Live map', terminal: 'Terminal' })[look]}</p>
 ${frames.filter(f => f.screen === s && f.look === look).map(cell).join('\n')}</div>`).join('\n')}
 </div>`).join('\n')
 

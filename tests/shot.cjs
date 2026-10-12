@@ -16,7 +16,7 @@
  *
  * Usage (from tests/):  node preview.mjs && <electron> shot.cjs preview.html preview.png
  *   <electron> = $HERMES_ELECTRON, or <core>/apps/desktop/node_modules/electron/dist/electron(.exe)
- * Output: one PNG per look — <out> (Cockpit, the one the README shows) and <out>-terminal.png — plus
+ * Output: one PNG per look — <out> (Dot matrix, the one the README shows) and <out>-terminal.png — plus
  * <out>.measure.json and <out>.contrast.json beside them (both git-ignored).
  */
 const { app, BrowserWindow } = require('electron')
@@ -29,7 +29,7 @@ const outPath = outArg || path.join(__dirname, 'preview.png')
 const WIDTH = 1340 // two 640 px columns, Cockpit and Terminal, side by side
 const SHOT_WIDTH = 690 // one look per PNG
 const SCREENS = 11
-const LOOKS = ['cockpit', 'terminal']
+const LOOKS = ['dots', 'terminal']
 
 app.disableHardwareAcceleration()
 
@@ -229,7 +229,7 @@ app.whenReady().then(async () => {
   // One PNG per look: the other column is hidden, the window narrowed to one column.
   const shots = []
   for (const look of LOOKS) {
-    const file = look === 'cockpit' ? outPath : outPath.replace(/\.png$/i, `-${look}.png`)
+    const file = look === 'dots' ? outPath : outPath.replace(/\.png$/i, `-${look}.png`)
     await win.webContents.executeJavaScript(`(() => { let s = document.getElementById('swp-only'); if (!s) { s = document.createElement('style'); s.id = 'swp-only'; document.head.appendChild(s) }
       s.textContent = '.swp-col:not([data-col=${look}]){display:none}'; return 0 })()`)
     win.setContentSize(SHOT_WIDTH, 900)

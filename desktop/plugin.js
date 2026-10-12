@@ -19,10 +19,12 @@
  *   Commands  shell commands the agent started with terminal(background=true), running and
  *             finished, from the backend's /processes; a row opens its exit code, folder and the
  *             end of its output (/process_output).
- *   Looks     two themes over the same page: Cockpit (the default; theme tokens only, the accent
- *             is the app's --ui-accent) and Terminal (a CRT palette derived from the same theme
- *             tokens in TM_PALETTE). The choice is kept in the plugin's ctx.storage; a missing or failing
- *             storage falls back to Cockpit and never breaks the page.
+ *   Looks     three looks over the same page, chosen in Settings > Plugins > Subagent Watch (no
+ *             toggle on the page): Dot matrix (the default; near-monochrome tiles, dot meters and
+ *             dot-matrix numbers, theme tokens only), Live map (the same panels; the agents drawn on a
+ *             tree of the chat's files) and Terminal (a CRT palette derived from the same theme tokens
+ *             in TM_PALETTE). The choice is kept in the plugin's ctx.storage; a missing or failing
+ *             storage falls back to Dot matrix and never breaks the page.
  *   Progress  the focused chat's running batch as a status-bar chip (finished/total, a bar, the
  *             cost so far) and, when a pet is on screen, as a line in its speech bubble. Fed by
  *             a small tracker of its own, so it shows while the page is closed.
@@ -93,7 +95,9 @@ const ANSWER_CHARS = 360
 const ANSWER_LINES = 6
 // How long a unit that just finished (or failed) plays its moment.
 const FLASH_MS = 1400
-const THEMES = ['cockpit', 'terminal']
+const THEMES = ['dots', 'map', 'terminal']
+// Looks kept by an earlier version, read as the one that replaced them.
+const THEME_RENAMED = { cockpit: 'dots' }
 const THEME_KEY = 'theme'
 // The main agent's unit key: never a subagent id or a session id.
 const MAIN = 'main'
@@ -111,7 +115,22 @@ const BUNDLES = {
         held: 'held',
         heldTip: 'You clicked inside this page, so it keeps showing this chat. Click a chat to follow it again.'
       },
-      theme: { label: 'Look of this page', cockpit: 'Cockpit', terminal: 'Terminal' },
+      theme: {
+        label: 'Look', dots: 'Dot matrix', map: 'Live map', terminal: 'Terminal', isDefault: 'Default',
+        about: {
+          dots: 'Calm tiles, one dot per edit, numbers in dot-matrix type. Colour only marks working and failed.',
+          map: 'The chat\u2019s files as a tree, each agent beside the file it works on now.',
+          terminal: 'A green-screen console: aligned text rows, ASCII sprites, blinking cursor.'
+        }
+      },
+      unit: {
+        time: (time, status) => status === 'running' ? `on task ${time}` : status === 'completed' ? `took ${time}` : status === 'failed' ? `after ${time}` : time
+      },
+      settings: {
+        title: 'Subagent Watch',
+        intro: 'How the Subagents page draws a chat\u2019s agents, their files and background commands.',
+        note: 'Applies at once to the open page and the status-bar chip.'
+      },
       tabs: {
         label: 'Sections', agents: 'Agents', commands: 'Commands',
         running: n => `${n} command${n === 1 ? '' : 's'} running`
@@ -146,6 +165,7 @@ const BUNDLES = {
         done: 'Subagents done',
         none: 'No subagents yet',
         spent: 'Spent',
+        leg: (n, word) => `${n} ${word}`,
         label: (done, total) => `${done} of ${total} subagents done`
       },
       agents: 'Agents of this run',
@@ -572,17 +592,19 @@ function Cells({ statuses, className = 'sw-cells' }) {
   })
 }
 
-// ── look: Cockpit / Terminal ─────────────────────────────────────────────────
+// ── look: Dot matrix / Live map / Terminal ───────────────────────────────────
 //
 // The chosen look is kept in the plugin's own storage (ctx.storage). Storage is a convenience: when
-// it is missing, holds something else, or throws, the page draws Cockpit and keeps working.
+// it is missing, holds something else, or throws, the page draws Dot matrix and keeps working. A look
+// an earlier version kept (Cockpit) reads as the one that replaced it.
 
 let themeNow = null
 const themeSubs = new Set()
 
 function readTheme() {
   try {
-    const kept = ctxRef?.storage?.get?.(THEME_KEY, THEMES[0])
+    const raw = ctxRef?.storage?.get?.(THEME_KEY, THEMES[0])
+    const kept = THEME_RENAMED[raw] || raw
     return THEMES.includes(kept) ? kept : THEMES[0]
   } catch (err) {
     console.warn(`[${ID}] could not read the kept look; using ${THEMES[0]}`, err)
@@ -608,6 +630,62 @@ function useTheme() {
     themeSubs.forEach(fn => fn())
   }, [])
   return [theme, choose]
+}
+
+// ── dot-matrix numbers (Dot matrix and Live map) ─────────────────────────────
+
+// 7-row glyphs; a text with any other character is printed as text only.
+const DM_GLYPHS = {
+  0: ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+  1: ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  2: ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
+  3: ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
+  4: ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+  5: ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+  6: ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
+  7: ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  8: ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+  9: ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
+  '/': ['00001', '00010', '00010', '00100', '01000', '01000', '10000'],
+  $: ['00100', '01111', '10100', '01110', '00101', '11110', '00100'],
+  '.': ['0', '0', '0', '0', '0', '0', '1'],
+  '~': ['00000', '00000', '01000', '10101', '00010', '00000', '00000'],
+  '?': ['01110', '10001', '00001', '00110', '00100', '00000', '00100'],
+  '-': ['00000', '00000', '00000', '11111', '00000', '00000', '00000'],
+  h: ['10000', '10000', '10110', '11001', '10001', '10001', '10001'],
+  m: ['00000', '00000', '11010', '10101', '10101', '10101', '10101'],
+  s: ['00000', '00000', '01111', '10000', '01110', '00001', '11110'],
+  k: ['10000', '10000', '10010', '10100', '11000', '10100', '10010'],
+  ' ': ['00', '00', '00', '00', '00', '00', '00']
+}
+
+/** The dots of a text in DM_GLYPHS, or null when a character has no glyph. */
+export function dotMatrix(text) {
+  const chars = [...String(text ?? '')]
+  if (!chars.length || chars.some(c => !DM_GLYPHS[c])) return null
+  const dots = []
+  let x = 0
+  chars.forEach((c, ci) => {
+    const g = DM_GLYPHS[c]
+    for (let i = 0; i < g[0].length; i++) for (let y = 0; y < 7; y++) dots.push({ x: x + i, y, on: g[y][i] === '1' })
+    x += g[0].length + (ci < chars.length - 1 ? 1 : 0)
+  })
+  return { dots, cols: x }
+}
+
+/** A number in dot-matrix type, drawn beside its text (the text stays for readers and the Terminal look). */
+function DotNum({ text, size = 5, className = '' }) {
+  const m = dotMatrix(text)
+  if (!m) return null
+  const step = size + 2
+  return jsx('svg', {
+    className: `sw-dm ${className}`.trim(), 'aria-hidden': 'true', width: m.cols * step - 2, height: 7 * step - 2,
+    viewBox: `0 0 ${m.cols * step - 2} ${7 * step - 2}`,
+    children: m.dots.map((d, i) => jsx('circle', {
+      cx: d.x * step + size / 2, cy: d.y * step + size / 2, r: size / 2, className: d.on ? 'on' : 'off',
+      style: d.on ? { animationDelay: `${d.x * 24}ms` } : undefined
+    }, i))
+  })
 }
 
 // ── data hooks ───────────────────────────────────────────────────────────────
@@ -956,13 +1034,18 @@ function statusWord(t, u, waitingOn) {
   return t(`sw.act.${u.act || 'think'}`)
 }
 
-/** One line on what a unit does or did: 'editing plugin.js · 3m 10s', 'done · 5m 12s'. */
-function unitLine(t, u) {
+/** What a unit does or did, and for how long: ['editing plugin.js', '3m 10s'], ['done', '5m 12s']. */
+function unitParts(t, u) {
   const time = u.status === 'stopped' || u.main ? '' : fmtDuration(u.duration, t)
   const what = u.status === 'running' && u.rec?.last_tool
     ? [toolVerb(t, u.rec.last_tool), shortTarget(u.rec.tool_preview)].filter(Boolean).join(' ')
     : u.status === 'running' ? t(`sw.act.${u.act || 'think'}`) : t(`sw.st.${u.status}`)
-  return [what, time].filter(Boolean).join(' · ')
+  return [what, time]
+}
+
+/** One line on what a unit does or did: 'editing plugin.js · 3m 10s', 'done · 5m 12s'. */
+function unitLine(t, u) {
+  return unitParts(t, u).filter(Boolean).join(' · ')
 }
 
 function Unit({ t, theme, u, selected, onSelect, flash, waitingOn }) {
@@ -971,25 +1054,29 @@ function Unit({ t, theme, u, selected, onSelect, flash, waitingOn }) {
   const tag = t(`sw.tag.${u.status === 'running' ? u.act || 'think' : u.status}`)
   const term = theme === 'terminal'
   const goal = String(u.rec?.goal || '').trim()
+  const [what, time] = unitParts(t, u)
+  const tile = term ? null : [
+    jsxs('span', {
+      className: 'sw-utop', 'aria-hidden': 'true',
+      children: [
+        jsx('span', { className: 'sw-ic', children: ICON[icon]() }, 'i'),
+        jsx('span', { className: 'sw-us', children: word }, `s-${word}`),
+        jsx('i', { className: 'sw-sd' }, 'd')
+      ]
+    }, 'top'),
+    jsx('span', { className: 'sw-un', children: u.name }, 'n'),
+    jsx('span', { className: 'sw-ua', children: what }, 'a'),
+    time ? jsx('span', { className: 'sw-utm', children: t('sw.unit.time', time, u.status) }, 'tm') : null
+  ]
   const button = jsxs('button', {
     type: 'button', className: `sw-unit${selected ? ' is-sel' : ''}${flash ? ` is-${flash}` : ''}`,
     'data-st': u.status, 'data-icon': icon, 'data-main': u.main ? 'true' : undefined, 'data-batch': u.batch,
     'aria-pressed': selected, 'aria-label': `${u.name}: ${word}`, onClick: () => onSelect(u.key),
-    children: [
-      term
-        ? jsx('pre', { className: 'sw-spr', 'aria-hidden': 'true', children: sprite(icon) }, 'v')
-        : jsxs('span', {
-          className: 'sw-hex', 'aria-hidden': 'true',
-          children: [
-            jsx('span', { className: 'sw-ring' }, 'r'),
-            jsx('span', { className: 'sw-body' }, 'b'),
-            jsx('span', { className: 'sw-ic', children: ICON[icon]() }, 'i'),
-            u.main ? jsx('span', { className: 'sw-maintag', children: t('sw.main.tag') }, 'm') : null
-          ]
-        }, 'v'),
-      jsx('span', { className: 'sw-un', children: term ? `${u.main ? '★ ' : ''}${slugName(u.name)}` : u.name }, 'n'),
+    children: tile || [
+      jsx('pre', { className: 'sw-spr', 'aria-hidden': 'true', children: sprite(icon) }, 'v'),
+      jsx('span', { className: 'sw-un', children: `${u.main ? '★ ' : ''}${slugName(u.name)}` }, 'n'),
       // Keyed by its text: a new status mounts anew, so the Terminal look types it again.
-      jsx('span', { className: 'sw-us', children: term ? tag : word }, `s-${term ? tag : word}`)
+      jsx('span', { className: 'sw-us', children: tag }, `s-${tag}`)
     ]
   })
   return jsx(Tip, { label: [tipText(goal || u.name), tipText(unitLine(t, u))].filter(Boolean).join('\n'), children: button })
@@ -1080,22 +1167,35 @@ function Swarm({ t, theme, main, subs, selected, onSelect, flash, waitingOn }) {
 }
 
 /** The big score: subagents done / all, one cell per subagent, what the subagents spent. */
-function Score({ t, subs }) {
+function Score({ t, theme, subs }) {
+  const dm = theme !== 'terminal'
   const done = subs.filter(u => u.status === 'completed').length
   const sum = sumCost(subs.map(u => u.rec))
   const cost = fmtCost(sum.usd, sum.status, t)
+  const legend = ['completed', 'running', 'queued', 'failed', 'stopped']
+    .map(st => [st, subs.filter(u => u.status === st).length]).filter(([, n]) => n)
   return jsxs('div', {
     className: 'sw-score', role: 'group', 'aria-label': subs.length ? t('sw.score.label', done, subs.length) : t('sw.score.none'),
     children: [
       jsxs('div', {
         className: 'sw-sbig',
         children: [
-          jsx('div', { className: 'sw-k', children: t('sw.score.status') }, 'k'),
+          jsx('div', { className: 'sw-k', children: t(dm ? (subs.length ? 'sw.score.done' : 'sw.score.none') : 'sw.score.status') }, 'k'),
           // Keyed by the count: a new count mounts anew and rolls up into place.
-          jsxs('div', { className: 'sw-big', children: [jsx('span', { className: 'sw-bign', children: done }, `n-${done}`), jsx('small', { children: `/${subs.length}` }, 't')] }, 'b')
+          dm && !subs.length ? null : jsxs('div', {
+            className: 'sw-big',
+            children: [
+              dm && subs.length ? jsx(DotNum, { text: `${done}/${subs.length}`, size: 6 }, `dm-${done}-${subs.length}`) : null,
+              jsx('span', { className: 'sw-bign', children: done }, `n-${done}`), jsx('small', { children: `/${subs.length}` }, 't')
+            ]
+          }, 'b'),
+          dm && legend.length ? jsx('div', {
+            className: 'sw-sleg',
+            children: legend.map(([st, n]) => jsx('span', { 'data-st': st, children: t('sw.score.leg', n, t(`sw.st.${st}`)) }, st))
+          }, 'l') : null
         ]
       }, 'b'),
-      jsxs('div', {
+      dm ? null : jsxs('div', {
         className: 'sw-sseg',
         children: [
           jsx('div', { className: 'sw-k', children: subs.length ? t('sw.score.done') : t('sw.score.none') }, 'k'),
@@ -1108,7 +1208,10 @@ function Score({ t, subs }) {
           jsx('div', { className: 'sw-k', children: t('sw.score.spent') }, 'k'),
           jsx(Tip, {
             label: t('sw.cost.tip', sum.priced, sum.included, sum.unknown),
-            children: jsx('b', { className: 'sw-money', tabIndex: 0, children: cost || '—' })
+            children: jsxs('b', {
+              className: 'sw-money', tabIndex: 0,
+              children: [dm ? jsx(DotNum, { text: cost || '-', size: 4 }, `dm-${cost}`) : null, jsx('span', { className: 'sw-moneyt', children: cost || '—' }, 't')]
+            })
           }, 'v')
         ]
       }, '$') : null
@@ -1316,15 +1419,16 @@ function Hero({ t, theme, u, verb, head, full, file, where, chip, cursor }) {
  * Labelled stat tiles. A whole number counts up from 0 as the panel opens (a CSS counter, so the
  * reduced-motion lock stops it); any other value rolls in. The real value is always in the DOM.
  */
-function Tiles({ tiles }) {
+function Tiles({ tiles, theme }) {
+  const dm = theme && theme !== 'terminal'
   return jsx('div', {
     className: 'sw-tiles',
     children: tiles.map(x => jsxs('div', {
       className: 'sw-tile', 'data-k': x.k, 'data-tone': x.tone,
       children: [
         Number.isInteger(x.n) && x.n >= 0
-          ? jsx('b', { className: 'sw-tn', 'data-count': x.n, style: { '--sw-n': x.n }, children: jsx('span', { children: String(x.n) }) }, `n-${x.n}`)
-          : jsx('b', { className: 'sw-tn', children: jsx('span', { children: x.v || '—' }) }, `v-${x.v}`),
+          ? jsx('b', { className: 'sw-tn', 'data-count': x.n, style: { '--sw-n': x.n }, children: [dm ? jsx(DotNum, { text: String(x.n), size: 3 }, 'dm') : null, jsx('span', { children: String(x.n) }, 't')] }, `n-${x.n}`)
+          : jsx('b', { className: 'sw-tn', children: [dm ? jsx(DotNum, { text: x.v || '-', size: 3 }, 'dm') : null, jsx('span', { children: x.v || '—' }, 't')] }, `v-${x.v}`),
         jsx('span', { className: 'sw-tl', children: x.label }, 'l')
       ]
     }, x.k))
@@ -1374,7 +1478,8 @@ function MainPanel({ t, theme, main, files, touching, tool, waitingOn, onToast }
           { k: 'touched', label: t('sw.tile.touched'), n: touched },
           { k: 'changed', label: t('sw.tile.changed'), n: mine.changed.length },
           { k: 'read', label: t('sw.tile.read'), n: mine.read.length, tone: 'idle' }
-        ]
+        ],
+        theme
       }, 'tiles'),
       jsx(Files, { t, theme, mine, nowRows: now, verbOf, files, onToast, empty: t('sw.focus.noFiles') }, 'f'),
       more ? jsx('p', { className: 'sw-fnote', children: t('sw.file.notListed', more) }, 'more') : null,
@@ -1450,7 +1555,8 @@ function SubPanel({ t, theme, u, parentName, files, onToast }) {
           { k: 'tools', label: t('sw.tile.tools'), n: rec.tool_calls ?? rec.tool_count ?? 0 },
           { k: 'tokens', label: t('sw.tile.tokens'), v: fmtTokens(rec.tokens, t) },
           { k: 'cost', label: t('sw.tile.cost'), v: cost }
-        ]
+        ],
+        theme
       }, 'tiles'),
       goal ? jsxs('p', {
         className: 'sw-task',
@@ -1585,14 +1691,17 @@ export function outputLines(text) {
 }
 
 /** The big mark beside an opened command: its exit code in a status hex (Terminal: a bordered EXIT box), a radar while it runs. */
-function ExitMark({ t, p }) {
+function ExitMark({ t, theme, p }) {
   if (p.status === 'running') return jsx('span', { className: 'sw-radar', role: 'img', 'aria-label': t('sw.proc.status.running') })
   const known = p.exit_code !== null && p.exit_code !== undefined
   const code = known ? String(p.exit_code) : '?'
   return jsxs('span', {
     className: 'sw-exit', 'data-st': p.status, role: 'img',
     'aria-label': p.status === 'stopped' ? t('sw.proc.killed') : known ? t('sw.proc.exit', code) : t('sw.proc.noExit'),
-    children: [jsx('b', { children: code }, 'b'), jsx('span', { children: t(p.status === 'stopped' ? 'sw.proc.killedTag' : 'sw.proc.exitTag') }, 's')]
+    children: [
+      theme !== 'terminal' ? jsx(DotNum, { text: code, size: 5 }, 'dm') : null,
+      jsx('b', { children: code }, 'b'), jsx('span', { children: t(p.status === 'stopped' ? 'sw.proc.killedTag' : 'sw.proc.exitTag') }, 's')
+    ]
   })
 }
 
@@ -1899,7 +2008,7 @@ const NO_ATOM = { get: () => null, listen: () => () => {} }
 export function Page() {
   const t = usePluginI18n(ID)
   const pageRef = useRef(null)
-  const [theme, setTheme] = useTheme()
+  const [theme] = useTheme()
   const watched = useWatchedChat(pageRef)
   const { runtimeId, storedId } = watched
   const busyBy = useValue(host.state.busyBySession || NO_ATOM)
@@ -2062,7 +2171,7 @@ export function Page() {
       className: 'sw-agents', role: 'tabpanel', id: 'sw-tab-agents', 'aria-labelledby': 'sw-tabb-agents',
       children: [
         view ? jsx(RunBar, { t, view, runs, onPick: pickRun, onBack: () => pickRun('now') }, 'run') : null,
-        jsx(Score, { t, subs }, 'score'),
+        jsx(Score, { t, theme, subs }, 'score'),
         swarm
           ? jsx(Swarm, { t, theme, main, subs, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, `swarm-${view?.key || 'now'}`)
           : subs.length
@@ -2112,13 +2221,6 @@ export function Page() {
               // Which chat this is: the page can hold a chat the app no longer has focused.
               chatName ? jsx('span', { className: 'sw-chatn', children: theme === 'terminal' ? `// ${chatName}` : chatName }, 'c') : null,
               watched.held ? jsx(Tip, { label: t('sw.chat.heldTip'), children: jsx('span', { className: 'sw-held', tabIndex: 0, children: theme === 'terminal' ? `[${t('sw.chat.held')}]` : t('sw.chat.held') }) }, 'held') : null,
-              // The look toggle is always there: no chat or a pending read is no reason to hide it.
-              jsx('div', {
-                className: 'sw-tg', role: 'group', 'aria-label': t('sw.theme.label'),
-                children: THEMES.map(id => jsx('button', {
-                  type: 'button', className: 'sw-tgb', 'data-theme': id, 'aria-pressed': theme === id, onClick: () => setTheme(id), children: t(`sw.theme.${id}`)
-                }, id))
-              }, 'tg'),
               noChat ? null : jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: refreshAll, disabled: !storedId }, 'r')
             ]
           }, 'h'),
@@ -2390,8 +2492,9 @@ const CHIP_CSS = `${TM_PALETTE}
 
 const CSS = `${TM_PALETTE}
 .sw-page{height:100%;min-height:0;overflow:auto;padding:16px 20px;font-size:12.5px;--mono:ui-monospace,"Cascadia Mono",Consolas,var(--dt-font-mono,monospace)}
-.sw-page[data-theme=cockpit]{--a:var(--ui-accent);--ink:var(--ui-text-primary);--dim:var(--ui-text-secondary);--bg:var(--dt-background);
- --run:var(--ui-yellow);--ok:var(--ui-green);--bad:var(--ui-red);--idle:var(--ui-text-tertiary);--line:color-mix(in srgb,var(--a) 42%,transparent);--raised:color-mix(in srgb,var(--a) 8%,var(--bg))}
+.sw-page:not([data-theme=terminal]){--a:var(--ui-accent);--ink:var(--ui-text-primary);--dim:var(--ui-text-secondary);--bg:var(--dt-background);
+ --run:var(--a);--ok:var(--ink);--bad:var(--ui-red);--idle:var(--ui-text-tertiary);--line:color-mix(in srgb,var(--ink) 11%,transparent);
+ --raised:color-mix(in srgb,var(--ink) 8%,var(--bg));--tile:color-mix(in srgb,var(--ink) 5%,var(--bg));--off:color-mix(in srgb,var(--ink) 16%,var(--bg))}
 .sw-page[data-theme=terminal]{--a:var(--tm-acc);--ink:var(--tm-ink);--dim:var(--tm-dim);--bg:var(--tm-bg);
  --run:var(--tm-run);--ok:var(--tm-ok);--bad:var(--tm-bad);--idle:var(--tm-dim);--line:var(--tm-line);--raised:var(--tm-raised)}
 .sw-page [data-st=running]{--c:var(--run)}
@@ -2399,9 +2502,6 @@ const CSS = `${TM_PALETTE}
 .sw-page [data-st=failed]{--c:var(--bad)}
 .sw-page [data-st=stopped],.sw-page [data-st=queued],.sw-page [data-st=idle]{--c:var(--idle)}
 .sw-panel{position:relative;container-type:inline-size;max-width:860px;margin:0 auto;padding:16px 18px 18px;color:var(--ink);background:var(--bg)}
-.sw-page[data-theme=cockpit] .sw-panel{background:radial-gradient(90% 60% at 50% 0%,color-mix(in srgb,var(--a) 12%,transparent),transparent 70%),var(--bg);
- clip-path:polygon(16px 0,100% 0,100% calc(100% - 16px),calc(100% - 16px) 100%,0 100%,0 16px)}
-.sw-page[data-theme=cockpit] .sw-panel::before{content:"";position:absolute;inset:0;pointer-events:none;clip-path:inherit;box-shadow:inset 0 0 0 1px var(--line)}
 .sw-page[data-theme=terminal] .sw-panel{border-radius:8px;font:12.5px/1.6 var(--mono);overflow:hidden;box-shadow:inset 0 0 0 1px var(--line),inset 0 0 60px color-mix(in srgb,var(--tm-shade) 80%,transparent)}
 .sw-page[data-theme=terminal] .sw-panel::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:9;
  background:repeating-linear-gradient(0deg,color-mix(in srgb,var(--tm-shade) 25%,transparent) 0 1px,transparent 1px 3px)}
@@ -2409,7 +2509,6 @@ const CSS = `${TM_PALETTE}
 .sw-page button:focus-visible,.sw-page [tabindex]:focus-visible{outline:2px solid var(--a);outline-offset:2px}
 .sw-page button:disabled{opacity:.5;cursor:default}
 .sw-k{margin:0;font:600 11.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
-.sw-page[data-theme=cockpit] .sw-k{color:color-mix(in srgb,var(--a) 55%,var(--ink))}
 .sw-page[data-theme=terminal] .sw-k{letter-spacing:0;text-transform:lowercase;font-weight:400}
 .sw-cur{display:none}
 .sw-page[data-theme=terminal] .sw-cur{display:inline-block;width:8px;height:14px;margin-left:4px;vertical-align:-2px;background:var(--a);box-shadow:0 0 8px var(--a);animation:sw-blink 1.06s steps(1) infinite}
@@ -2421,14 +2520,8 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-chatn{text-transform:lowercase}
 .sw-held{flex:none;font:600 11.5px var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:0 6px;color:var(--ink);background:color-mix(in srgb,var(--a) 22%,var(--bg));box-shadow:inset 0 0 0 1px var(--a)}
 .sw-page[data-theme=terminal] .sw-held{background:none;color:var(--run);letter-spacing:0}
-.sw-tg{margin-left:auto;display:flex;flex:none;font:11.5px var(--mono);letter-spacing:.08em}
-.sw-tgb{padding:3px 8px;text-transform:uppercase;color:var(--dim);box-shadow:inset 0 0 0 1px var(--line)}
-.sw-tgb[aria-pressed=true]{color:var(--ink);background:color-mix(in srgb,var(--a) 22%,transparent)}
-.sw-page[data-theme=terminal] .sw-tgb{box-shadow:none;padding:0 6px}
-.sw-page[data-theme=terminal] .sw-tgb[aria-pressed=true]{color:var(--bg);background:var(--ink)}
 .sw-ib{display:inline-grid;place-items:center;width:26px;height:26px;color:var(--dim);box-shadow:inset 0 0 0 1px var(--line)}
 .sw-hd>.sw-ib{flex:none;margin-left:auto}
-.sw-hd>.sw-tg+.sw-ib{margin-left:0}
 .sw-ib svg{width:14px;height:14px}
 .sw-ib:hover{color:var(--ink);background:color-mix(in srgb,var(--a) 12%,transparent)}
 .sw-ib.is-pri{background:color-mix(in srgb,var(--a) 20%,transparent)}
@@ -2520,7 +2613,7 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-seg{gap:0;height:12px}
 .sw-page[data-theme=terminal] .sw-seg i{transform:none}
 .sw-page[data-theme=terminal] .sw-money{font-size:14px;color:var(--tm-hi)}
-/* units: Cockpit hexes */
+/* units: the shared grid; each look sizes its tiles */
 .sw-units{--sw-fit:8;--sw-cols:var(--sw-c8,var(--sw-n));display:grid;grid-template-columns:repeat(var(--sw-cols),96px);justify-content:space-around;column-gap:8px;row-gap:12px;margin:20px 0 4px}
 /* how many 96 px units fit a row at the panel's width; the rows are then split evenly (unitCols) */
 @container (max-width:823px){.sw-units{--sw-fit:7;--sw-cols:var(--sw-c7,var(--sw-n))}}
@@ -2530,28 +2623,11 @@ const CSS = `${TM_PALETTE}
 @container (max-width:407px){.sw-units{--sw-fit:3;--sw-cols:var(--sw-c3,var(--sw-n))}}
 @container (max-width:303px){.sw-units{--sw-fit:2;--sw-cols:var(--sw-c2,var(--sw-n))}}
 .sw-unit{width:96px;display:flex;flex-direction:column;align-items:center;gap:5px;text-align:center!important;padding:4px 0!important}
-.sw-hex{position:relative;width:60px;height:66px;display:grid;place-items:center;margin:8px 0 2px}
-.sw-ring{position:absolute;inset:-6px -3px;border-radius:50%;background:repeating-conic-gradient(var(--c) 0 8deg,transparent 8deg 15deg);
- -webkit-mask:radial-gradient(circle,transparent 35px,var(--a) 36px 38px,transparent 39px);mask:radial-gradient(circle,transparent 35px,var(--a) 36px 38px,transparent 39px)}
-.sw-unit[data-st=running] .sw-ring{animation:sw-rot 9s linear infinite}
-.sw-unit[data-st=completed] .sw-ring,.sw-unit[data-st=failed] .sw-ring{background:var(--c)}
-.sw-unit[data-st=queued] .sw-ring,.sw-unit[data-st=idle] .sw-ring{opacity:.4}
-.sw-body{position:absolute;inset:3px 5px;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:linear-gradient(160deg,color-mix(in srgb,var(--c) 45%,var(--bg)),var(--bg) 78%)}
-.sw-body::after{content:"";position:absolute;inset:2px;clip-path:inherit;background:color-mix(in srgb,var(--c) 6%,var(--bg))}
 .sw-ic{position:relative;z-index:1;width:22px;height:22px;color:var(--ink);filter:drop-shadow(0 0 6px var(--c))}
 .sw-ic svg{width:100%;height:100%;display:block}
-.sw-maintag{position:absolute;top:-6px;right:-14px;z-index:2;font:700 11.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:0 4px;color:var(--ink);background:color-mix(in srgb,var(--a) 22%,var(--bg));box-shadow:inset 0 0 0 1px var(--a)}
-.sw-page[data-theme=terminal] .sw-maintag{background:var(--a);color:var(--bg);box-shadow:none}
-.sw-unit.is-sel .sw-hex::before{content:"";position:absolute;inset:-12px -18px -7px;border:1.5px solid var(--a);
- -webkit-mask:conic-gradient(var(--a) 0 0) 0 0/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 100% 0/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 0 100%/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 100% 100%/14px 14px no-repeat;
- mask:conic-gradient(var(--a) 0 0) 0 0/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 100% 0/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 0 100%/14px 14px no-repeat,conic-gradient(var(--a) 0 0) 100% 100%/14px 14px no-repeat}
 .sw-un{max-width:100%;font-size:12.5px;font-weight:600;line-height:15px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
 .sw-us{font:11.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:color-mix(in srgb,var(--c) 55%,var(--ink));white-space:nowrap}
-.sw-unit[data-main][data-st=running] .sw-hex{animation:sw-breathe 2.8s ease-in-out infinite}
-.sw-unit.is-done .sw-ring{animation:sw-close .9s ease-out}
-.sw-unit.is-done .sw-hex{filter:drop-shadow(0 0 14px var(--ok))}
 .sw-unit.is-fail,.sw-frow.is-fail{animation:sw-shake .5s ease-in-out 2}
-.sw-unit.is-fail .sw-hex{filter:drop-shadow(0 0 14px var(--bad))}
 .sw-unit:hover .sw-un{color:var(--ink)}
 /* units: Terminal sprites */
 /* Terminal: a box is as wide as when a full row fills the line; a short row starts at the left */
@@ -2588,8 +2664,6 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-frow{border-left:0!important;background:none!important;padding:0 0 0 12px!important;margin:0}
 /* focus panel */
 .sw-focus{position:relative;margin-top:18px;padding:14px 16px 16px;background:color-mix(in srgb,var(--a) 5%,var(--bg))}
-.sw-page[data-theme=cockpit] .sw-focus{clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,14px 100%,0 calc(100% - 14px))}
-.sw-page[data-theme=cockpit] .sw-focus::before{content:"";position:absolute;inset:0;clip-path:inherit;box-shadow:inset 0 0 0 1px var(--line);pointer-events:none}
 .sw-page[data-theme=terminal] .sw-focus{background:var(--bg);border:1px solid var(--line);padding:10px 12px 12px}
 .sw-page[data-theme=terminal] .sw-focus[data-st=failed]{border-color:var(--tm-badline)}
 .sw-ph{display:flex;align-items:center;gap:10px}
@@ -2630,7 +2704,6 @@ const CSS = `${TM_PALETTE}
 @property --sw-n{syntax:"<integer>";inherits:false;initial-value:0}
 .sw-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:16px 0 4px}
 .sw-tile{--tc:var(--a);position:relative;min-width:0;padding:8px 10px 7px;background:color-mix(in srgb,var(--a) 6%,transparent)}
-.sw-page[data-theme=cockpit] .sw-tile{clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%)}
 .sw-tile::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--tc);box-shadow:0 0 8px var(--tc)}
 .sw-tile[data-tone=run]{--tc:var(--run)}
 .sw-tile[data-tone=bad]{--tc:var(--bad)}
@@ -2660,7 +2733,6 @@ const CSS = `${TM_PALETTE}
 .sw-ans::after{right:0;bottom:0;border-left:0;border-top:0}
 .sw-page .sw-ans{animation:sw-reveal .7s ease-out}
 .sw-ansh{display:flex;align-items:center;gap:8px;margin-bottom:6px}
-.sw-page[data-theme=cockpit] .sw-ansh{color:color-mix(in srgb,var(--c) 70%,var(--ink))}
 .sw-sig{display:inline-flex;gap:2px;align-items:flex-end;height:12px}
 .sw-sig i{width:3px;height:4px;background:var(--c)}
 .sw-sig i:nth-child(2){height:7px}
@@ -2682,7 +2754,6 @@ const CSS = `${TM_PALETTE}
 .sw-fgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:6px}
 .sw-ft{--fc:var(--a);position:relative;display:flex;flex-direction:column;min-width:0;overflow:hidden;padding:8px 10px;font:12.5px var(--mono);
  background:linear-gradient(180deg,color-mix(in srgb,var(--fc) 16%,var(--bg)),color-mix(in srgb,var(--fc) 4%,var(--bg)));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--fc) 45%,transparent)}
-.sw-page[data-theme=cockpit] .sw-ft{clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,0 100%)}
 .sw-page .sw-ft{animation:sw-in .35s ease-out both;animation-delay:calc(min(var(--i,0),12) * 55ms)}
 .sw-ft:hover{box-shadow:inset 0 0 0 1px var(--fc)}
 .sw-ft[data-op=failed]{--fc:var(--bad)}
@@ -2810,8 +2881,165 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-quiet{padding:8px;letter-spacing:.04em}
 /* toast */
 .sw-live{position:absolute;right:20px;top:92px;z-index:10;pointer-events:none}
-.sw-toast{max-width:min(360px,90%);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;overflow-wrap:anywhere;padding:8px 10px;font-size:12.5px;background:var(--raised);color:var(--ink);box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--a)}
+.sw-toast{width:max-content;max-width:min(360px,calc(100cqw - 40px));display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;overflow-wrap:anywhere;padding:8px 10px;font-size:12.5px;background:var(--raised);color:var(--ink);box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--a)}
 .sw-toast.is-bad{box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--bad)}
+/* Dot matrix (Live map shares its panels): near-monochrome rounded tiles; colour marks only working (accent)
+   and failed (red); dots count edits and reads; the big numbers are in dot-matrix type */
+.sw-page:not([data-theme=terminal]) .sw-panel{border-radius:16px;box-shadow:inset 0 0 0 1px var(--line)}
+.sw-page:not([data-theme=terminal]) .sw-k{font-size:12px;font-weight:500;letter-spacing:.12em;color:var(--dim)}
+.sw-page:not([data-theme=terminal]) .sw-ht{font-family:inherit;font-size:15px;font-weight:650;letter-spacing:0;text-transform:none}
+.sw-page:not([data-theme=terminal]) .sw-held{padding:1px 10px;border-radius:999px;font-family:inherit;font-size:12.5px;letter-spacing:0;text-transform:none}
+.sw-page:not([data-theme=terminal]) .sw-ib:not(.is-text){width:28px;height:28px;border-radius:50%;background:var(--tile);box-shadow:none}
+.sw-page:not([data-theme=terminal]) .sw-ib.is-text{width:auto;height:30px;padding:0 14px;white-space:nowrap;border-radius:999px;clip-path:none;font-family:inherit;font-size:13px;font-weight:550;letter-spacing:0;text-transform:none;
+ background:var(--raised);box-shadow:inset 0 0 0 1px var(--line)}
+.sw-page:not([data-theme=terminal]) .sw-ib.is-text:hover{background:color-mix(in srgb,var(--ink) 13%,var(--bg))}
+.sw-page:not([data-theme=terminal]) .sw-ib.is-text.is-pri{background:var(--ink);color:var(--bg);box-shadow:none}
+.sw-page:not([data-theme=terminal]) .sw-ib.is-text.is-pri:hover{background:color-mix(in srgb,var(--ink) 85%,var(--bg))}
+.sw-page:not([data-theme=terminal]) .sw-ib.is-text:focus-visible{outline-color:var(--a);outline-offset:2px}
+.sw-page:not([data-theme=terminal]) .sw-tabs{display:inline-flex;gap:2px;padding:3px;border-radius:999px;background:var(--tile);border-bottom:0}
+.sw-page:not([data-theme=terminal]) .sw-tab{margin:0;padding:5px 14px;border-radius:999px;font-family:inherit;font-size:13px;letter-spacing:0;text-transform:none}
+.sw-page:not([data-theme=terminal]) .sw-tab[aria-selected=true]{background:color-mix(in srgb,var(--ink) 13%,var(--bg));font-weight:600}
+.sw-page:not([data-theme=terminal]) .sw-tabn{padding:0 6px;border-radius:999px;background:color-mix(in srgb,var(--a) 24%,var(--bg));color:var(--ink)}
+.sw-page:not([data-theme=terminal]) .sw-err{border-radius:12px}
+.sw-page:not([data-theme=terminal]) .sw-hint b{font-family:inherit;font-size:14px;letter-spacing:0;text-transform:none}
+.sw-page:not([data-theme=terminal]) .sw-sks{gap:10px}
+.sw-page:not([data-theme=terminal]) .sw-sk{width:120px;height:72px;border-radius:18px;clip-path:none;background:var(--tile)}
+.sw-page:not([data-theme=terminal]) .sw-pick{padding:5px 12px;border-radius:999px;background:var(--tile);box-shadow:none;font-family:inherit!important;font-size:13px!important;letter-spacing:0;text-transform:none}
+.sw-page:not([data-theme=terminal]) .sw-ld{border-radius:50%;transform:none;box-shadow:none}
+.sw-page:not([data-theme=terminal]) .sw-back{padding:4px 12px!important;border-radius:999px;background:var(--tile);box-shadow:inset 0 0 0 1px var(--line);font-family:inherit!important;font-size:12.5px!important;letter-spacing:0;text-transform:none}
+.sw-page:not([data-theme=terminal]) .sw-menu{border-radius:16px;box-shadow:0 18px 44px color-mix(in srgb,var(--bg) 70%,transparent),inset 0 0 0 1px var(--line)}
+.sw-page:not([data-theme=terminal]) .sw-mr{border-radius:10px}
+.sw-page:not([data-theme=terminal]) .sw-mr:hover,.sw-page:not([data-theme=terminal]) .sw-mr.is-on{background:color-mix(in srgb,var(--ink) 9%,transparent)}
+.sw-page:not([data-theme=terminal]) .sw-mini{gap:3px}
+.sw-page:not([data-theme=terminal]) .sw-mini i,.sw-page:not([data-theme=terminal]) .sw-seg i{flex:none;width:8px;height:8px;max-width:none;border-radius:50%;transform:none}
+.sw-page:not([data-theme=terminal]) .sw-mini i:is([data-st=queued],[data-st=idle]),.sw-page:not([data-theme=terminal]) .sw-seg i:is([data-st=queued],[data-st=idle]){background:none;box-shadow:inset 0 0 0 1.5px var(--idle)}
+.sw-page:not([data-theme=terminal]) .sw-more,.sw-page:not([data-theme=terminal]) .sw-fold{font-family:inherit!important;font-size:12.5px!important;letter-spacing:0;text-transform:none;text-decoration-color:var(--dim)}
+/* Dot matrix: score tiles */
+.sw-page:not([data-theme=terminal]) .sw-score{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:10px;align-items:stretch}
+.sw-page:not([data-theme=terminal]) .sw-score>.sw-sbig .sw-seg{display:none}
+.sw-page:not([data-theme=terminal]) .sw-sleg{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:12px;color:var(--dim)}
+.sw-page:not([data-theme=terminal]) .sw-sleg span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.sw-page:not([data-theme=terminal]) .sw-sleg span::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--c)}
+.sw-page:not([data-theme=terminal]) .sw-sleg span:is([data-st=queued],[data-st=idle])::before{background:none;box-shadow:inset 0 0 0 1.5px var(--idle)}
+.sw-page:not([data-theme=terminal]) .sw-score>div{min-width:0;padding:14px 16px 13px;border-radius:18px;background:var(--tile)}
+.sw-page:not([data-theme=terminal]) .sw-spent{text-align:left}
+.sw-page:not([data-theme=terminal]) .sw-big{margin-top:12px;font:inherit;line-height:1;text-shadow:none}
+.sw-page:not([data-theme=terminal]) .sw-money{display:block;margin-top:12px;font:inherit}
+.sw-page:not([data-theme=terminal]) .sw-dm~.sw-bign,.sw-page:not([data-theme=terminal]) .sw-dm~small,.sw-page:not([data-theme=terminal]) .sw-dm~.sw-moneyt,.sw-page:not([data-theme=terminal]) .sw-exit .sw-dm~b{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.sw-page:not([data-theme=terminal]) .sw-seg{flex-wrap:wrap;gap:5px;height:auto;margin:14px 0 0}
+.sw-dm{display:block;max-width:100%;height:auto;overflow:visible}
+.sw-dm circle.on{fill:var(--ink)}
+.sw-dm circle.off{fill:var(--off)}
+.sw-page .sw-dm circle.on{animation:sw-dot .35s ease-out backwards}
+/* Dot matrix: agent tiles, split into even rows (4 a row, 2 when docked narrow) */
+.sw-page:not([data-theme=terminal]) .sw-units{--sw-cols:var(--sw-c4,var(--sw-n));grid-template-columns:repeat(var(--sw-cols),minmax(0,1fr));justify-content:stretch;gap:10px;margin:10px 0 0}
+.sw-page:not([data-theme=terminal]) .sw-unit{width:auto;min-width:0;display:flex;flex-direction:column;align-items:stretch;gap:0;padding:13px 14px 12px!important;text-align:left!important;border-radius:18px;background:var(--tile)}
+.sw-page:not([data-theme=terminal]) .sw-unit:hover{background:var(--raised)}
+.sw-page:not([data-theme=terminal]) .sw-unit.is-sel{background:var(--raised);box-shadow:inset 0 0 0 1.5px var(--a)}
+.sw-page:not([data-theme=terminal]) .sw-utop{display:flex;align-items:center;gap:8px;min-width:0}
+.sw-page:not([data-theme=terminal]) .sw-unit .sw-ic{flex:none;width:20px;height:20px;color:var(--c);filter:none}
+.sw-page:not([data-theme=terminal]) .sw-unit .sw-us{min-width:0;margin-left:auto;overflow:hidden;text-overflow:ellipsis;font:500 12px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.sw-page:not([data-theme=terminal]) .sw-unit[data-st=failed] .sw-us{color:var(--bad)}
+.sw-page:not([data-theme=terminal]) .sw-sd{flex:none;width:8px;height:8px;border-radius:50%;background:var(--c)}
+.sw-page:not([data-theme=terminal]) .sw-unit:is([data-st=queued],[data-st=idle]) .sw-sd{background:none;box-shadow:inset 0 0 0 1.5px var(--idle)}
+.sw-page:not([data-theme=terminal]) .sw-unit[data-st=stopped] .sw-sd{border-radius:2px}
+.sw-page:not([data-theme=terminal]) .sw-unit[data-st=running] .sw-sd{animation:sw-pulse 2.4s ease-in-out infinite}
+.sw-page:not([data-theme=terminal]) .sw-unit.is-done .sw-sd{animation:sw-close .9s ease-out}
+.sw-page:not([data-theme=terminal]) .sw-unit .sw-un{display:block;margin-top:12px;font-size:14.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-page:not([data-theme=terminal]) .sw-ua{font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-page:not([data-theme=terminal]) .sw-utm{margin-top:8px;font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-page:not([data-theme=terminal]) .sw-solo{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}
+.sw-page:not([data-theme=terminal]) .sw-solo .sw-units{grid-template-columns:minmax(0,1fr);margin:0}
+.sw-page:not([data-theme=terminal]) .sw-nosub{display:flex;align-items:center;min-width:0;padding:14px 16px;border-radius:18px;box-shadow:inset 0 0 0 1px var(--line);font-size:13px}
+.sw-page:not([data-theme=terminal]) .sw-gmain .sw-unit{width:min(100%,260px)}
+.sw-page:not([data-theme=terminal]) .sw-cell{width:30px;height:30px;border-radius:9px;clip-path:none;background:var(--tile)!important;box-shadow:inset 0 0 0 1px var(--line)}
+.sw-page:not([data-theme=terminal]) .sw-cell::after{display:none}
+.sw-page:not([data-theme=terminal]) .sw-cell svg{color:var(--c)}
+.sw-page:not([data-theme=terminal]) .sw-cell.is-sel{background:var(--raised)!important;box-shadow:inset 0 0 0 1.5px var(--a)}
+.sw-page:not([data-theme=terminal]) .sw-frow{padding:8px 12px!important;border-left:0!important;border-radius:12px;background:var(--tile)!important}
+.sw-page:not([data-theme=terminal]) .sw-frow::before{content:"";flex:none;width:8px;height:8px;border-radius:50%;background:var(--c)}
+/* Dot matrix: focus panel */
+.sw-page:not([data-theme=terminal]) .sw-focus{padding:16px 18px 18px;border-radius:18px;background:var(--tile)}
+.sw-page:not([data-theme=terminal]) .sw-ph::after{height:0;background:none;border-top:1px dashed var(--line)}
+.sw-page:not([data-theme=terminal]) .sw-hero{grid-template-columns:minmax(0,1fr)}
+.sw-page:not([data-theme=terminal]) .sw-hero>.sw-por{display:none}
+.sw-page:not([data-theme=terminal]) .sw-por{width:84px;height:84px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;border-radius:20px;background:var(--raised)}
+.sw-page:not([data-theme=terminal]) .sw-pring,.sw-page:not([data-theme=terminal]) .sw-phx{display:none}
+.sw-page:not([data-theme=terminal]) .sw-por .sw-ic{width:28px;height:28px;color:var(--c);filter:none}
+.sw-page:not([data-theme=terminal]) .sw-ptag{position:static;transform:none;padding:0;background:none;box-shadow:none;font:500 11.5px var(--mono);letter-spacing:.1em;color:var(--dim)}
+.sw-page:not([data-theme=terminal]) .sw-por[data-st=failed] .sw-ptag{color:var(--bad)}
+.sw-page:not([data-theme=terminal]) .sw-verb{letter-spacing:.12em;color:var(--dim)}
+.sw-page:not([data-theme=terminal]) .sw-head.is-file{font:600 20px/1.25 var(--mono);text-shadow:none}
+.sw-page:not([data-theme=terminal]) .sw-model{border-radius:999px}
+.sw-page:not([data-theme=terminal]) .sw-tile{display:flex;flex-direction:column-reverse;justify-content:flex-end;gap:8px;padding:10px 12px 12px;border-radius:14px;background:var(--raised)}
+.sw-page:not([data-theme=terminal]) .sw-tn{font:inherit;line-height:1;text-shadow:none}
+.sw-page:not([data-theme=terminal]) .sw-tn[data-count]::before{content:none}
+.sw-page:not([data-theme=terminal]) .sw-tn .sw-dm~span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.sw-page:not([data-theme=terminal]) .sw-tn .sw-dm circle.on{fill:var(--ink)}
+.sw-page:not([data-theme=terminal]) .sw-tile[data-tone=bad] .sw-dm circle.on{fill:var(--bad)}
+.sw-page:not([data-theme=terminal]) .sw-tl{font:500 12px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-page:not([data-theme=terminal]) .sw-tile::before{display:none}
+.sw-page:not([data-theme=terminal]) .sw-tile[data-tone=bad] .sw-tn{color:var(--bad)}
+.sw-page:not([data-theme=terminal]) .sw-task{padding:0;border-left:0;font-size:13.5px}
+.sw-page:not([data-theme=terminal]) .sw-ans{padding:12px 14px 10px 16px;border-radius:12px;background:var(--raised)}
+.sw-page:not([data-theme=terminal]) .sw-ans::after,.sw-page:not([data-theme=terminal]) .sw-sig{display:none}
+.sw-page:not([data-theme=terminal]) .sw-ans::before{top:10px;bottom:10px;left:0;width:2px;height:auto;border:0;border-radius:2px;background:var(--c)}
+.sw-page:not([data-theme=terminal]) .sw-ansh{color:var(--dim)}
+/* Dot matrix: file lists share one set of content-sized columns, like Terminal's; one dot per edit
+   (filled) or read (ring), the file worked on now in the accent */
+.sw-page:not([data-theme=terminal]) .sw-flist{display:grid;grid-template-columns:14px fit-content(32ch) fit-content(24ch) max-content max-content max-content 1fr;column-gap:16px}
+.sw-page:not([data-theme=terminal]) .sw-flist>.sw-fsec{grid-column:1/-1;display:grid;grid-template-columns:subgrid;column-gap:normal;align-content:start}
+.sw-page:not([data-theme=terminal]) .sw-flist>.sw-fsec>*{grid-column:1/-1}
+.sw-page:not([data-theme=terminal]) .sw-flist .sw-fgrid{display:grid;grid-template-columns:subgrid;column-gap:normal;row-gap:0}
+.sw-page:not([data-theme=terminal]) .sw-flist>.sw-fsec>.sw-more{grid-column:2/-1;margin-left:0}
+.sw-page:not([data-theme=terminal]) .sw-ft{display:grid;width:100%;grid-column:1/-1;grid-template-columns:subgrid;column-gap:normal;align-items:center;min-height:32px;padding:0;overflow:visible;
+ font-family:inherit;font-size:13.5px;background:none;box-shadow:none;clip-path:none;border-top:1px dashed var(--line)}
+.sw-page:not([data-theme=terminal]) .sw-fgrid>.sw-ft:first-child{border-top:0}
+.sw-page:not([data-theme=terminal]) .sw-ft:hover{background:color-mix(in srgb,var(--ink) 5%,transparent);box-shadow:none}
+.sw-page:not([data-theme=terminal]) .sw-ft::before{content:"";grid-column:1;grid-row:1}
+.sw-page:not([data-theme=terminal]) .sw-ft.is-now{background:none;box-shadow:none}
+.sw-page:not([data-theme=terminal]) .sw-ft.is-now::before{justify-self:center;width:6px;height:6px;border-radius:50%;background:var(--a)}
+.sw-page:not([data-theme=terminal]) .sw-ft.is-now::after{display:none}
+.sw-page:not([data-theme=terminal]) .sw-pipr{display:contents}
+.sw-page:not([data-theme=terminal]) .sw-fn{grid-column:2;grid-row:1;padding:0!important;font-weight:400}
+.sw-page:not([data-theme=terminal]) .sw-ft.is-now .sw-fn{font-weight:600}
+.sw-page:not([data-theme=terminal]) .sw-fd{grid-column:3;grid-row:1;font-family:inherit;font-size:12.5px}
+.sw-page:not([data-theme=terminal]) .sw-pips{grid-column:4;grid-row:1;gap:4px}
+.sw-page:not([data-theme=terminal]) .sw-pips i{width:7px;height:7px;border-radius:50%;transform:none;background:var(--off);box-shadow:none}
+.sw-page:not([data-theme=terminal]) .sw-pips i.on{background:var(--ink);box-shadow:none}
+.sw-page:not([data-theme=terminal]) .sw-ft[data-op=read] .sw-pips i.on{background:none;box-shadow:inset 0 0 0 1.5px var(--dim)}
+.sw-page:not([data-theme=terminal]) .sw-ft.is-now .sw-pips i.on{background:var(--a)}
+.sw-page:not([data-theme=terminal]) .sw-ft.is-now[data-op=read] .sw-pips i.on{background:none;box-shadow:inset 0 0 0 1.5px var(--a)}
+.sw-page:not([data-theme=terminal]) .sw-ft[data-op=failed] .sw-pips i.on{background:var(--bad)}
+.sw-page:not([data-theme=terminal]) .sw-fl{grid-column:5;grid-row:1;margin:0;text-align:left;font-family:inherit;font-size:12.5px;letter-spacing:0;text-transform:none}
+.sw-page:not([data-theme=terminal]) .sw-nowb{grid-column:6;grid-row:1;position:static;font:600 11.5px var(--mono);letter-spacing:.1em;color:color-mix(in srgb,var(--a) 50%,var(--ink))}
+.sw-page:not([data-theme=terminal]) .sw-leg::before{width:7px;height:7px;border-radius:50%;transform:none;background:var(--ink)}
+/* Dot matrix: commands */
+.sw-page:not([data-theme=terminal]) .sw-cmr{border-left:0!important;border-radius:12px;background:var(--tile)!important}
+.sw-page:not([data-theme=terminal]) .sw-cmd{border-radius:50%;transform:none}
+.sw-page:not([data-theme=terminal]) .sw-cmo{margin-top:4px;border-left:0;border-radius:12px;background:var(--tile)}
+.sw-page:not([data-theme=terminal]) .sw-exit{width:76px;height:84px;clip-path:none;border-radius:16px;background:color-mix(in srgb,var(--c) 12%,var(--bg));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 40%,transparent)}
+.sw-page:not([data-theme=terminal]) .sw-exit .sw-dm circle.on{fill:var(--c)}
+.sw-page:not([data-theme=terminal]) .sw-exit span{font-family:inherit;font-size:12px;letter-spacing:0;text-transform:none;color:var(--dim)}
+.sw-page:not([data-theme=terminal]) .sw-cchip{border-radius:999px;background:var(--raised);box-shadow:none}
+.sw-page:not([data-theme=terminal]) .sw-cchip>span{letter-spacing:0;text-transform:none}
+.sw-page:not([data-theme=terminal]) .sw-crt{border-radius:10px;background:var(--bg);box-shadow:inset 0 0 0 1px var(--line)}
+.sw-page:not([data-theme=terminal]) .sw-crt::after{display:none}
+.sw-page:not([data-theme=terminal]) .sw-pc{border-radius:10px}
+.sw-page:not([data-theme=terminal]) .sw-quiet{letter-spacing:0}
+.sw-page:not([data-theme=terminal]) .sw-toast{padding:8px 14px;border-radius:14px;background:var(--ink);color:var(--bg);font-weight:600;box-shadow:0 10px 26px color-mix(in srgb,var(--bg) 60%,transparent)}
+.sw-page:not([data-theme=terminal]) .sw-toast.is-bad{background:var(--raised);color:var(--ink);box-shadow:0 10px 26px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--bad)}
+/* Dot matrix docked narrow: 2 tiles a row; file rows keep name, dots and label (the folder and NOW give way) */
+@container (max-width:460px){
+ .sw-page:not([data-theme=terminal]) .sw-panel .sw-units{--sw-cols:var(--sw-c2,var(--sw-n))}
+ .sw-page:not([data-theme=terminal]) .sw-panel .sw-units>.sw-unit:last-child:nth-child(odd):not(:first-child){grid-column:1/-1}
+ .sw-page:not([data-theme=terminal]) .sw-panel .sw-score{grid-template-columns:minmax(0,1fr)}
+ .sw-page:not([data-theme=terminal]) .sw-panel .sw-flist{grid-template-columns:12px fit-content(22ch) 0 max-content max-content 0 1fr;column-gap:8px}
+ .sw-page:not([data-theme=terminal]) .sw-panel .sw-fd,.sw-page:not([data-theme=terminal]) .sw-panel .sw-nowb{display:none}
+ .sw-page:not([data-theme=terminal]) .sw-panel .sw-pips{gap:3px}
+ .sw-page:not([data-theme=terminal]) .sw-panel .sw-pips i{width:5px;height:5px}
+ .sw-page:not([data-theme=terminal]) .sw-panel .sw-exit{width:60px;height:68px}
+}
 /* narrow: docked beside the chat */
 @container (max-width:460px){
  .sw-panel .sw-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -2838,7 +3066,6 @@ const CSS = `${TM_PALETTE}
 /* motion */
 @keyframes sw-rot{to{transform:rotate(360deg)}}
 @keyframes sw-breathe{50%{transform:scale(1.05);opacity:.86}}
-@keyframes sw-close{from{transform:scale(1.18);opacity:.4}}
 @keyframes sw-shake{20%{transform:translateX(-4px)}40%{transform:translateX(4px)}60%{transform:translateX(-3px)}80%{transform:translateX(2px)}}
 @keyframes sw-up{from{transform:translateY(60%);opacity:0}}
 @keyframes sw-slide{from{transform:translateX(-10px);opacity:0}}
@@ -2847,11 +3074,118 @@ const CSS = `${TM_PALETTE}
 @keyframes sw-pulse{50%{opacity:.45}}
 @keyframes sw-skp{50%{opacity:.5}}
 @keyframes sw-count{from{--sw-n:0}}
+@keyframes sw-dot{from{opacity:0}}
+@keyframes sw-close{from{transform:scale(2.2);opacity:.4}}
 @keyframes sw-in{from{opacity:0;transform:translateY(6px)}}
 @keyframes sw-sweep{from{left:-40%}to{left:100%}}
 @keyframes sw-reveal{from{clip-path:inset(0 0 100% 0)}}
 @keyframes sw-scan{from{background-position:-70% 0,0 0}to{background-position:170% 0,0 0}}
 @media (prefers-reduced-motion:reduce){.sw-page *,.sw-page *::before,.sw-page *::after{animation:none!important;transition:none!important}}
+`
+
+// ── Settings › Plugins › Subagent Watch ──────────────────────────────────────
+
+/** A small drawing of a look for its card in Settings. */
+function LookSketch({ id }) {
+  if (id === 'terminal') {
+    return jsx('span', {
+      className: 'sw-sk3 sw-sk3-term', 'aria-hidden': 'true',
+      children: ['$ subagent-watch', '[RUN] fix-tests', '[OK ] audit', '_'].map((l, i) => jsx('span', { children: l }, i))
+    })
+  }
+  if (id === 'map') {
+    return jsx('span', {
+      className: 'sw-sk3 sw-sk3-map', 'aria-hidden': 'true',
+      children: jsxs('svg', {
+        viewBox: '0 0 120 64', width: 120, height: 64,
+        children: [
+          jsx('path', { d: 'M14 32 H40 M40 32 V14 H66 M40 32 V50 H66 M66 14 H92 M66 50 H92', className: 'br' }, 'b'),
+          ...[[92, 14], [66, 14], [92, 50], [66, 50]].map(([x, y], i) => jsx('circle', { cx: x, cy: y, r: 3, className: i === 0 ? 'lf on' : 'lf' }, `l${i}`)),
+          jsx('path', { d: 'M106 24 L94 16', className: 'bm' }, 'bm'),
+          jsx('circle', { cx: 108, cy: 26, r: 5, className: 'ag' }, 'a'),
+          jsx('circle', { cx: 14, cy: 32, r: 5, className: 'ag main' }, 'm')
+        ]
+      })
+    })
+  }
+  return jsx('span', {
+    className: 'sw-sk3 sw-sk3-dots', 'aria-hidden': 'true',
+    children: [0, 1, 2].map(i => jsxs('span', {
+      className: 'tl',
+      children: [jsx('i', { className: i === 0 ? 'run' : i === 2 ? 'bad' : '' }, 'd'), jsx('b', {}, 'b'), jsx('em', {}, 'e')]
+    }, i))
+  })
+}
+
+/** Settings › Plugins › Subagent Watch: the look of the page, applied at once. */
+export function LookSettings() {
+  const t = usePluginI18n(ID)
+  const [theme, setTheme] = useTheme()
+  return jsxs('div', {
+    className: 'sw-set',
+    children: [
+      jsx('style', { children: SETTINGS_CSS }, 'css'),
+      jsx('p', { className: 'sw-setp', children: t('sw.settings.intro') }, 'i'),
+      jsx('h3', { className: 'sw-seth', id: 'sw-look-h', children: t('sw.theme.label') }, 'h'),
+      jsx('div', {
+        className: 'sw-looks', role: 'radiogroup', 'aria-labelledby': 'sw-look-h',
+        children: THEMES.map(id => jsxs('button', {
+          type: 'button', role: 'radio', className: 'sw-look', 'data-look': id, 'aria-checked': theme === id,
+          onClick: () => setTheme(id),
+          children: [
+            jsx(LookSketch, { id }, 's'),
+            jsxs('span', {
+              className: 'sw-lookt',
+              children: [
+                jsx('b', { children: t(`sw.theme.${id}`) }, 'n'),
+                id === THEMES[0] ? jsx('span', { className: 'sw-lookdef', children: t('sw.theme.isDefault') }, 'd') : null,
+                jsx('span', { className: 'sw-lookr', 'aria-hidden': 'true' }, 'r')
+              ]
+            }, 't'),
+            jsx('span', { className: 'sw-lookd', children: t(`sw.theme.about.${id}`) }, 'a')
+          ]
+        }, id))
+      }, 'g'),
+      jsx('p', { className: 'sw-setn', children: t('sw.settings.note') }, 'n')
+    ]
+  })
+}
+
+// Settings › Plugins › Subagent Watch: the host's tokens only, so the page reads like the rest of Settings.
+const SETTINGS_CSS = `
+.sw-set{max-width:760px;font-size:13px;color:var(--ui-text-primary)}
+.sw-setp{margin:0 0 18px;line-height:1.45;color:var(--ui-text-secondary)}
+.sw-seth{margin:0 0 10px;font-size:13px;font-weight:600}
+.sw-looks{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.sw-look{display:flex;flex-direction:column;gap:10px;min-width:0;padding:12px;border:0;border-radius:12px;text-align:left;font:inherit;color:inherit;cursor:pointer;
+ background:transparent;box-shadow:inset 0 0 0 1px var(--ui-stroke-secondary)}
+.sw-look:hover{box-shadow:inset 0 0 0 1px var(--ui-text-tertiary)}
+.sw-look[aria-checked=true]{box-shadow:inset 0 0 0 2px var(--ui-accent)}
+.sw-look:focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}
+.sw-lookt{display:flex;align-items:center;gap:8px;min-width:0}
+.sw-lookt b{font-weight:600}
+.sw-lookdef{padding:0 7px;border-radius:999px;font-size:12px;color:var(--ui-text-secondary);box-shadow:inset 0 0 0 1px var(--ui-stroke-secondary)}
+.sw-lookr{flex:none;width:14px;height:14px;margin-left:auto;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--ui-text-tertiary)}
+.sw-look[aria-checked=true] .sw-lookr{box-shadow:inset 0 0 0 4px var(--ui-accent)}
+.sw-lookd{font-size:12.5px;line-height:1.45;color:var(--ui-text-secondary)}
+.sw-setn{margin:14px 0 0;font-size:12.5px;color:var(--ui-text-secondary)}
+.sw-sk3{display:block;height:76px;overflow:hidden;border-radius:8px;background:var(--dt-background);box-shadow:inset 0 0 0 1px var(--ui-stroke-tertiary)}
+.sw-sk3-dots{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:10px}
+.sw-sk3-dots .tl{display:flex;flex-direction:column;gap:6px;padding:7px;border-radius:9px;background:color-mix(in srgb,var(--ui-text-primary) 7%,var(--dt-background))}
+.sw-sk3-dots i{width:6px;height:6px;border-radius:50%;background:var(--ui-text-primary)}
+.sw-sk3-dots i.run{background:var(--ui-accent)}
+.sw-sk3-dots i.bad{background:var(--ui-red)}
+.sw-sk3-dots b{width:80%;height:5px;border-radius:3px;background:color-mix(in srgb,var(--ui-text-primary) 45%,transparent)}
+.sw-sk3-dots em{width:55%;height:4px;border-radius:2px;background:color-mix(in srgb,var(--ui-text-primary) 22%,transparent)}
+.sw-sk3-map{display:grid;place-items:center}
+.sw-sk3-map .br{fill:none;stroke:color-mix(in srgb,var(--ui-text-primary) 35%,transparent);stroke-width:1.5}
+.sw-sk3-map .lf{fill:color-mix(in srgb,var(--ui-text-primary) 60%,transparent)}
+.sw-sk3-map .lf.on{fill:var(--ui-accent)}
+.sw-sk3-map .bm{fill:none;stroke:var(--ui-accent);stroke-width:1.5;stroke-dasharray:3 2}
+.sw-sk3-map .ag{fill:var(--dt-background);stroke:var(--ui-accent);stroke-width:2}
+.sw-sk3-map .ag.main{stroke:var(--ui-text-primary)}
+.sw-sk3-term{display:flex;flex-direction:column;justify-content:center;gap:1px;padding:8px 10px;font:12px/1.3 ui-monospace,"Cascadia Mono",Consolas,monospace;
+ color:color-mix(in srgb,var(--ui-accent) 70%,var(--ui-text-primary));background:color-mix(in srgb,var(--ui-accent) 6%,var(--dt-background))}
 `
 
 function navLabel() {
@@ -2869,6 +3203,9 @@ export default {
     ctx.i18n?.register?.(BUNDLES)
     ctx.register({ id: 'page', area: 'routes', data: { path: ROUTE }, render: () => jsx(Page, {}) })
     ctx.register({ id: 'nav', area: 'sidebar.nav', data: { path: ROUTE, label: navLabel(), codicon: 'type-hierarchy-sub' } })
+    // The look is chosen in Settings › Plugins, never on the page itself (an older host without settings
+    // pages keeps the default look).
+    ctx.registerSettingsPage?.({ id: 'look', title: BUNDLES.en.sw.settings.title, icon: 'type-hierarchy-sub', render: () => jsx(LookSettings, {}) })
     ctx.register({ id: 'progress', area: STATUSBAR_AREAS.right, order: 125, render: () => jsx(ProgressChip, {}) })
     for (const type of SUBAGENT_EVENTS) ctx.onEvent(type, event => trackEvent(type, event))
     // A pet shown later, or a chat switch, gets the current line at once.

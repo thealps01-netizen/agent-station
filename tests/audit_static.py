@@ -105,7 +105,8 @@ def check_i18n(js: str) -> None:
         "sw.proc.status": {"running", "completed", "failed", "stopped"},
         "sw.proc.short": {"running", "completed", "failed", "stopped"},
         "sw.tabs": {"agents", "commands"},
-        "sw.theme": {"cockpit", "terminal"},
+        "sw.theme": {"dots", "map", "terminal"},
+        "sw.theme.about": {"dots", "map", "terminal"},
     }
     for prefix, values in templates.items():
         if f"t(`{prefix}.${{" not in js:

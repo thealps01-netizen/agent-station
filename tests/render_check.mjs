@@ -37,9 +37,11 @@
  *      what it cannot see; a subagent's files come from /files who/editors; the main agent's live
  *      file calls are the 'Working on now' rows (the 1.6.0 shimmer), scoped to the focused chat,
  *      lingering, reloading the list; unreadable calls and files past the list are said.
- *  20. Looks: Cockpit by default; the toggle switches to Terminal (ASCII sprites, [OK ] tags) and back,
+ *  20. Looks: Dot matrix by default, chosen only on the Settings page (Dot matrix / Live map / Terminal); it
+ *      switches the open page at once (ASCII sprites, [OK ] tags in Terminal) and back,
  *      and keeps the choice in ctx.storage; a kept look is read back; a storage that throws, a value
- *      that is not a look, or no storage at all falls back to Cockpit and the toggle still works.
+ *      that is not a look, or no storage at all falls back to Dot matrix (a kept Cockpit reads as Dot
+ *      matrix) and Settings still switches the look.
  *  21. Units: the main agent is the first unit, tagged MAIN and selected by default; no letter badges.
  *  22. Run picker: this run plus earlier runs (mini cells, time ago, done/total, cost, paged with
  *      "Show N older runs"); an earlier run is shown calmly with Back to now; Escape closes it.
@@ -247,6 +249,7 @@ const ctx = {
     clear: id => { stub.pet.cleared.push(id) }
   },
   register: c => { registered.push(c); return () => {} },
+  registerSettingsPage: page => { registered.push({ ...page, area: 'settings.plugins' }); return () => {} },
   i18n: { register: b => stub.registerBundles('subagent-watch', b), t: k => k },
   onEvent: (type, fn) => {
     if (!listeners.has(type)) listeners.set(type, new Set())
@@ -390,10 +393,27 @@ const unitNamed = name => units().find(u => u.querySelector('.sw-un')?.textConte
 const tab = id => q(`[role=tab][data-tab=${id}]`)
 const toTab = id => act(async () => { tab(id).click() })
 const refresh = async () => { await act(async () => { q('.sw-hd .sw-ib').click() }); await tick(10) }
+// The look is chosen on the plugin's Settings page (Settings › Plugins › Subagent Watch), mounted on its own.
+const settingsReg = registered.find(c => c.area === 'settings.plugins')
+const setHost = document.createElement('div')
+document.body.appendChild(setHost)
+const setRoot = createRoot(setHost)
+await act(async () => { setRoot.render(settingsReg.render()) })
+const setLook = id => act(async () => { setHost.querySelector(`.sw-look[data-look=${id}]`).click() })
 
 // 16 + 20. header, look, tabs
-check(q('.sw-page')?.dataset.theme === 'cockpit' && q('.sw-tgb[data-theme=cockpit]')?.getAttribute('aria-pressed') === 'true'
-  && q('.sw-tgb[data-theme=terminal]')?.getAttribute('aria-pressed') === 'false', 'the page opens in the Cockpit look, its toggle pressed')
+check(settingsReg?.id === 'look' && settingsReg.title === 'Subagent Watch' && typeof settingsReg.render === 'function',
+  'a Settings › Plugins page is registered for the look')
+check(q('.sw-page')?.dataset.theme === 'dots' && !q('.sw-tg, .sw-tgb') && !/data-theme=cockpit|\.sw-tg/.test(q('style')?.textContent || ''),
+  'the page opens in the Dot matrix look and carries no look toggle (and no Cockpit rule)')
+{
+  const looks = [...setHost.querySelectorAll('.sw-looks[role=radiogroup] .sw-look[role=radio]')]
+  check(looks.map(b => b.dataset.look).join() === 'dots,map,terminal' && looks.map(b => b.getAttribute('aria-checked')).join() === 'true,false,false'
+    && looks[0].querySelector('.sw-lookdef')?.textContent === 'Default' && looks.every(b => b.querySelector('.sw-sk3') && b.querySelector('.sw-lookd')?.textContent.length > 20),
+    `Settings lists three looks with a sketch and a sentence, Dot matrix checked and marked Default (${looks.map(b => b.textContent)})`)
+  check(/\.sw-look\[aria-checked=true\]\{box-shadow:inset 0 0 0 2px var\(--ui-accent\)\}/.test(setHost.querySelector('style')?.textContent || '')
+    && !/#[0-9a-f]{3,8}\b/i.test(setHost.querySelector('style')?.textContent || ''), 'the Settings page takes the app tokens, no literal colour')
+}
 check(q('h2.sw-ht')?.textContent === 'Subagents' && q('.sw-chatn')?.textContent === 'Refactor fleet routing' && !q('.sw-held'),
   `the header has the title and names the watched chat (${q('.sw-chatn')?.textContent})`)
 check(tab('agents')?.getAttribute('aria-selected') === 'true' && tab('commands')?.getAttribute('aria-selected') === 'false',
@@ -404,8 +424,8 @@ check(q('.sw-tabn')?.textContent === '1' && q('.sw-tabn')?.getAttribute('aria-la
 // 21. units: the main agent first and selected, icons not letters, statuses never mislabelled
 {
   const u = units()
-  check(u.length === 3 && u[0].dataset.main === 'true' && u[0].getAttribute('aria-pressed') === 'true' && u[0].querySelector('.sw-maintag')?.textContent === 'main',
-    `the main agent is the first unit, tagged MAIN and selected (${u.map(x => x.getAttribute('aria-label'))})`)
+  check(u.length === 3 && u[0].dataset.main === 'true' && u[0].getAttribute('aria-pressed') === 'true' && u[0].querySelector('.sw-un')?.textContent === 'Main agent',
+    `the main agent is the first unit, named Main agent and selected (${u.map(x => x.getAttribute('aria-label'))})`)
   check(u.slice(1).map(x => x.querySelector('.sw-un').textContent).join() === 'docs-writer,wiki-watchdog', 'then one unit per subagent of the last run')
   check(u[1].dataset.st === 'completed' && u[1].dataset.icon === 'ok' && u[2].dataset.st === 'failed' && u[2].dataset.icon === 'bad',
     'a done unit draws the check, a failed one the cross')
@@ -415,12 +435,30 @@ check(q('.sw-tabn')?.textContent === '1' && q('.sw-tabn')?.getAttribute('aria-la
   'no letter badges anywhere: every unit icon is a drawing')
 }
 check(q('.sw-bign')?.textContent === '1' && q('.sw-big small')?.textContent === '/2'
-  && qa('.sw-score .sw-seg i').map(i => i.dataset.st).join() === 'completed,failed',
-  `the score counts finished subagents of all, one cell per subagent (${q('.sw-big')?.textContent})`)
+  && qa('.sw-score .sw-sleg span').map(i => `${i.dataset.st}:${i.textContent}`).join() === 'completed:1 done,failed:1 failed',
+  `the score counts finished subagents of all, and names each status with its count (${q('.sw-big')?.textContent})`)
+check(q('.sw-big svg.sw-dm[aria-hidden=true]') && q('.sw-big svg.sw-dm').querySelectorAll('circle').length === 3 * 5 * 7
+  && q('.sw-money svg.sw-dm') && q('.sw-money .sw-moneyt')?.textContent === '~$0.08',
+  `Dot matrix prints the score and the cost in dot-matrix type, the text kept for readers (${q('.sw-big svg.sw-dm')?.querySelectorAll('circle').length})`)
+{
+  const m = mod.dotMatrix('1/2')
+  check(m.cols === 17 && m.dots.length === 105 && m.dots.filter(d => d.on).length === 10 + 7 + 14 && mod.dotMatrix('1a') === null,
+    `dotMatrix: 3 glyphs 5 wide with a gap, a character without a glyph prints nothing (${m.cols} ${m.dots.filter(d => d.on).length})`)
+}
+{
+  const u = units()
+  check(u.every(x => x.querySelector('.sw-utop .sw-ic svg') && x.querySelector('.sw-sd') && x.querySelector('.sw-un') && x.querySelector('.sw-ua'))
+    && u[1].querySelector('.sw-utm')?.textContent.startsWith('took ') && u[2].querySelector('.sw-utm')?.textContent.startsWith('after '),
+    `Dot matrix tiles: icon, status dot and word on top, then name, what it did and for how long (${u.map(x => x.querySelector('.sw-utm')?.textContent)})`)
+}
 check(q('.sw-money')?.textContent === '~$0.08' && q('.sw-money')?.tabIndex === 0 && /1 priced/.test(q('.sw-money')?.dataset.tip || '') && /1 not priced/.test(q('.sw-money')?.dataset.tip || ''),
   `the score shows what the subagents spent, a focusable chip with the breakdown (${q('.sw-money')?.dataset.tip})`)
 const css = q('style')?.textContent || ''
 check(/\.sw-page button:focus-visible[^{]*\{[^}]*outline:2px/.test(css), 'buttons draw a visible focus ring (the app removes every ring)')
+check(/\.sw-toast\{width:max-content;max-width:min\(360px,calc\(100cqw - 40px\)\)/.test(css),
+  'a toast is as wide as its text up to 360px (its region is shrink-wrapped: a % width wraps one word a line)')
+check(/@container \(max-width:460px\)\{[^@]*\.sw-page:not\(\[data-theme=terminal\]\) \.sw-panel \.sw-units>\.sw-unit:last-child:nth-child\(odd\):not\(:first-child\)\{grid-column:1\/-1\}/.test(css),
+  'docked narrow (2 tiles a row), an odd last agent tile takes the whole row')
 check(qa('[data-tip]').filter(e => !e.closest('button')).every(e => e.tabIndex === 0),
   `every tooltip trigger outside a button is focusable (${qa('[data-tip]').filter(e => !e.closest('button') && e.tabIndex !== 0).map(e => e.className)})`)
 {
@@ -436,20 +474,20 @@ check(/--dim:var\(--ui-text-secondary\)/.test(css) && !/tertiary/.test(css.match
 check(q('.sw-live[role=status]') !== null && !q('.sw-live').textContent, 'the toast live region is mounted before any toast (so it is announced)')
 check(stub.calls.request.some(([m, p]) => m === 'subagent.list' && p.session_id === 'rt-1'), 'subagent.list asked with the focused runtime id')
 
-// 20. the look toggle switches and keeps the choice in ctx.storage
-await act(async () => { q('.sw-tgb[data-theme=terminal]').click() })
-check(q('.sw-page')?.dataset.theme === 'terminal' && q('.sw-tgb[data-theme=terminal]')?.getAttribute('aria-pressed') === 'true' && kept.get('theme') === 'terminal',
-  `the toggle switches to Terminal and keeps it in ctx.storage (${kept.get('theme')})`)
-check(units().length === 3 && units().every(u => u.querySelector('pre.sw-spr')) && !q('.sw-hex')
+// 20. the Settings page switches the open page at once and keeps the choice in ctx.storage
+await setLook('terminal')
+check(q('.sw-page')?.dataset.theme === 'terminal' && setHost.querySelector('.sw-look[data-look=terminal]')?.getAttribute('aria-checked') === 'true' && kept.get('theme') === 'terminal',
+  `choosing Terminal in Settings switches the open page and keeps it in ctx.storage (${kept.get('theme')})`)
+check(units().length === 3 && units().every(u => u.querySelector('pre.sw-spr')) && !q('.sw-utop, .sw-dm')
   && units().map(u => u.querySelector('.sw-us').textContent).join() === '[IDLE],[OK ],[ERR]',
   `Terminal draws ASCII sprite boxes with status tags (${units().map(u => u.querySelector('.sw-us')?.textContent)})`)
 check(!/TERMINAL PALETTE/.test(css) && /\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-acc\)/.test(css) && /--tm-acc:color-mix\(in srgb,var\(--ui-accent\)/.test(css)
   && /--tm-ok:color-mix\(in srgb,var\(--ui-green\)/.test(css) && /--tm-bad:color-mix\(in srgb,var\(--ui-red\)/.test(css) && /--tm-run:color-mix\(in srgb,var\(--ui-yellow\)/.test(css)
   && /--tm-bg:color-mix\(in srgb,var\(--ui-accent\) \d+%,var\(--dt-background\)\)/.test(css) && !/#[0-9a-f]{3,8}\b/i.test(css),
   'Terminal takes the theme: the accent is its ink, the theme tones its statuses, its ground the theme background; no literal colour')
-await act(async () => { q('.sw-tgb[data-theme=cockpit]').click() })
-check(q('.sw-page')?.dataset.theme === 'cockpit' && kept.get('theme') === 'cockpit' && units().every(u => u.querySelector('.sw-hex')),
-  'and back to Cockpit hex units')
+await setLook('dots')
+check(q('.sw-page')?.dataset.theme === 'dots' && kept.get('theme') === 'dots' && units().every(u => u.querySelector('.sw-utop')),
+  'and back to Dot matrix tiles')
 
 // 22. the run picker: the last run now, earlier runs on demand, Back to now
 await act(async () => { q('.sw-pick').click() })
@@ -690,8 +728,8 @@ check(unitNamed('one')?.dataset.icon === 'run' && /running a command npm test/.t
 }
 check(units()[0].getAttribute('aria-label') === 'Main agent: waiting on 3' && units()[0].dataset.icon === 'wait',
   `the main agent waits on its working and waiting subagents (${units()[0].getAttribute('aria-label')})`)
-check(q('.sw-bign')?.textContent === '0' && q('.sw-big small')?.textContent === '/4' && qa('.sw-score .sw-seg i').map(i => i.dataset.st).join() === 'running,running,failed,queued',
-  `the score: none finished of four, one cell per subagent in its status (${q('.sw-big')?.textContent})`)
+check(q('.sw-bign')?.textContent === '0' && q('.sw-big small')?.textContent === '/4' && qa('.sw-score .sw-sleg span').map(i => i.textContent).join() === '2 working,1 waiting,1 failed',
+  `the score: none finished of four, each status named with its count (${q('.sw-big')?.textContent})`)
 check(q('.sw-money')?.textContent === '~$0.42', `a live run shows the cost its finished workers reported (${q('.sw-money')?.textContent})`)
 await act(async () => { unitNamed('one').click() })
 check(q('.sw-focus .sw-model')?.textContent === 'claude-opus-5-5' && /running a command npm test/.test(q('.sw-focus .sw-meta')?.textContent || ''),
@@ -971,7 +1009,7 @@ const said0 = stub.pet.said.length
 for (const id of ['p1', 'p2', 'p3']) await emit('subagent.spawn_requested', 'rt-9', { subagent_id: id, goal: id })
 await tick(5)
 check(chip()?.querySelector('.sw-sbn')?.textContent === '0/3' && chip()?.dataset.st === 'queued', `three queued workers read 0/3 (${chip()?.querySelector('.sw-sbn')?.textContent})`)
-check(chipHost.querySelector('.sw-sbw')?.dataset.theme === 'cockpit', 'the chip takes the chosen look')
+check(chipHost.querySelector('.sw-sbw')?.dataset.theme === 'dots', 'the chip takes the chosen look')
 check(stub.pet.said.length === said0, 'no pet on screen -> nothing is said')
 await emit('subagent.spawn_requested', 'rt-OTHER', { subagent_id: 'o1', goal: 'other chat' })
 await tick(5)
@@ -1179,8 +1217,8 @@ await tick(4100)
   check(/@media \(prefers-reduced-motion:reduce\)\{\.sw-page \*,\.sw-page \*::before,\.sw-page \*::after\{animation:none!important;transition:none!important\}\}/.test(pageCss)
     && animated.length > 5 && animated.every(s => s.split(',').every(one => /^\.sw-(page|panel|unit|sk|ld|bign|nowf|fr|spr|frow)/.test(one.trim()) || /^\.sw-page /.test(one.trim()))),
   `reduced motion stops every page animation (${animated.length} animated rules, all inside the page)`)
-  check(['sw-close', 'sw-shake', 'sw-up', 'sw-slide', 'sw-breathe', 'sw-type', 'sw-blink', 'sw-count', 'sw-in', 'sw-sweep', 'sw-reveal', 'sw-scan'].every(k => new RegExp(`@keyframes ${k}\\{`).test(pageCss)),
-    'the moments exist: ring closes, shake, count up, slide, breathe, retyped tag, cursor blink, tile count-up, cards in turn, NOW sweep, answer reveal, scan')
+  check(['sw-close', 'sw-shake', 'sw-up', 'sw-slide', 'sw-breathe', 'sw-type', 'sw-blink', 'sw-count', 'sw-in', 'sw-sweep', 'sw-reveal', 'sw-scan', 'sw-dot'].every(k => new RegExp(`@keyframes ${k}\\{`).test(pageCss)),
+    'the moments exist: status dot closes, shake, count up, slide, breathe, retyped tag, cursor blink, tile count-up, cards in turn, NOW sweep, answer reveal, scan, dot-matrix numbers light in')
   check(['.sw-page .sw-tn[data-count]', '.sw-page .sw-ft', '.sw-page .sw-ft.is-now::after', '.sw-page .sw-ans', '.sw-page .sw-scan', '.sw-page .sw-radar'].every(sel => animated.includes(sel))
     && /@property --sw-n\{syntax:"<integer>"/.test(pageCss),
     'a panel opening moves: numbers count up, cards appear in turn, a light sweeps the NOW card, the answer reveals — all inside the reduced-motion lock')
@@ -1238,10 +1276,10 @@ check(fq('.sw-bign')?.textContent === '20' && fq('.sw-big small')?.textContent =
 }
 await act(async () => { grp('completed').querySelector('.sw-fold').click() })
 check(grp('completed').querySelectorAll('.sw-cell').length === 20 && grp('completed').querySelector('.sw-fold')?.getAttribute('aria-expanded') === 'true', 'Show opens a group')
-await act(async () => { fq('.sw-tgb[data-theme=terminal]').click() })
+await setLook('terminal')
 check(fq('.sw-page')?.dataset.theme === 'terminal' && fqa('.sw-swarm .sw-cell .sw-glyph').length === 26 && !fqa('.sw-swarm .sw-cell svg').length,
   'the Terminal swarm draws glyph cells')
-await act(async () => { fq('.sw-tgb[data-theme=cockpit]').click() })
+await setLook('dots')
 await act(async () => froot.unmount())
 
 // 20b. the kept look is read back from ctx.storage; a storage that fails or is missing falls back
@@ -1268,10 +1306,12 @@ await quiet(async () => {
   let el, r
   try {
     ({ el, r } = await mountFresh())
-    await act(async () => { el.querySelector('.sw-tgb[data-theme=terminal]').click() })
+    check(el.querySelector('.sw-page')?.dataset.theme === 'dots', 'a storage that throws reads as Dot matrix')
+    await setLook('terminal')
   } catch (err) { threw = err }
   check(!threw && el?.querySelector('.sw-page')?.dataset.theme === 'terminal' && el.querySelector('.sw-agents, .sw-hint, .sw-skel'),
-    `a storage that throws falls back to Cockpit and the toggle still works (${threw})`)
+    `a storage that throws falls back to Dot matrix and Settings still switches the look (${threw})`)
+  await setLook('dots')
   if (r) await act(async () => r.unmount())
 })
 storageFails = false
@@ -1279,15 +1319,23 @@ kept.set('theme', 'nonsense')
 mod.default.register(quietCtx({}))
 {
   const { el, r } = await mountFresh()
-  check(el.querySelector('.sw-page')?.dataset.theme === 'cockpit', 'a kept value that is not a look falls back to Cockpit')
+  check(el.querySelector('.sw-page')?.dataset.theme === 'dots', 'a kept value that is not a look falls back to Dot matrix')
+  await act(async () => r.unmount())
+}
+kept.set('theme', 'cockpit')
+mod.default.register(quietCtx({}))
+{
+  const { el, r } = await mountFresh()
+  check(el.querySelector('.sw-page')?.dataset.theme === 'dots', 'a kept Cockpit (an earlier version\'s look) reads as Dot matrix, which replaced it')
   await act(async () => r.unmount())
 }
 mod.default.register(quietCtx({ storage: undefined }))
 {
   const { el, r } = await mountFresh()
-  check(el.querySelector('.sw-page')?.dataset.theme === 'cockpit', 'no ctx.storage at all: Cockpit')
-  await act(async () => { el.querySelector('.sw-tgb[data-theme=terminal]').click() })
-  check(el.querySelector('.sw-page')?.dataset.theme === 'terminal', 'and the toggle still works without storage')
+  check(el.querySelector('.sw-page')?.dataset.theme === 'dots', 'no ctx.storage at all: Dot matrix')
+  await setLook('terminal')
+  check(el.querySelector('.sw-page')?.dataset.theme === 'terminal', 'and Settings still switches the look without storage')
+  await setLook('dots')
   await act(async () => r.unmount())
 }
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED')
