@@ -121,7 +121,7 @@ const BUNDLES = {
       copyFailed: 'Copy failed',
       countFailed: 'Unknown — its source could not be read',
       loading: 'Reading this chat…',
-      allFailed: 'Nothing could be read. Use Try again in the box above.',
+      allFailed: 'Nothing to show while every read fails.',
       noChat: { title: 'No chat selected', body: 'Open a chat to see its agents and their files.' },
       run: {
         current: 'Current run',
@@ -994,9 +994,21 @@ function Cell({ t, theme, u, selected, onSelect }) {
   })
 }
 
+/**
+ * Columns for n units when a row holds at most `fit`: rows are split evenly, so 6 units are 3 + 3,
+ * never 5 + 1. The page sets one such value per width step (--sw-c2 … --sw-c8) and the stylesheet
+ * picks the one for the panel's width, so it holds with no script running.
+ */
+export function unitCols(n, fit) {
+  const k = Math.max(1, Math.floor(Number(n) || 0))
+  return k <= fit ? k : Math.ceil(k / Math.ceil(k / fit))
+}
+
 function Units({ t, theme, units, selected, onSelect, flash, waitingOn }) {
+  const cols = { '--sw-n': units.length }
+  for (let fit = 2; fit <= SWARM_AT; fit++) cols[`--sw-c${fit}`] = unitCols(units.length, fit)
   return jsx('div', {
-    className: 'sw-units', role: 'group', 'aria-label': t('sw.agents'),
+    className: 'sw-units', role: 'group', 'aria-label': t('sw.agents'), style: cols,
     children: units.map(u => jsx(Unit, { t, theme, u, selected: selected === u.key, onSelect, flash: flash.get(u.key), waitingOn }, u.key))
   })
 }
@@ -1164,9 +1176,21 @@ function FileCard({ t, f, cwd, label, now, order, onToast }) {
   })
 }
 
-function ChangedFiles({ t, theme, count, rows, nowRows, cwd, verbOf, onToast }) {
+/** The files worked on right now, in their own block above Changed and Only read. */
+function NowFiles({ t, rows, cwd, verbOf, onToast }) {
+  if (!rows.length) return null
+  return jsxs('div', {
+    className: 'sw-fsec', 'data-sec': 'now',
+    children: [
+      jsx('div', { className: 'sw-fh', children: jsx('h4', { className: 'sw-k', children: t('sw.focus.now') }, 'h') }, 'h'),
+      jsx('div', { className: 'sw-fgrid', children: rows.map((f, i) => jsx(FileCard, { t, f, cwd, label: verbOf(f), now: true, order: i, onToast }, `now-${f.key}`)) }, 'g')
+    ]
+  })
+}
+
+function ChangedFiles({ t, theme, count, rows, cwd, onToast }) {
   const [all, setAll] = useState(false)
-  if (!rows.length && !nowRows.length) return null
+  if (!rows.length) return null
   const shown = all ? rows : rows.slice(0, CHANGED_ROWS)
   return jsxs('div', {
     className: 'sw-fsec', 'data-sec': 'changed',
@@ -1174,16 +1198,13 @@ function ChangedFiles({ t, theme, count, rows, nowRows, cwd, verbOf, onToast }) 
       jsxs('div', {
         className: 'sw-fh',
         children: [
-          jsx('h4', { className: 'sw-k', children: count ? t('sw.focus.changed', count) : t('sw.focus.now') }, 'h'),
+          jsx('h4', { className: 'sw-k', children: t('sw.focus.changed', count) }, 'h'),
           jsx('span', { className: 'sw-leg', children: t(theme === 'terminal' ? 'sw.focus.legendTm' : 'sw.focus.legend') }, 'l')
         ]
       }, 'h'),
       jsx('div', {
         className: 'sw-fgrid',
-        children: [
-          ...nowRows.map((f, i) => jsx(FileCard, { t, f, cwd, label: verbOf(f), now: true, order: i, onToast }, `now-${f.key}`)),
-          ...shown.map((f, i) => jsx(FileCard, { t, f, cwd, order: nowRows.length + i, onToast }, f.key))
-        ]
+        children: shown.map((f, i) => jsx(FileCard, { t, f, cwd, order: i, onToast }, f.key))
       }, 'g'),
       rows.length > shown.length
         ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setAll(true), children: t('sw.focus.more', rows.length - shown.length) }, 'more')
@@ -1218,11 +1239,14 @@ function Files({ t, theme, mine, nowRows = [], verbOf, files, onToast, empty }) 
   if (!mine.changed.length && !mine.read.length && !nowRows.length) {
     return jsxs('div', { className: 'sw-fsec', 'data-sec': 'none', children: [jsx('h4', { className: 'sw-k', children: t('sw.focus.files') }, 'h'), jsx('p', { className: 'sw-empty', children: empty }, 'e')] })
   }
-  // The file worked on now is its own card at the front, not a second card further down.
+  // A file worked on now is shown once, in its own block, and in neither list below it;
+  // each heading counts exactly the rows under it.
   const nowKeys = new Set(nowRows.map(f => f.key))
+  const changed = mine.changed.filter(f => !nowKeys.has(f.key))
   return [
-    jsx(ChangedFiles, { t, theme, count: mine.changed.length, rows: mine.changed.filter(f => !nowKeys.has(f.key)), nowRows, cwd, verbOf, onToast }, 'c'),
-    jsx(ReadFiles, { t, rows: mine.read, cwd, onToast }, 'r')
+    jsx(NowFiles, { t, rows: nowRows, cwd, verbOf, onToast }, 'n'),
+    jsx(ChangedFiles, { t, theme, count: changed.length, rows: changed, cwd, onToast }, 'c'),
+    jsx(ReadFiles, { t, rows: mine.read.filter(f => !nowKeys.has(f.key)), cwd, onToast }, 'r')
   ]
 }
 
@@ -2474,7 +2498,14 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-seg i{transform:none}
 .sw-page[data-theme=terminal] .sw-money{font-size:14px;color:var(--tm-hi)}
 /* units: Cockpit hexes */
-.sw-units{display:flex;justify-content:space-around;flex-wrap:wrap;row-gap:12px;margin:20px 0 4px}
+.sw-units{--sw-fit:8;--sw-cols:var(--sw-c8,var(--sw-n));display:grid;grid-template-columns:repeat(var(--sw-cols),96px);justify-content:space-around;column-gap:8px;row-gap:12px;margin:20px 0 4px}
+/* how many 96 px units fit a row at the panel's width; the rows are then split evenly (unitCols) */
+@container (max-width:823px){.sw-units{--sw-fit:7;--sw-cols:var(--sw-c7,var(--sw-n))}}
+@container (max-width:719px){.sw-units{--sw-fit:6;--sw-cols:var(--sw-c6,var(--sw-n))}}
+@container (max-width:615px){.sw-units{--sw-fit:5;--sw-cols:var(--sw-c5,var(--sw-n))}}
+@container (max-width:511px){.sw-units{--sw-fit:4;--sw-cols:var(--sw-c4,var(--sw-n))}}
+@container (max-width:407px){.sw-units{--sw-fit:3;--sw-cols:var(--sw-c3,var(--sw-n))}}
+@container (max-width:303px){.sw-units{--sw-fit:2;--sw-cols:var(--sw-c2,var(--sw-n))}}
 .sw-unit{width:96px;display:flex;flex-direction:column;align-items:center;gap:5px;text-align:center!important;padding:4px 0!important}
 .sw-hex{position:relative;width:60px;height:66px;display:grid;place-items:center;margin:8px 0 2px}
 .sw-ring{position:absolute;inset:-6px -3px;border-radius:50%;background:repeating-conic-gradient(var(--c) 0 8deg,transparent 8deg 15deg);
@@ -2500,7 +2531,8 @@ const CSS = `${TM_PALETTE}
 .sw-unit.is-fail .sw-hex{filter:drop-shadow(0 0 14px var(--bad))}
 .sw-unit:hover .sw-un{color:var(--ink)}
 /* units: Terminal sprites */
-.sw-page[data-theme=terminal] .sw-units{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin:12px 0}
+/* Terminal: a box is as wide as when a full row fills the line; a short row starts at the left */
+.sw-page[data-theme=terminal] .sw-units{grid-template-columns:repeat(var(--sw-cols),calc((100% - (var(--sw-fit) - 1) * 8px) / var(--sw-fit)));justify-content:start;gap:8px;margin:12px 0}
 .sw-page[data-theme=terminal] .sw-unit{width:auto;min-width:0;padding:8px 4px 6px!important;gap:2px;border:1px solid var(--line)}
 .sw-page[data-theme=terminal] .sw-unit.is-sel{border-color:var(--a);box-shadow:0 0 12px color-mix(in srgb,var(--a) 25%,transparent),inset 0 0 12px color-mix(in srgb,var(--a) 12%,transparent)}
 .sw-spr{margin:0;font:12px/1.05 var(--mono);white-space:pre;color:var(--c)}
@@ -2745,8 +2777,6 @@ const CSS = `${TM_PALETTE}
 .sw-toast.is-bad{box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--bad)}
 /* narrow: docked beside the chat */
 @container (max-width:460px){
- .sw-panel .sw-units{justify-content:flex-start;column-gap:2px}
- .sw-panel .sw-unit{width:84px}
  .sw-panel .sw-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
  .sw-panel .sw-hero{grid-template-columns:76px minmax(0,1fr);gap:12px}
  .sw-panel .sw-por{transform:scale(.8);transform-origin:0 50%}
@@ -2757,8 +2787,9 @@ const CSS = `${TM_PALETTE}
  .sw-panel .sw-tabs{gap:14px}
  .sw-panel .sw-hd{flex-wrap:wrap;row-gap:6px}
 }
-@container (max-width:460px){.sw-page[data-theme=terminal] .sw-panel .sw-ft{grid-template-columns:14px minmax(0,1fr) 0 64px 64px 30px}
- .sw-page[data-theme=terminal] .sw-panel .sw-fd{display:none}
+@container (max-width:460px){.sw-page[data-theme=terminal] .sw-panel .sw-ft{grid-template-columns:14px minmax(0,1fr) auto}
+ .sw-page[data-theme=terminal] .sw-panel .sw-fd,.sw-page[data-theme=terminal] .sw-panel .sw-ft .sw-pips,.sw-page[data-theme=terminal] .sw-panel .sw-nowb{display:none}
+ .sw-page[data-theme=terminal] .sw-panel .sw-fl{grid-column:3}
  .sw-page[data-theme=terminal] .sw-panel .sw-por{transform:none}
  .sw-page[data-theme=terminal] .sw-panel .sw-hero{grid-template-columns:64px minmax(0,1fr)}}
 /* calm: an earlier run is history, not live — no glow, nothing moves */

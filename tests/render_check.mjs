@@ -766,8 +766,9 @@ await quiet(async () => {
   check(items.includes('earlier runs — backend 503') && items.includes('background commands — procs 503') && items.includes('live updates stopped — gateway down'),
     `one alert lists each source that failed (${items.join(' | ')})`)
 }
-check(q('.sw-err .sw-ib.is-text')?.textContent === 'Try again' && /Try again/.test(q('.sw-bd')?.textContent || ''),
-  'the alert carries Try again and the empty view says what to do')
+check(q('.sw-err .sw-ib.is-text')?.textContent === 'Try again' && q('.sw-bd .sw-empty')?.textContent === 'Nothing to show while every read fails.'
+  && !/Try again/.test(q('.sw-bd')?.textContent || ''),
+  `the alert carries Try again; the empty view below does not repeat it (${q('.sw-bd')?.textContent.slice(0, 160)})`)
 check(q('.sw-tabn')?.textContent === '—' && /could not be read/.test(q('.sw-tabn')?.getAttribute('aria-label') || ''), 'a count whose source failed reads —, not 0')
 
 // 10. Refresh restarts live polling that gave up
@@ -1106,8 +1107,23 @@ await emit('tool.complete', 'rt-f', { tool_id: 'v1' })
 await emit('tool.start', 'rt-f', { tool_id: 't1', name: 'read_file', args: { path: 'src/b.py' } })
 check(nowNames() === 'b.py' && fq('.sw-focus .sw-head')?.textContent === 'b.py' && fq('.sw-focus .sw-verb')?.textContent === '▶ READING NOW' && mainUnit()?.dataset.icon === 'read' && mainUnit()?.dataset.st === 'running',
   `a file call of the focused chat is the NOW card and the headline, the verb line reads (${fq('.sw-focus .sw-verb')?.textContent} ${fq('.sw-focus .sw-head')?.textContent})`)
-check(sec('changed')[0]?.classList.contains('is-now') && nowRows()[0]?.querySelector('.sw-nowb')?.textContent === 'NOW' && /worked on now/.test(nowRows()[0]?.getAttribute('aria-label') || ''),
-  'the NOW card leads the grid, badged NOW, and says so to a screen reader')
+check(sec('now')[0]?.classList.contains('is-now') && fq('.sw-focus [data-sec=now] h4')?.textContent === 'Working on now'
+  && fq('.sw-focus [data-sec=now]')?.nextElementSibling?.dataset.sec !== 'now'
+  && nowRows()[0]?.querySelector('.sw-nowb')?.textContent === 'NOW' && /worked on now/.test(nowRows()[0]?.getAttribute('aria-label') || ''),
+  'the NOW card is its own block above the lists, badged NOW, and says so to a screen reader')
+check(!sec('changed').some(r => r.querySelector('.sw-fn')?.textContent === 'b.py') && !sec('read').some(r => r.querySelector('.sw-fn')?.textContent === 'b.py'),
+  'the file worked on now is in neither list below it')
+{
+  // heading count = rows shown + the "Show N more" rest, for each list
+  const counts = ['changed', 'read'].map(k => {
+    const box = fq(`.sw-focus [data-sec=${k}]`)
+    if (!box) return [k, 0, 0]
+    const head = Number(/(\d+)/.exec(box.querySelector('h4')?.textContent || '')?.[1])
+    const more = Number(/(\d+)/.exec(box.querySelector(':scope > .sw-more')?.textContent || '')?.[1] || 0)
+    return [k, head, box.querySelectorAll('.sw-fr').length + more]
+  })
+  check(counts.every(([, h, r]) => h === r), `each list heading counts exactly its rows while a file is worked on (${counts.map(c => c.join(' ')).join(' · ')})`)
+}
 await emit('tool.start', 'rt-f', { tool_id: 't2', name: 'write_file', args: { path: 'D:/Proj/src/new.ts', content: 'x' } })
 check(nowNames() === 'b.py,new.ts' && fq('.sw-focus .sw-head')?.textContent === 'new.ts' && fq('.sw-focus .sw-verb')?.textContent === '▶ EDITING NOW' && rowOf('new.ts')?.dataset.op === 'active' && mainUnit()?.dataset.icon === 'edit',
   'a file not yet recorded appears at once; the newest file is the head line and the icon edits')
@@ -1120,6 +1136,15 @@ check(nowNames() === 'new.ts', 'the row ends after the linger; a call still runn
 await emit('tool.complete', 'rt-f', { tool_id: 't2', name: 'write_file' })
 await tick(4100)
 check(!nowRows().length && !rowOf('new.ts') && mainUnit()?.dataset.st === 'idle', 'once every call ended nothing is worked on now, and an unrecorded file leaves with it')
+// a recorded changed file worked on now leaves Changed for the NOW block, and the heading counts what is left
+await emit('tool.start', 'rt-f', { tool_id: 't3', name: 'write_file', args: { path: 'D:/Proj/src/a.py', content: 'x' } })
+{
+  const h = Number(/(\d+)/.exec(fq('.sw-focus [data-sec=changed] h4')?.textContent || '')?.[1])
+  check(nowNames() === 'a.py' && !sec('changed').some(r => r.querySelector('.sw-fn')?.textContent === 'a.py') && h === sec('changed').length && h === 2,
+    `a changed file worked on now is shown once; Changed counts only its own rows (${h} / ${sec('changed').length})`)
+}
+await emit('tool.complete', 'rt-f', { tool_id: 't3', name: 'write_file' })
+await tick(4100)
 // 26. reduced motion turns every animation off; every moment exists
 {
   const pageCss = mod.default && (fq('style')?.textContent || '')
@@ -1133,8 +1158,21 @@ check(!nowRows().length && !rowOf('new.ts') && mainUnit()?.dataset.st === 'idle'
     && /@property --sw-n\{syntax:"<integer>"/.test(pageCss),
     'a panel opening moves: numbers count up, cards appear in turn, a light sweeps the NOW card, the answer reveals — all inside the reduced-motion lock')
 }
-check(/\.sw-units\{display:flex;[^}]*flex-wrap:wrap/.test(fq('style')?.textContent || '') && /\.sw-cellgrid\{display:flex;flex-wrap:wrap/.test(fq('style')?.textContent || ''),
-  'units and swarm cells wrap: nothing scrolls sideways')
+{
+  const st = fq('style')?.textContent || ''
+  check(/\.sw-units\{[^}]*display:grid;grid-template-columns:repeat\(var\(--sw-cols\),96px\)/.test(st) && /@container \(max-width:407px\)\{\.sw-units\{--sw-fit:3;--sw-cols:var\(--sw-c3/.test(st)
+    && /\.sw-cellgrid\{display:flex;flex-wrap:wrap/.test(st),
+    'units take the columns that fit the panel and swarm cells wrap: nothing scrolls sideways')
+  check([[6, 5, 3], [7, 5, 4], [6, 6, 6], [5, 4, 3], [9, 8, 5], [3, 5, 3], [1, 2, 1], [8, 3, 3]].every(([n, fit, c]) => mod.unitCols(n, fit) === c),
+    'agents split into even rows: 6 at 5 a row are 3 + 3, 7 are 4 + 3, never 5 + 1')
+  const u = fhost.querySelector('.sw-agents .sw-units')
+  const n = u ? Number(u.style.getPropertyValue('--sw-n')) : 0
+  check(u && n > 0 && [2, 3, 4, 5, 6, 7, 8].every(f => Number(u.style.getPropertyValue(`--sw-c${f}`)) === mod.unitCols(n, f)),
+    `the page hands the stylesheet one column count per width step (n=${n})`)
+  check(/\.sw-page\[data-theme=terminal\] \.sw-panel \.sw-ft\{grid-template-columns:14px minmax\(0,1fr\) auto\}/.test(st)
+    && /\.sw-page\[data-theme=terminal\] \.sw-panel \.sw-ft \.sw-pips,\.sw-page\[data-theme=terminal\] \.sw-panel \.sw-nowb\{display:none\}/.test(st),
+    'a narrow Terminal file row keeps the name and what happened; the blocks and NOW column give way')
+}
 filesFails = true
 await quiet(async () => {
   await act(async () => { stub.atoms.focusedSessionId.set('rt-g'); stub.atoms.focusedStoredSessionId.set('st-g') })
