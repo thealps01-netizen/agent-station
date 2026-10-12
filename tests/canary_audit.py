@@ -267,8 +267,6 @@ MUTATIONS = [
      "a toast is as narrow as its region: one word a line"),
     ("render", JS, "const THEMES = ['terminal']", "const THEMES = ['dots', 'terminal']",
      "a removed look is back, and the page opens in it instead of Terminal"),
-    ("render", JS, "      ctxRef?.storage?.set?.(THEME_KEY, next)\n", "",
-     "the chosen look is not kept in ctx.storage"),
     ("render", JS, "    return THEMES.includes(kept) ? kept : THEMES[0]\n  } catch", "    return kept || THEMES[0]\n  } catch",
      "a kept value that is not a look is used as one"),
     ("render", JS, "  try {\n    const kept = ctxRef?.storage?.get?.(THEME_KEY, THEMES[0])\n    return THEMES.includes(kept) ? kept : THEMES[0]\n  } catch (err) {\n    console.warn(`[${ID}] could not read the kept look; using ${THEMES[0]}`, err)\n    return THEMES[0]\n  }",

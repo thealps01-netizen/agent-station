@@ -20,8 +20,8 @@
  *             finished, from the backend's /processes; a row opens its exit code, folder and the
  *             end of its output (/process_output).
  *   Look      Terminal: a CRT palette derived from the app theme's tokens (TM_PALETTE), ASCII sprites
- *             and [RUN] / [OK ] tags. The look machinery (THEMES, the kept choice in ctx.storage) stays
- *             for a second look; any kept value an earlier version wrote (Cockpit, Dot matrix, Live
+ *             and [RUN] / [OK ] tags. THEMES and the read of a kept look in ctx.storage stay for a
+ *             second look (nothing writes it today); any kept value an earlier version wrote (Cockpit, Dot matrix, Live
  *             map) reads as Terminal.
  *   Progress  the focused chat's running batch as a status-bar chip (finished/total, a bar, the
  *             cost so far) and, when a pet is on screen, as a line in its speech bubble. Fed by
@@ -574,12 +574,10 @@ function Cells({ statuses, className = 'sw-cells' }) {
 
 // ── look: Terminal ───────────────────────────────────────────────────────────
 //
-// The chosen look is kept in the plugin's own storage (ctx.storage). Storage is a convenience: when
+// A look is read from the plugin's own storage (ctx.storage); nothing on the page writes it while
+// Terminal is the only look. Storage is a convenience: when
 // it is missing, holds something else, or throws, the page draws Terminal and keeps working. A look an
 // earlier version kept (Cockpit, Dot matrix, Live map) is no longer a look, so it reads as Terminal too.
-
-let themeNow = null
-const themeSubs = new Set()
 
 function readTheme() {
   try {
@@ -592,23 +590,8 @@ function readTheme() {
 }
 
 function useTheme() {
-  const [theme, setTheme] = useState(() => themeNow || (themeNow = readTheme()))
-  useEffect(() => {
-    const fn = () => setTheme(themeNow)
-    themeSubs.add(fn)
-    return () => { themeSubs.delete(fn) }
-  }, [])
-  const choose = useCallback(next => {
-    if (!THEMES.includes(next)) return
-    themeNow = next
-    try {
-      ctxRef?.storage?.set?.(THEME_KEY, next)
-    } catch (err) {
-      console.warn(`[${ID}] could not keep the look`, err)
-    }
-    themeSubs.forEach(fn => fn())
-  }, [])
-  return [theme, choose]
+  const [theme] = useState(readTheme)
+  return [theme]
 }
 
 // ── data hooks ───────────────────────────────────────────────────────────────
@@ -2820,8 +2803,6 @@ export default {
   name: 'Subagent Watch',
   register(ctx) {
     ctxRef = ctx
-    // The kept look is read again from this ctx's storage.
-    themeNow = null
     ctx.i18n?.register?.(BUNDLES)
     ctx.register({ id: 'page', area: 'routes', data: { path: ROUTE }, render: () => jsx(Page, {}) })
     ctx.register({ id: 'nav', area: 'sidebar.nav', data: { path: ROUTE, label: navLabel(), codicon: 'type-hierarchy-sub' } })
