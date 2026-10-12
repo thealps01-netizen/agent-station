@@ -488,6 +488,20 @@ check(!/TERMINAL PALETTE/.test(css) && /\.sw-page\[data-theme=terminal\]\{--a:va
 await setLook('dots')
 check(q('.sw-page')?.dataset.theme === 'dots' && kept.get('theme') === 'dots' && units().every(u => u.querySelector('.sw-utop')),
   'and back to Dot matrix tiles')
+await setLook('map')
+{
+  const ag = qa('.sw-map[role=group] button.sw-magent')
+  check(q('.sw-page')?.dataset.theme === 'map' && !units().length && ag.length === 3 && ag[0].dataset.key === 'main' && ag[0].getAttribute('aria-pressed') === 'true'
+    && ag.every(b => /: /.test(b.getAttribute('aria-label') || '')),
+    `Live map draws every agent of the run as a button on the file tree, the main agent first and selected (${ag.map(b => b.getAttribute('aria-label'))})`)
+  check(/\.sw-page \.sw-map\{/.test(q('style')?.textContent || '') && q('.sw-score') && q('.sw-focus'),
+    'the map takes the score and focus panel with it; its rules are inside the page')
+  await act(async () => { ag[2].click() })
+  check(q('.sw-focus')?.dataset.kind === 'sub' && qa('.sw-map button.sw-magent')[2]?.getAttribute('aria-pressed') === 'true',
+    'clicking an agent on the map opens it in the focus panel')
+  await act(async () => { qa('.sw-map button.sw-magent')[0].click() })
+}
+await setLook('dots')
 
 // 22. the run picker: the last run now, earlier runs on demand, Back to now
 await act(async () => { q('.sw-pick').click() })

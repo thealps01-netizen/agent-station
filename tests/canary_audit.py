@@ -6,6 +6,7 @@ Each mutation is applied to a COPY of the panel (the repo is never edited) and t
 run against the copy:
 
   render    tests/render_check.mjs <copy of plugin.js>      (behaviour: scoping, marks, failures)
+  livemap   tests/livemap_check.mjs <copy of plugin.js>     (Live map layout: inside, apart, named, capped)
   backend   tests/check_api.py  with the copy's plugin_api  (read-only, lineage, statuses, 403s)
   audit     tests/audit_static.py over the copied tree      (i18n, a11y, colours, silent catches)
 
@@ -263,6 +264,15 @@ MUTATIONS = [
     ('audit', JS, "t('sw.progress.stalled', stalled)", "t('sw.progress.stall', stalled)",
      'i18n: a progress key missing from the bundle'),
     # ── 1.7.0 looks: units, focus panel, run picker, swarm, motion ─────────────────────
+    ("render", JS, "        theme === 'map'\n          ? jsx(LiveMap", "        false\n          ? jsx(LiveMap",
+     "the Live map look draws the Dot matrix tiles instead of the map"),
+    ("render", JS, "jsx('style', { children: CSS + MAP_CSS }, 'css')", "jsx('style', { children: CSS }, 'css')",
+     "the map's stylesheet is not on the page"),
+    ("livemap", JS, "const MAP_LABEL_GAP = 8", "const MAP_LABEL_GAP = 0",
+     "two map labels may touch and read as one name"),
+    ("livemap", JS, "    if (mapFits(L.box, c.obs, c.W, c.H, 3) && !c.labels.some(o => mapHit(apart, o.box))) {",
+     "    if (!c.labels.some(o => mapHit(apart, o.box))) {",
+     "a map label may sit on an agent, a file or outside the drawing"),
     ("render", JS, "    ctx.registerSettingsPage?.({", "    void ({",
      "the look has no Settings page"),
     ("render", JS, "          onClick: () => setTheme(id),", "          onClick: () => {},",
@@ -540,6 +550,8 @@ def _run(gate: str, tree: Path) -> tuple[int, str]:
     if gate == "render":
         run_env["SW_RENDER_OUT"] = f"canary-{tree.name}"  # its own build folder, under tests/.out/
         cmd, cwd = ["node", "render_check.mjs", str(tree / JS).replace("\\", "/")], HERE
+    elif gate == "livemap":
+        cmd, cwd = ["node", "livemap_check.mjs", str(tree / JS).replace("\\", "/")], HERE
     elif gate == "backend":
         cmd, cwd = [sys.executable, str(tree / "tests" / "check_api.py")], tree / "tests"
     else:
@@ -557,7 +569,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="sw-canary-") as tmp:
         base = Path(tmp) / "clean"
         _copy_panel(base)
-        for gate in ("render", "backend", "audit"):
+        for gate in ("render", "livemap", "backend", "audit"):
             code, out = _run(gate, base)
             if code != 0:
                 print(f"the {gate} gate is not green on the unmutated copy (exit {code}):\n{out[-2000:]}")

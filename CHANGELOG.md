@@ -5,19 +5,27 @@ All notable changes to subagent-watch. The top `## <version>` heading is checked
 
 ## 1.7.0 — 2026-10-11
 
-Two looks, one layout. The 1.6.0 deck tied agents to files with letters and colours, which read as a
+Three looks, one layout. The 1.6.0 deck tied agents to files with letters and colours, which read as a
 code to learn; the page now names each agent by what it is doing and shows one agent at a time.
 
 ### Changed
 
-- **Two looks: Cockpit (default) and Terminal.** A small COCKPIT | TERMINAL toggle in the header
-  switches them; the choice is kept per user (`ctx.storage`) and falls back to Cockpit when storage is
-  missing or fails. Both take only the app theme's tokens: Cockpit's accent is your theme's accent;
+- **Three looks, chosen in Settings › Plugins › Subagent Watch** (no toggle on the page): **Dot
+  matrix** (the default — near-monochrome rounded tiles, colour only for working and failed, one dot
+  per edit or read, the score, cost, stat tiles and exit codes in dot-matrix type), **Live map** (the
+  chat's files drawn as a tree; each agent a ring beside the file it works on now, a solid beam while
+  it edits and a dotted one while it reads; finished agents park top right, failed ones bottom left;
+  more than eight subagents become dots, the tree keeps the 30 most recent files with '+N older' per
+  folder; redrawn for a narrow panel, never scaled) and **Terminal**. The choice applies at once and
+  is kept per user (`ctx.storage`); a kept Cockpit (an earlier 1.7.0 build's look, now removed) reads
+  as Dot matrix, and a missing or failing storage falls back to it. Run text is never laid out in
+  full: one line with an ellipsis, the whole of it (up to 300 characters) in the tooltip.
+- **Every look takes only the app theme's tokens.** Dot matrix and Live map use your theme's accent;
   Terminal is a CRT look whose ink and glow are that same accent (its statuses the theme's green, red
   and yellow, its ground derived from the theme background), with ASCII sprite boxes and `[RUN]` /
   `[OK ]` / `[ERR]` tags. No colour is hard-coded anywhere — the static audit's former exception for
   a fixed Terminal palette is gone. The status-bar chip follows the chosen look.
-- **The main agent is a unit too,** the first one, tagged MAIN and selected by default. Each unit's
+- **The main agent is a unit too,** the first one, named Main agent (Terminal: ★) and selected by default. Each unit's
   icon is what it is doing — editing (pencil), reading (eye), running a command (prompt), waiting
   (hourglass), done (check), failed (cross), stopped (square), idle. No letter badges anywhere.
 - **One focus panel** below the units shows the selected agent. Its top is a hero: a big portrait

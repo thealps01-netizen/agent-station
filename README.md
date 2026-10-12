@@ -1,8 +1,9 @@
 # Subagent Watch
 
 A Hermes **Desktop** plugin. A read-only page for the `delegate_task` workers of the focused chat, in
-two looks — **Cockpit** (default) and **Terminal** (a CRT look), both coloured by your theme's accent,
-switched in the header and remembered. The main agent and each subagent are units whose icon says what
+three looks — **Dot matrix** (default; calm tiles, dot meters, numbers in dot-matrix type), **Live map**
+(the chat's files as a tree, each agent beside the file it works on) and **Terminal** (a CRT look), all
+coloured by your theme, chosen in Settings › Plugins › Subagent Watch and remembered. The main agent and each subagent are units whose icon says what
 they are doing (editing, reading, running a command, waiting, done, failed, stopped); one focus panel
 shows the selected agent — what it works on now, the files it changed and read, a subagent's task,
 model, answer and cost, with Copy answer and Open its chat. Earlier runs sit in a run picker; more
@@ -20,9 +21,9 @@ page comes from and why each status rule is what it is.
 Every screen of the page, drawn by the page itself (`tests/preview.mjs`) and measured in the app's
 engine (`tests/shot.cjs`):
 
-| Cockpit (default) | Terminal |
-|---|---|
-| ![Subagent Watch — Cockpit](tests/preview.png) | ![Subagent Watch — Terminal](tests/preview-terminal.png) |
+| Dot matrix (default) | Live map | Terminal |
+|---|---|---|
+| ![Subagent Watch — Dot matrix](tests/preview.png) | ![Subagent Watch — Live map](tests/preview-map.png) | ![Subagent Watch — Terminal](tests/preview-terminal.png) |
 
 ## Install
 
@@ -59,11 +60,12 @@ Run from `tests/` after `npm ci`. What each lock asserts is in the header of its
 ```bash
 python check_api.py                 # backend against a fixture state.db   (--live: this home's too)
 node render_check.mjs               # jsdom + real React, driven like a user
+node livemap_check.mjs              # Live map layout on many fixtures and widths: inside, apart, named, capped
 python audit_static.py              # i18n, a11y, colours, silent catches, read-only backend, release
 python contract_core.py             # everything read from the core still exists (--selftest)
 python release_gate.py              # version / changelog / installed copy rules each fire
 python canary_audit.py              # every mutation must turn its gate red
-node preview.mjs && <electron> shot.cjs preview.html preview.png   # 11 screens × 2 looks (incl. 380 px, the chip, a 40-agent swarm) + WCAG / overflow / overlap gate
+node preview.mjs && <electron> shot.cjs preview.html preview.png   # 11 screens × 3 looks (incl. 380 px, the chip, a 40-agent swarm) + WCAG / overflow / overlap gate
 ```
 
 A rule that has never failed is not evidence: `canary_audit.py`, `release_gate.py` and

@@ -10,9 +10,9 @@
  *   reported  `chip` (ink on its own tone) and `quiet` (the host's faint ladder, owned by the theme).
  * It also fails on any ERROR the page logs in the engine, and on a clipped status label.
  *
- * COVERAGE: the preview must hold all eleven screens of the approved design in BOTH looks (Cockpit and
- * Terminal) — a screen missing in either look is RED, so a dropped frame cannot pass quietly. Every
- * frame of both looks is measured; the narrow (380 px) frames must not scroll sideways either.
+ * COVERAGE: the preview must hold all eleven screens of the approved design in ALL THREE looks (Dot matrix, Live map and
+ * Terminal) — a screen missing in any look is RED, so a dropped frame cannot pass quietly. Every
+ * frame of every look is measured; the narrow (380 px) frames must not scroll sideways either.
  *
  * Usage (from tests/):  node preview.mjs && <electron> shot.cjs preview.html preview.png
  *   <electron> = $HERMES_ELECTRON, or <core>/apps/desktop/node_modules/electron/dist/electron(.exe)
@@ -29,7 +29,7 @@ const outPath = outArg || path.join(__dirname, 'preview.png')
 const WIDTH = 1340 // two 640 px columns, Cockpit and Terminal, side by side
 const SHOT_WIDTH = 690 // one look per PNG
 const SCREENS = 11
-const LOOKS = ['dots', 'terminal']
+const LOOKS = ['dots', 'map', 'terminal']
 
 app.disableHardwareAcceleration()
 

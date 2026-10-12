@@ -106,6 +106,700 @@ let ctxRef = null
 // The stored id of the chat the page watches (see useWatchedChat), for reads deep in the tree.
 const WatchedChat = createContext(null)
 
+// ── live map: the chat's files as a tree, each agent beside the file it works on ──────────────
+
+
+const MAP_CAP = 30
+const MAP_SWARM = 8
+const MAP_NARROW = 460
+const MAP_CW = 7
+const MAP_CWB = 7.7
+const MAP_LINE = 16
+const MAP_PAD = 8
+const MAP_LABEL_GAP = 8
+const MAP_ANGLES = [0, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180]
+const MAP_SIDES = ['b', 't', 'r', 'l', 'br', 'bl', 'tr', 'tl']
+
+function mapT(key, ...args) {
+  const v = String(key).split('.').reduce((at, k) => at?.[k], BUNDLES.en)
+  return typeof v === 'function' ? v(...args) : (v ?? key)
+}
+
+function mapCut(text, n) {
+  const s = String(text ?? '').replace(/\s+/g, ' ').trim()
+  return s.length > n ? `${s.slice(0, Math.max(1, n - 1))}…` : s
+}
+
+function mapSplit(path) {
+  const s = String(path || '').replace(/(.)[\\/]+$/, '$1')
+  const cut = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'))
+  return cut < 0 ? { dir: '', name: s } : { dir: s.slice(0, cut) || s.slice(0, 1), name: s.slice(cut + 1) }
+}
+
+function mapDirName(dir, n) {
+  const parts = String(dir || '').split(/[\\/]+/).filter(Boolean)
+  if (!parts.length) return dir ? mapCut(dir, n) : '.'
+  const two = parts.slice(-2).join('/')
+  return mapCut(two.length <= n ? two : parts[parts.length - 1], n)
+}
+
+function mapState(f) {
+  if (f.last_failed) return 'failed'
+  if (f.deletes > 0 && f.last_op === 'delete') return 'deleted'
+  if ((f.editors && f.editors.length) || f.writes > 0) return 'edit'
+  return 'read'
+}
+
+const mapRad = d => (d * Math.PI) / 180
+const mapRect = (x0, y0, x1, y1) => ({ x0, y0, x1, y1 })
+const mapDisc = (x, y, r) => mapRect(x - r, y - r, x + r, y + r)
+const mapHit = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
+const mapCmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
+
+function mapFits(box, obs, W, H, m) {
+  if (box.x0 < m || box.y0 < m || box.x1 > W - m || box.y1 > H - m) return false
+  for (const o of obs) if (mapHit(box, o)) return false
+  return true
+}
+
+function mapRowW(row) {
+  return Math.ceil(row.reduce((w, p) => w + p.text.length * (p.bold ? MAP_CWB : MAP_CW), 0)) + 4
+}
+
+function mapLabelBox(x, y, side, w, h, gap) {
+  const d = Math.round(gap * 0.72)
+  let x0
+  let y0
+  let anchor
+  if (side === 'r') { x0 = x + gap; y0 = y - 9; anchor = 'start' }
+  else if (side === 'l') { x0 = x - gap - w; y0 = y - 9; anchor = 'end' }
+  else if (side === 't') { x0 = x - w / 2; y0 = y - gap - h; anchor = 'middle' }
+  else if (side === 'b') { x0 = x - w / 2; y0 = y + gap; anchor = 'middle' }
+  else if (side === 'tr') { x0 = x + d; y0 = y - d - h; anchor = 'start' }
+  else if (side === 'tl') { x0 = x - d - w; y0 = y - d - h; anchor = 'end' }
+  else if (side === 'br') { x0 = x + d; y0 = y + d; anchor = 'start' }
+  else { x0 = x - d - w; y0 = y + d; anchor = 'end' }
+  x0 = Math.round(x0)
+  y0 = Math.round(y0)
+  const tx = anchor === 'start' ? x0 + 2 : anchor === 'end' ? x0 + w - 2 : x0 + w / 2
+  return { box: mapRect(x0, y0, x0 + w, y0 + h), x: tx, y: y0 + 13, anchor }
+}
+
+function mapPlaceLabel(c, at, rows, sides, gap, extra) {
+  const w = Math.max(...rows.map(mapRowW))
+  const h = rows.length * MAP_LINE + 2
+  for (const side of sides) {
+    const L = mapLabelBox(at.x, at.y, side, w, h, gap)
+    // Labels keep a clear gap between them: two names that touch read as one pair, and as anyone's.
+    const apart = mapRect(L.box.x0 - MAP_LABEL_GAP, L.box.y0 - MAP_LABEL_GAP, L.box.x1 + MAP_LABEL_GAP, L.box.y1 + MAP_LABEL_GAP)
+    if (mapFits(L.box, c.obs, c.W, c.H, 3) && !c.labels.some(o => mapHit(apart, o.box))) {
+      c.obs.push(L.box)
+      const label = { id: `${extra.kind}:${extra.of}`, ...extra, x: L.x, y: L.y, anchor: L.anchor, box: L.box, rows }
+      c.labels.push(label)
+      return label
+    }
+  }
+  return null
+}
+
+function mapRoomFor(c, x, y, r, sides, w) {
+  const disc = mapDisc(x, y, r)
+  return sides.some(side => {
+    const L = mapLabelBox(x, y, side, w, MAP_LINE + 2, r + 7)
+    return !mapHit(L.box, disc) && mapFits(L.box, c.obs, c.W, c.H, 3)
+  })
+}
+
+function mapSeek(c, ax, ay, ux, uy, dists, pad, r, room) {
+  const free = (x, y) => mapFits(mapDisc(x, y, r + pad), c.obs, c.W, c.H, 2)
+  const base = Math.atan2(uy, ux)
+  const near = ok => {
+    for (const dist of dists) {
+      for (const da of MAP_ANGLES) {
+        const x = Math.round(ax + Math.cos(base + mapRad(da)) * dist)
+        const y = Math.round(ay + Math.sin(base + mapRad(da)) * dist)
+        if (ok(x, y)) return { x, y }
+      }
+    }
+    return null
+  }
+  const spiral = (ok, far) => {
+    for (let rad = 12; rad < far; rad += 8) {
+      for (let k = 0; k < 24; k++) {
+        const x = Math.round(ax + Math.cos(base + (k * Math.PI) / 12) * rad)
+        const y = Math.round(ay + Math.sin(base + (k * Math.PI) / 12) * rad)
+        if (ok(x, y)) return { x, y }
+      }
+    }
+    return null
+  }
+  if (room) {
+    const both = (x, y) => free(x, y) && room(x, y)
+    const p = near(both) || spiral(both, Math.max(...dists) + 60)
+    if (p) return p
+  }
+  return near(free) || spiral(free, Math.max(c.W, c.H))
+}
+
+function mapNameRows(name, cap, sel) {
+  return [[{ text: mapCut(name, cap), tone: sel ? 'sel' : 'name', bold: true }]]
+}
+
+function mapAttempt(base, H) {
+  const { W, narrow, dense, main, subs, selected, t, nowOf } = base
+  const c = { W, H, obs: [], labels: [] }
+  const agents = []
+  const beams = []
+  const nameCap = narrow ? 16 : 22
+  let ok = true
+  const dirs = base.dirs.map(d => ({ ...d, leaves: d.leaves.map(l => ({ ...l })), hidden: d.hidden }))
+  const other = { n: base.other.n, dirs: new Set(base.other.dirs) }
+  const cx = Math.round(W / 2)
+  const cy = Math.round(H / 2)
+
+  const groups = { done: [], failed: [], waiting: [] }
+  const tree = []
+  for (const u of subs) {
+    if (u.status === 'running') tree.push(u)
+    else if (u.status === 'completed') groups.done.push(u)
+    else if (u.status === 'failed' || u.status === 'stopped') groups.failed.push(u)
+    else groups.waiting.push(u)
+  }
+
+  const nameAgent = (a, u, sides) => {
+    for (const extra of [0, 8, 18]) {
+      for (const cap of [22, nameCap, 12, 8]) {
+        const rows = mapNameRows(u.name, cap, a.selected)
+        const L = mapPlaceLabel(c, a, rows, sides, a.r + (a.selected ? 11 : 7) + extra, { kind: 'agent', of: a.key, full: String(u.name || '') })
+        if (L) return true
+      }
+    }
+    return false
+  }
+
+  if (!dense) {
+    const corner = {
+      done: { x: W - 22, y: 22, dy: 30, side: 'l' },
+      failed: { x: 22, y: H - 22, dy: -30, side: 'r' },
+      waiting: { x: W - 22, y: H - 22, dy: -30, side: 'l' }
+    }
+    for (const kind of ['done', 'failed', 'waiting']) {
+      groups[kind].forEach((u, i) => {
+        const k = corner[kind]
+        const a = { key: u.key, x: k.x, y: k.y + i * k.dy, r: 11, size: 'ring', parked: kind, named: false, selected: u.key === selected, status: u.status, main: false, leaf: null }
+        agents.push(a)
+        c.obs.push(mapDisc(a.x, a.y, a.r + MAP_PAD))
+      })
+    }
+    for (const kind of ['done', 'failed', 'waiting']) {
+      groups[kind].forEach(u => {
+        const a = agents.find(x => x.key === u.key)
+        const word = ` · ${t(`sw.map.word.${u.status}`)}`
+        for (const cap of [22, nameCap, 12, 8]) {
+          const rows = [[{ text: mapCut(u.name, cap), tone: a.selected ? 'sel' : u.status === 'failed' ? 'badname' : 'name', bold: true }, { text: word, tone: u.status === 'failed' ? 'bad' : 'dim' }]]
+          if (mapPlaceLabel(c, a, rows, [corner[kind].side], a.r + 9, { kind: 'agent', of: a.key, full: `${u.name}${word}` })) {
+            a.named = true
+            break
+          }
+        }
+      })
+    }
+  } else {
+    const S = 14
+    const M = 14
+    const cols = { done: narrow ? 5 : 6, failed: narrow ? 6 : 8, waiting: narrow ? 6 : 8 }
+    const spot = {
+      done: (col, row) => [W - M - col * S, M + row * S],
+      failed: (col, row) => [M + col * S, H - M - row * S],
+      waiting: (col, row) => [W - M - col * S, H - M - row * S]
+    }
+    for (const kind of ['done', 'failed', 'waiting']) {
+      const list = groups[kind]
+      if (!list.length) continue
+      const placed = list.map((u, i) => {
+        const [x, y] = spot[kind](i % cols[kind], Math.floor(i / cols[kind]))
+        const a = { key: u.key, x, y, r: 5, size: 'dot', parked: kind, named: false, selected: u.key === selected, status: u.status, main: false, leaf: null }
+        agents.push(a)
+        return a
+      })
+      const xs = placed.map(a => a.x)
+      const ys = placed.map(a => a.y)
+      const box = mapRect(Math.min(...xs) - 9, Math.min(...ys) - 9, Math.max(...xs) + 9, Math.max(...ys) + 9)
+      c.obs.push(box)
+      const nf = list.filter(u => u.status === 'failed').length
+      const text = kind === 'done' ? t('sw.map.park.done', list.length) : kind === 'waiting' ? t('sw.map.park.waiting', list.length) : t('sw.map.park.failed', nf, list.length - nf)
+      const rows = [[{ text, tone: kind === 'failed' ? 'bad' : 'dim' }]]
+      const w = mapRowW(rows[0])
+      const spots = kind === 'done'
+        ? [[box.x0 - 2 - w, M - 9], [box.x1 - w, box.y1 + 2]]
+        : kind === 'waiting'
+          ? [[box.x0 - 2 - w, H - M - 9], [box.x1 - w, box.y0 - MAP_LINE - 4]]
+          : [[box.x1 + 2, H - M - 9], [box.x0, box.y0 - MAP_LINE - 4]]
+      for (const [x0, y0] of spots) {
+        const b = mapRect(Math.round(x0), Math.round(y0), Math.round(x0) + w, Math.round(y0) + MAP_LINE + 2)
+        if (!mapFits(b, c.obs, W, H, 3)) continue
+        c.obs.push(b)
+        const anchor = kind === 'failed' ? 'start' : 'end'
+        c.labels.push({ id: `park:${kind}`, kind: 'park', of: kind, full: text, x: anchor === 'start' ? b.x0 + 2 : b.x1 - 2, y: b.y0 + 13, anchor, box: b, rows })
+        break
+      }
+    }
+    for (const a of agents) {
+      if (!a.selected) continue
+      const u = subs.find(x => x.key === a.key)
+      a.named = nameAgent(a, u, MAP_SIDES)
+    }
+  }
+
+  c.obs.push(mapDisc(cx, cy, 9))
+
+  const n = dirs.length
+  const rx = narrow ? W * 0.27 : Math.min(W * 0.25, 175)
+  const ry = narrow ? H * 0.24 : H * 0.25
+  const start = narrow ? 235 : 200
+  const shownDirs = []
+  dirs.forEach((d, i) => {
+    const a0 = start + (n ? (i * 360) / n : 0)
+    for (const s of [1, 0.9, 1.12, 0.8, 1.25, 0.65, 1.4]) {
+      for (const da of [0, 9, -9, 18, -18]) {
+        const a = mapRad(a0 + da)
+        const x = Math.round(cx + Math.cos(a) * rx * s)
+        const y = Math.round(cy + Math.sin(a) * ry * s)
+        if (mapFits(mapDisc(x, y, 9), c.obs, W, H, 26)) {
+          d.x = x
+          d.y = y
+          c.obs.push(mapDisc(x, y, 6))
+          shownDirs.push(d)
+          return
+        }
+      }
+    }
+    other.n += d.leaves.length + d.hidden
+    other.dirs.add(d.key)
+    if (d.leaves.some(l => l.isNow)) ok = false
+  })
+
+  const placedLeaf = new Map()
+  for (const d of shownDirs) {
+    const ang = Math.atan2(d.y - cy, d.x - cx)
+    const k = d.leaves.length
+    const spread = k > 1 ? Math.min(mapRad(narrow ? 30 : 26), mapRad(150) / (k - 1)) : 0
+    const R0 = narrow ? 40 : 48
+    const R1 = narrow ? 13 : 16
+    const order = d.leaves.map((l, j) => j).sort((p, q) => (d.leaves[q].isNow - d.leaves[p].isNow) || p - q)
+    const kept = []
+    for (const j of order) {
+      const l = d.leaves[j]
+      const th = ang + (j - (k - 1) / 2) * spread
+      const rad = R0 + (j % 2) * R1
+      let spotAt = null
+      search: for (const s of [1, 1.3, 0.8, 1.6, 0.62, 1.9]) {
+        for (const dt of [0, 0.16, -0.16, 0.32, -0.32]) {
+          const x = Math.round(d.x + Math.cos(th + dt) * rad * s)
+          const y = Math.round(d.y + Math.sin(th + dt) * rad * s * 0.9)
+          if (mapFits(mapDisc(x, y, 8), c.obs, W, H, 10)) { spotAt = { x, y }; break search }
+        }
+      }
+      if (!spotAt) {
+        d.hidden++
+        if (l.isNow) ok = false
+        continue
+      }
+      l.x = spotAt.x
+      l.y = spotAt.y
+      l.r = l.isNow ? 6.5 : l.state === 'edit' || l.state === 'failed' ? 5.5 : l.state === 'deleted' ? 4.5 : 4
+      l.folder = d.key
+      l.fx = d.x
+      l.fy = d.y
+      c.obs.push(mapDisc(l.x, l.y, l.isNow ? 12 : 7))
+      kept.push(l)
+      placedLeaf.set(l.pk, l)
+    }
+    d.leaves = kept.sort((p, q) => mapCmp(p.pk, q.pk))
+  }
+
+  for (const d of shownDirs) {
+    const sides = d.x >= cx ? ['l', 'bl', 'tl', 'b', 't', 'r', 'br', 'tr'] : ['r', 'br', 'tr', 'b', 't', 'l', 'bl', 'tl']
+    const nameRow = [{ text: d.label, tone: 'dir' }]
+    const olderRow = d.hidden ? [{ text: t('sw.map.older', d.hidden), tone: 'dim' }] : null
+    const both = olderRow ? [nameRow, olderRow] : [nameRow]
+    if (!mapPlaceLabel(c, d, both, sides, 8, { kind: 'dir', of: d.key, full: d.dir || d.label })) {
+      mapPlaceLabel(c, d, [nameRow], sides, 8, { kind: 'dir', of: d.key, full: d.dir || d.label })
+      if (olderRow) mapPlaceLabel(c, d, [olderRow], sides, 8, { kind: 'older', of: d.key, full: olderRow[0].text })
+    }
+  }
+
+  const treeUnits = [main, ...tree.filter(u => u.key === selected), ...tree.filter(u => u.key !== selected)].filter(Boolean)
+  for (const u of treeUnits) {
+    const isMain = u === main
+    const sel = u.key === selected
+    const size = isMain || !dense || sel ? 'ring' : 'dot'
+    const r = isMain ? 18 : size === 'dot' ? 5 : 15
+    const pad = size === 'dot' ? 4 : MAP_PAD
+    const leaf = nowOf.has(u.key) ? placedLeaf.get(nowOf.get(u.key)) : null
+    const want = size === 'ring' ? mapRowW(mapNameRows(u.name, Math.min(String(u.name || '').length, nameCap), sel)[0]) : 0
+    const room = size === 'ring' ? (x, y) => mapRoomFor(c, x, y, r + (sel ? 4 : 0), MAP_SIDES, want) : null
+    let at
+    if (leaf) {
+      let ux = leaf.x - leaf.fx
+      let uy = leaf.y - leaf.fy
+      const len = Math.hypot(ux, uy) || 1
+      ux /= len
+      uy /= len
+      const dists = size === 'dot' ? [30, 37, 45, 54, 22] : [r + 40, r + 52, r + 66, r + 82, r + 30]
+      at = mapSeek(c, leaf.x, leaf.y, ux, uy, dists, pad, r, room)
+    } else {
+      at = mapSeek(c, cx, cy, 0, isMain ? 1 : -1, [r + 30, r + 46, r + 64, r + 86, r + 110], pad, r, room)
+    }
+    if (!at) {
+      ok = false
+      at = { x: Math.min(W - r - 2, Math.max(r + 2, cx)), y: Math.min(H - r - 2, Math.max(r + 2, cy + 40)) }
+    }
+    const a = { key: u.key, x: at.x, y: at.y, r, size, parked: null, named: false, selected: sel, status: u.status, main: isMain, leaf: leaf ? leaf.key : null }
+    agents.push(a)
+    if (size === 'ring') a.named = nameAgent(a, u, MAP_SIDES)
+    c.obs.push(mapDisc(a.x, a.y, r + pad))
+    if (leaf && u.status === 'running') {
+      const dx = leaf.x - a.x
+      const dy = leaf.y - a.y
+      const len = Math.hypot(dx, dy) || 1
+      const s0 = r + (size === 'dot' ? 2 : 3)
+      const s1 = leaf.r + 3
+      beams.push({
+        from: a.key, to: leaf.key, op: u.act === 'edit' ? 'edit' : 'read', dot: size === 'dot',
+        x1: Math.round(a.x + (dx / len) * s0), y1: Math.round(a.y + (dy / len) * s0),
+        x2: Math.round(leaf.x - (dx / len) * s1), y2: Math.round(leaf.y - (dy / len) * s1)
+      })
+    }
+  }
+
+  const workers = new Set(treeUnits.filter(u => u === main || u.key === selected || !dense).map(u => nowOf.get(u.key)).filter(Boolean))
+  const rank = l => (l.isNow ? 0 : l.state === 'failed' ? 1 : l.state === 'deleted' ? 2 : l.state === 'edit' ? 3 : 9)
+  const leaves = shownDirs.flatMap(d => d.leaves)
+  const named = leaves
+    .filter(l => rank(l) < 9 && (!dense || workers.has(l.pk)))
+    .sort((p, q) => rank(p) - rank(q) || mapCmp(p.pk, q.pk))
+    .slice(0, dense ? 3 : narrow ? 6 : 10)
+  for (const l of named) {
+    const out = l.x >= l.fx
+    const sides = out ? ['r', 'tr', 'br', 't', 'b', 'l', 'tl', 'bl'] : ['l', 'tl', 'bl', 't', 'b', 'r', 'tr', 'br']
+    const tone = l.isNow ? 'now' : l.state
+    const tail = l.state === 'failed' ? ` · ${t('sw.map.leaf.failed')}` : l.state === 'deleted' ? ` · ${t('sw.map.leaf.deleted')}` : ''
+    placing: for (const gap of [9, 16]) {
+      for (const cap of [narrow ? 18 : 24, 12]) {
+        const rows = [[{ text: mapCut(l.name, cap) + tail, tone }]]
+        if (mapPlaceLabel(c, l, rows, sides, gap, { kind: 'leaf', of: l.key, full: l.path })) break placing
+      }
+    }
+  }
+
+  if (other.n) {
+    const text = t('sw.map.otherDirs', other.n, other.dirs.size)
+    for (const gap of [12, 26, 44, 66]) {
+      if (mapPlaceLabel(c, { x: cx, y: cy }, [[{ text, tone: 'dim' }]], MAP_SIDES, gap, { kind: 'other', of: 'root', full: text })) break
+    }
+  }
+  if (!leaves.length) {
+    const text = t('sw.map.empty')
+    mapPlaceLabel(c, { x: cx, y: cy }, [[{ text, tone: 'dim' }]], ['t', 'b', 'r', 'l'], 12, { kind: 'empty', of: 'root', full: text })
+  }
+
+  const hidden = shownDirs.filter(d => d.hidden).map(d => ({ folder: d.key, n: d.hidden }))
+  if (other.n) hidden.push({ folder: null, n: other.n })
+  const legend = []
+  if (leaves.some(l => l.isNow)) legend.push('now')
+  for (const s of ['edit', 'read', 'failed', 'deleted']) if (leaves.some(l => !l.isNow && l.state === s)) legend.push(s)
+  if (beams.some(b => b.op === 'edit')) legend.push('beamEdit')
+  if (beams.some(b => b.op === 'read')) legend.push('beamRead')
+  const order = new Map(base.order.map((k, i) => [k, i]))
+  agents.sort((p, q) => order.get(p.key) - order.get(q.key))
+
+  return {
+    ok, width: W, height: H, narrow, dense,
+    root: { x: cx, y: cy },
+    folders: shownDirs.map(d => ({ key: d.key, dir: d.dir, label: d.label, x: d.x, y: d.y, hidden: d.hidden })),
+    leaves: leaves.map(l => ({ key: l.key, path: l.path, name: l.name, folder: l.folder, x: l.x, y: l.y, r: l.r, fx: l.fx, fy: l.fy, state: l.state, isNow: l.isNow })),
+    agents, beams, labels: c.labels, hidden,
+    hiddenTotal: hidden.reduce((s, h) => s + h.n, 0),
+    shown: leaves.length, totalFiles: base.total, legend
+  }
+}
+
+export function mapLayout({ units = [], files = [], width = 680, selected = null, t = mapT } = {}) {
+  const W = Math.max(280, Math.round(Number(width) || 680))
+  const narrow = W < MAP_NARROW
+  const list = (units || []).filter(Boolean)
+  const main = list.find(u => u.main) || list[0] || null
+  const subs = list.filter(u => u !== main)
+  const dense = subs.length > MAP_SWARM
+
+  const byPath = new Map()
+  for (const f of files || []) {
+    const pk = pathKey(f.path)
+    if (!pk || byPath.has(pk)) continue
+    byPath.set(pk, { key: f.key || pk, pk, path: String(f.path), state: mapState(f), at: Number(f.last_at ?? f.first_at) || 0, isNow: false })
+  }
+  const nowOf = new Map()
+  for (const u of list) {
+    if (u.status !== 'running' || !u.nowPath) continue
+    const pk = pathKey(u.nowPath)
+    if (!pk) continue
+    if (!byPath.has(pk)) byPath.set(pk, { key: pk, pk, path: String(u.nowPath), state: u.act === 'edit' ? 'edit' : 'read', at: Infinity, isNow: false })
+    byPath.get(pk).isNow = true
+    nowOf.set(u.key, pk)
+  }
+  const all = [...byPath.values()].sort((a, b) => (b.isNow - a.isNow) || (b.at - a.at) || mapCmp(a.pk, b.pk))
+
+  const maxDirs = narrow ? 6 : 8
+  const perDir = narrow ? 5 : dense ? 6 : 7
+  const dirs = new Map()
+  const other = { n: 0, dirs: new Set() }
+  let shown = 0
+  for (const leaf of all) {
+    const { dir, name } = mapSplit(leaf.path)
+    const dk = pathKey(dir) || '.'
+    leaf.name = name || leaf.path
+    let d = dirs.get(dk)
+    if (!d) {
+      if (dirs.size < maxDirs && shown < MAP_CAP) {
+        d = { key: dk, dir, label: mapDirName(dir, narrow ? 14 : 20), leaves: [], hidden: 0 }
+        dirs.set(dk, d)
+      } else {
+        other.n++
+        other.dirs.add(dk)
+        continue
+      }
+    }
+    if (shown < MAP_CAP && d.leaves.length < perDir) {
+      d.leaves.push(leaf)
+      shown++
+    } else d.hidden++
+  }
+  for (const d of dirs.values()) d.leaves.sort((p, q) => mapCmp(p.pk, q.pk))
+
+  const base = {
+    W, narrow, dense, main, subs, selected, t, nowOf, other, total: byPath.size,
+    dirs: [...dirs.values()], order: [main, ...subs].filter(Boolean).map(u => u.key)
+  }
+  const tall = narrow ? (dense ? 540 : 460) : dense ? 480 : shown > 16 ? 440 : 400
+  let lay = null
+  for (const grow of [0, 60, 120, 200, 320]) {
+    lay = mapAttempt(base, tall + grow)
+    if (lay.ok) break
+  }
+  return lay
+}
+
+function mapRows(label) {
+  return label.rows.map((row, i) => jsx('text', {
+    className: 'sw-mlab', x: label.x, y: label.y + i * MAP_LINE, textAnchor: label.anchor,
+    children: row.map((p, j) => jsx('tspan', { 'data-tone': p.tone, children: p.text }, j))
+  }, i))
+}
+
+function mapLabelNode(label) {
+  const shown = label.rows.map(r => r.map(p => p.text).join('')).join(' ')
+  const g = jsx('g', { className: 'sw-mlabel', 'data-kind': label.kind, children: mapRows(label) })
+  return label.full && label.full !== shown ? jsx(Tip, { label: tipText(label.full), children: g }, label.id) : jsx('g', { className: 'sw-mlabel', 'data-kind': label.kind, children: mapRows(label) }, label.id)
+}
+
+function LiveMap({ t, units, files, selected, onSelect }) {
+  const tt = t || mapT
+  const wrap = useRef(null)
+  const [width, setWidth] = useState(680)
+  const [hover, setHover] = useState(null)
+  useEffect(() => {
+    const el = wrap.current
+    if (!el || typeof ResizeObserver === 'undefined') return undefined
+    const read = () => {
+      const w = Math.floor(el.clientWidth)
+      if (w > 0) setWidth(w)
+    }
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const lay = useMemo(() => mapLayout({ units, files, width, selected, t: tt }), [units, files, width, selected, tt])
+  const unitOf = useMemo(() => new Map((units || []).map(u => [u.key, u])), [units])
+  const pick = useCallback(key => { if (onSelect) onSelect(key) }, [onSelect])
+  const W = lay.width
+  const H = lay.height
+
+  const branches = lay.folders.map(d => {
+    const mx = (lay.root.x + d.x) / 2 + (d.y - lay.root.y) * 0.12
+    const my = (lay.root.y + d.y) / 2 - (d.x - lay.root.x) * 0.12
+    return jsx('path', { className: 'sw-mbranch', d: `M${lay.root.x},${lay.root.y} Q${Math.round(mx)},${Math.round(my)} ${d.x},${d.y}` }, d.key)
+  })
+  const twigs = lay.leaves.map(l => jsx('line', { className: 'sw-mtwig', x1: l.fx, y1: l.fy, x2: l.x, y2: l.y }, l.key))
+  const beams = lay.beams.map(b => {
+    const d = `M${b.x1},${b.y1} L${b.x2},${b.y2}`
+    return jsxs('g', {
+      className: 'sw-mbeamg',
+      children: [
+        jsx('path', { className: 'sw-mbeam', 'data-op': b.op, 'data-dot': b.dot ? 'true' : undefined, 'data-agent': b.from, d }, 'b'),
+        b.op === 'edit' && !b.dot ? jsx('path', { className: 'sw-mflow', d }, 'f') : null
+      ]
+    }, `${b.from}>${b.to}`)
+  })
+  const leaves = lay.leaves.map(l => jsx(Tip, {
+    label: tipText(l.path),
+    children: jsxs('g', {
+      className: 'sw-mleaf', 'data-path': l.path, 'data-state': l.state, 'data-now': l.isNow ? 'true' : undefined,
+      children: [
+        l.isNow ? jsx('circle', { className: 'sw-mhalo', cx: l.x, cy: l.y, r: 14 }, 'h') : null,
+        l.isNow ? jsx('circle', { className: 'sw-mpulse', cx: l.x, cy: l.y, r: 9 }, 'p') : null,
+        jsx('circle', { className: 'sw-mdot', cx: l.x, cy: l.y, r: l.r }, 'd')
+      ]
+    })
+  }, l.key))
+  const dirs = lay.folders.map(d => jsx(Tip, {
+    label: tipText(d.dir || d.label),
+    children: jsx('circle', { className: 'sw-mdir', 'data-dir': d.key, cx: d.x, cy: d.y, r: 3.5 })
+  }, d.key))
+
+  const hovered = hover && lay.agents.find(a => a.key === hover && !a.named)
+  let hoverLabel = null
+  if (hovered && unitOf.get(hovered.key)) {
+    const text = mapCut(unitOf.get(hovered.key).name, 26)
+    const w = mapRowW([{ text, bold: true }])
+    const x = Math.min(W - 4 - w / 2, Math.max(4 + w / 2, hovered.x))
+    const above = hovered.y - hovered.r - 8 > 14
+    hoverLabel = jsx('text', {
+      className: 'sw-mlab sw-mhov', x, y: above ? hovered.y - hovered.r - 8 : hovered.y + hovered.r + 18, textAnchor: 'middle',
+      children: jsx('tspan', { 'data-tone': 'name', children: text })
+    }, 'hover')
+  }
+
+  const buttons = lay.agents.map(a => {
+    const u = unitOf.get(a.key)
+    if (!u) return null
+    return jsx(Tip, {
+      label: tipText(u.line || u.name),
+      children: jsx('button', {
+        type: 'button', className: 'sw-magent', 'data-key': a.key, 'data-st': u.status, 'data-size': a.size,
+        'data-main': a.main ? 'true' : undefined, 'data-parked': a.parked || undefined,
+        'aria-pressed': selected === a.key, 'aria-label': `${u.name}: ${u.line || ''}`,
+        style: { left: `${a.x - a.r}px`, top: `${a.y - a.r}px`, width: `${a.r * 2}px`, height: `${a.r * 2}px` },
+        onClick: () => pick(a.key),
+        onMouseEnter: () => setHover(a.key), onMouseLeave: () => setHover(h => (h === a.key ? null : h)),
+        onFocus: () => setHover(a.key), onBlur: () => setHover(h => (h === a.key ? null : h)),
+        children: a.size === 'dot' ? null : jsx('span', { className: 'sw-mic', 'aria-hidden': 'true', children: u.icon || null })
+      })
+    }, a.key)
+  })
+
+  const legend = lay.legend.map(k => jsxs('span', {
+    children: [jsx('i', { className: 'sw-mkey', 'data-k': k }, 'i'), tt(`sw.map.legend.${k}`)]
+  }, k))
+  if (lay.hiddenTotal) legend.push(jsx('span', { className: 'sw-mcap', children: tt('sw.map.capped', lay.shown, lay.totalFiles) }, 'cap'))
+
+  return jsxs('div', {
+    ref: wrap, className: 'sw-map', role: 'group', 'aria-label': tt('sw.map.label'), 'data-narrow': lay.narrow ? 'true' : undefined,
+    children: [
+      jsxs('div', {
+        className: 'sw-mstage', style: { width: `${W}px`, height: `${H}px` },
+        children: [
+          jsxs('svg', {
+            className: 'sw-msvg', width: W, height: H, viewBox: `0 0 ${W} ${H}`, 'aria-hidden': 'true',
+            children: [
+              jsx('g', { children: branches }, 'br'),
+              jsx('g', { children: twigs }, 'tw'),
+              jsx('g', { children: beams }, 'bm'),
+              jsx('g', { children: dirs }, 'dr'),
+              jsx('circle', { className: 'sw-mroot', cx: lay.root.x, cy: lay.root.y, r: 6 }, 'root'),
+              jsx('g', { children: leaves }, 'lf'),
+              jsx('g', { children: lay.labels.map(mapLabelNode) }, 'lb'),
+              hoverLabel
+            ]
+          }, 'svg'),
+          ...buttons
+        ]
+      }, 'stage'),
+      legend.length ? jsx('div', { className: 'sw-mlegend', children: legend }, 'legend') : null
+    ]
+  })
+}
+
+const MAP_CSS = `
+.sw-page .sw-map{position:relative;width:100%;min-width:0;max-width:100%;overflow:hidden;margin:6px 0 2px;
+ --m-branch:color-mix(in srgb,var(--dim) 34%,var(--bg));--m-twig:color-mix(in srgb,var(--dim) 24%,var(--bg));
+ --m-read:color-mix(in srgb,var(--dim) 58%,var(--bg));--m-node:color-mix(in srgb,var(--dim) 52%,var(--bg))}
+.sw-page .sw-map [data-st=running]{--c:var(--run)}
+.sw-page .sw-map [data-st=completed]{--c:var(--ok)}
+.sw-page .sw-map [data-st=failed]{--c:var(--bad)}
+.sw-page .sw-map [data-st=stopped],.sw-page .sw-map [data-st=queued],.sw-page .sw-map [data-st=idle]{--c:var(--idle)}
+.sw-page .sw-map .sw-mstage{position:relative;max-width:100%}
+.sw-page .sw-map .sw-msvg{position:absolute;left:0;top:0;display:block;overflow:visible}
+.sw-page .sw-map .sw-mbranch{fill:none;stroke:var(--m-branch);stroke-width:1.8}
+.sw-page .sw-map .sw-mtwig{stroke:var(--m-twig);stroke-width:1.1}
+.sw-page .sw-map .sw-mroot{fill:color-mix(in srgb,var(--dim) 66%,var(--bg))}
+.sw-page .sw-map .sw-mdir{fill:var(--m-node)}
+.sw-page .sw-map .sw-mdot{fill:var(--m-read)}
+.sw-page .sw-map .sw-mleaf[data-state=edit] .sw-mdot{fill:var(--ink)}
+.sw-page .sw-map .sw-mleaf[data-state=failed] .sw-mdot{fill:var(--bad)}
+.sw-page .sw-map .sw-mleaf[data-state=deleted] .sw-mdot{fill:none;stroke:var(--dim);stroke-width:1.2;stroke-dasharray:2 2}
+.sw-page .sw-map .sw-mleaf[data-now] .sw-mdot{fill:var(--run);stroke:none}
+.sw-page .sw-map .sw-mhalo{fill:color-mix(in srgb,var(--run) 20%,transparent)}
+.sw-page .sw-map .sw-mpulse{fill:none;stroke:var(--run);stroke-width:1;transform-box:fill-box;transform-origin:center;animation:sw-mpulse 2.4s ease-out infinite}
+.sw-page .sw-map .sw-mbeam{fill:none;stroke:var(--run);stroke-width:1.6;stroke-linecap:round}
+.sw-page .sw-map .sw-mbeam[data-op=read]{stroke-width:1.4;stroke-dasharray:2.5 4;animation:sw-mflow 1.6s linear infinite}
+.sw-page .sw-map .sw-mbeam[data-dot]{stroke-width:1.2;opacity:.9}
+.sw-page .sw-map .sw-mflow{fill:none;stroke:color-mix(in srgb,var(--run) 25%,var(--ink));stroke-width:1.6;stroke-dasharray:2 12;stroke-linecap:round;animation:sw-mflow 1.6s linear infinite}
+.sw-page .sw-map .sw-mlab{font-size:12px;fill:var(--dim);paint-order:stroke;stroke:var(--bg);stroke-width:4px;stroke-linejoin:round;white-space:pre}
+.sw-page .sw-map .sw-mlabel{cursor:default}
+.sw-page .sw-map [data-tone=name]{fill:var(--ink);font-size:12.5px;font-weight:600}
+.sw-page .sw-map [data-tone=sel]{fill:color-mix(in srgb,var(--a) 72%,var(--ink));font-size:12.5px;font-weight:600}
+.sw-page .sw-map [data-tone=badname]{fill:color-mix(in srgb,var(--bad) 40%,var(--ink));font-size:12.5px;font-weight:600}
+.sw-page .sw-map [data-tone=bad],.sw-page .sw-map [data-tone=failed]{fill:color-mix(in srgb,var(--bad) 45%,var(--ink))}
+.sw-page .sw-map [data-tone=now]{fill:color-mix(in srgb,var(--run) 45%,var(--ink))}
+.sw-page .sw-map [data-tone=edit],.sw-page .sw-map [data-tone=dir]{fill:var(--dim)}
+.sw-page .sw-map [data-tone=deleted],.sw-page .sw-map [data-tone=dim]{fill:var(--dim)}
+.sw-page .sw-map .sw-mhov{pointer-events:none}
+.sw-page .sw-map .sw-magent{position:absolute;box-sizing:border-box;display:grid;place-items:center;padding:0;margin:0;border-radius:50%;
+ border:1.6px solid var(--c);background:color-mix(in srgb,var(--c) 11%,var(--bg));color:var(--c);cursor:pointer;
+ transition:left .55s ease,top .55s ease,box-shadow .2s}
+.sw-page .sw-map .sw-magent[data-st=queued],.sw-page .sw-map .sw-magent[data-st=idle]{border-style:dashed}
+.sw-page .sw-map .sw-magent[data-st=failed]{background:color-mix(in srgb,var(--bad) 18%,var(--bg))}
+.sw-page .sw-map .sw-mic{display:grid;place-items:center;width:14px;height:14px;pointer-events:none}
+.sw-page .sw-map .sw-mic svg{width:100%;height:100%;display:block}
+.sw-page .sw-map .sw-magent[data-main] .sw-mic{width:16px;height:16px}
+.sw-page .sw-map .sw-magent[data-parked] .sw-mic{width:12px;height:12px}
+.sw-page .sw-map .sw-magent[data-size=dot]{background:var(--c);border:1.5px solid var(--bg)}
+.sw-page .sw-map .sw-magent[data-size=dot][data-st=queued]{background:var(--bg);border:1.2px dashed var(--c)}
+.sw-page .sw-map .sw-magent[data-size=dot]::before{content:"";position:absolute;inset:-4px;border-radius:50%}
+.sw-page .sw-map .sw-magent:hover{box-shadow:0 0 0 4px var(--bg),0 0 0 5px color-mix(in srgb,var(--ink) 55%,transparent)}
+.sw-page .sw-map .sw-magent[aria-pressed=true],.sw-page .sw-map .sw-magent[aria-pressed=true]:hover{box-shadow:0 0 0 5px var(--bg),0 0 0 6.4px var(--a)}
+.sw-page .sw-map .sw-magent[data-size=dot][aria-pressed=true]{box-shadow:0 0 0 2px var(--bg),0 0 0 3.4px var(--a)}
+.sw-page .sw-map .sw-magent[data-st=running][data-size=ring]::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:1.3px solid transparent;
+ border-top-color:color-mix(in srgb,var(--c) 80%,transparent);animation:sw-morbit 3.2s linear infinite}
+.sw-page .sw-map .sw-mlegend{display:flex;flex-wrap:wrap;align-items:center;gap:4px 16px;padding:4px 2px 0;font-size:12px;line-height:1.5;color:var(--dim);min-width:0}
+.sw-page .sw-map .sw-mlegend>span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;min-width:0}
+.sw-page .sw-map .sw-mlegend .sw-mcap{flex:1 1 auto;justify-content:flex-end;overflow:hidden;text-overflow:ellipsis;display:block;text-align:right}
+.sw-page .sw-map[data-narrow] .sw-mlegend .sw-mcap{flex-basis:100%;text-align:left}
+.sw-page .sw-map .sw-mkey{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none}
+.sw-page .sw-map .sw-mkey[data-k=now]{background:var(--run)}
+.sw-page .sw-map .sw-mkey[data-k=edit]{background:var(--ink)}
+.sw-page .sw-map .sw-mkey[data-k=read]{background:var(--m-read)}
+.sw-page .sw-map .sw-mkey[data-k=failed]{background:var(--bad)}
+.sw-page .sw-map .sw-mkey[data-k=deleted]{box-sizing:border-box;border:1.3px dashed var(--dim)}
+.sw-page .sw-map .sw-mkey[data-k=beamEdit],.sw-page .sw-map .sw-mkey[data-k=beamRead]{width:18px;height:0;border-radius:0;border-top:2px solid var(--run)}
+.sw-page .sw-map .sw-mkey[data-k=beamRead]{border-top-style:dotted}
+@keyframes sw-mflow{to{stroke-dashoffset:-28}}
+@keyframes sw-mpulse{0%{transform:scale(.6);opacity:.6}100%{transform:scale(1.6);opacity:0}}
+@keyframes sw-morbit{to{transform:rotate(360deg)}}
+.sw-panel[data-calm] .sw-map *,.sw-panel[data-calm] .sw-map *::before,.sw-panel[data-calm] .sw-map *::after{animation:none!important;transition:none!important}
+.sw-panel[data-calm] .sw-map .sw-mpulse,.sw-panel[data-calm] .sw-map .sw-mflow,.sw-panel[data-calm] .sw-map .sw-magent::after{display:none}
+@media (prefers-reduced-motion:reduce){
+ .sw-page .sw-map *,.sw-page .sw-map *::before,.sw-page .sw-map *::after{animation:none!important;transition:none!important}
+ .sw-page .sw-map .sw-mpulse,.sw-page .sw-map .sw-mflow,.sw-page .sw-map .sw-magent::after{display:none}
+}
+`
+
+
+// A stable empty list: the map lays out again only when its input changes.
+const MAP_NO_FILES = []
+
 const BUNDLES = {
   en: {
     sw: {
@@ -120,7 +814,40 @@ const BUNDLES = {
         about: {
           dots: 'Calm tiles, one dot per edit, numbers in dot-matrix type. Colour only marks working and failed.',
           map: 'The chat\u2019s files as a tree, each agent beside the file it works on now.',
-          terminal: 'A green-screen console: aligned text rows, ASCII sprites, blinking cursor.'
+          terminal: 'A console in your accent colour: aligned text rows, ASCII sprites, blinking cursor.'
+        }
+      },
+      map: {
+        label: 'Live map: the files of this chat and the agents working on them',
+        legend: {
+          now: 'being worked on',
+          edit: 'changed',
+          read: 'only read',
+          failed: 'edit failed',
+          deleted: 'deleted',
+          beamEdit: 'editing',
+          beamRead: 'reading'
+        },
+        capped: (shown, total) => `Showing the ${shown} most recent of ${total} files`,
+        older: n => `+${n} older`,
+        otherDirs: (n, d) => `+${n} in ${d} more folder${d === 1 ? '' : 's'}`,
+        empty: 'No files touched yet',
+        leaf: {
+          failed: 'edit failed',
+          deleted: 'deleted'
+        },
+        word: {
+          completed: 'done',
+          failed: 'failed',
+          stopped: 'stopped',
+          queued: 'waiting',
+          idle: 'idle',
+          running: 'working'
+        },
+        park: {
+          done: n => `${n} done`,
+          failed: (f, s) => (s ? (f ? `${f} failed · ${s} stopped` : `${s} stopped`) : `${f} failed`),
+          waiting: n => `${n} waiting to start`
         }
       },
       unit: {
@@ -1435,6 +2162,12 @@ function Tiles({ tiles, theme }) {
   })
 }
 
+/** A file tool's preview is a bare path: that file is the one a subagent works on now. */
+function subNowPath(rec) {
+  const p = String(rec?.tool_preview || '').trim()
+  return rec?.last_tool && /[\\/]/.test(p) && !/\s/.test(p) ? p : ''
+}
+
 function MainPanel({ t, theme, main, files, touching, tool, waitingOn, onToast }) {
   const all = files.data?.files || []
   const cwd = files.data?.cwd
@@ -1517,9 +2250,7 @@ function SubPanel({ t, theme, u, parentName, files, onToast }) {
   const chipText = modelChip(rec.model, rec.effort)
   const chip = chipText ? jsx(Tip, { label: t('sw.modelTip', rec.model, rec.effort), children: jsx('span', { className: 'sw-model', tabIndex: 0, children: chipText }) }, 'chip') : null
   const longTask = goal.length > TASK_CHARS
-  // A file tool's preview is a bare path: that file is the one it works on now.
-  const nowPath = doing && rec.tool_preview && /[\\/]/.test(String(rec.tool_preview)) && !/\s/.test(String(rec.tool_preview).trim())
-    ? String(rec.tool_preview).trim() : ''
+  const nowPath = doing ? subNowPath(rec) : ''
   const nowRows = nowPath ? [{ key: pathKey(nowPath), path: nowPath, state: 'active' }] : []
   const copy = async () => {
     if (!sid) return
@@ -2152,6 +2883,14 @@ export function Page() {
   const loading = !noChat && history.loading && !history.data && !live.batches.length
   const nothing = !isLive && !past.length && history.error && procs.error && (files.error || !files.data?.files?.length)
   const swarm = subs.length > SWARM_AT
+  // Live map: the agents as the map draws them; laid out again only when what it shows changes.
+  const mainNow = calm ? '' : [...touching.values()].pop()?.path || ''
+  const mapRows = theme === 'map' ? units.map(u => ({
+    key: u.key, main: Boolean(u.main), name: u.name, status: u.status, act: u.act || null, who: u.main ? '' : u.sid || '',
+    nowPath: u.main ? mainNow : u.status === 'running' ? subNowPath(u.rec) : '', line: unitLine(t, u), icon: unitIcon(u)
+  })) : []
+  const mapSig = mapRows.map(u => [u.key, u.status, u.act, u.nowPath, u.line, u.icon].join('\u0001')).join('\u0002')
+  const mapUnits = useMemo(() => mapRows.map(u => ({ ...u, icon: (ICON[u.icon] || ICON.idle)() })), [mapSig])
 
   let body
   if (noChat) {
@@ -2172,7 +2911,9 @@ export function Page() {
       children: [
         view ? jsx(RunBar, { t, view, runs, onPick: pickRun, onBack: () => pickRun('now') }, 'run') : null,
         jsx(Score, { t, theme, subs }, 'score'),
-        swarm
+        theme === 'map'
+          ? jsx(LiveMap, { t, units: mapUnits, files: files.data?.files || MAP_NO_FILES, selected: sel.key, onSelect: setSelected }, `map-${view?.key || 'now'}`)
+          : swarm
           ? jsx(Swarm, { t, theme, main, subs, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, `swarm-${view?.key || 'now'}`)
           : subs.length
             ? jsx(Units, { t, theme, units, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, 'units')
@@ -2210,7 +2951,7 @@ export function Page() {
   return jsx(WatchedChat.Provider, { value: storedId, children: jsxs('div', {
     className: 'sw-page', ref: pageRef, 'data-theme': theme,
     children: [
-      jsx('style', { children: CSS }, 'css'),
+      jsx('style', { children: CSS + MAP_CSS }, 'css'),
       jsxs('div', {
         className: 'sw-panel', 'data-calm': calm ? 'true' : undefined, 'data-tab': tab,
         children: [
