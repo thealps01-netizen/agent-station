@@ -2803,9 +2803,11 @@ const CSS = `${TM_PALETTE}
  .sw-panel .sw-tabs{gap:14px}
  .sw-panel .sw-hd{flex-wrap:wrap;row-gap:6px}
 }
-@container (max-width:460px){.sw-page[data-theme=terminal] .sw-panel .sw-ft{grid-template-columns:14px minmax(0,1fr) auto}
- .sw-page[data-theme=terminal] .sw-panel .sw-fd,.sw-page[data-theme=terminal] .sw-panel .sw-ft .sw-pips,.sw-page[data-theme=terminal] .sw-panel .sw-nowb{display:none}
- .sw-page[data-theme=terminal] .sw-panel .sw-fl{grid-column:3}
+/* narrow Terminal file rows keep the name, thinner blocks and the label on the shared columns; the folder
+   and the NOW badge give way (the row sits under "working on now" and keeps its ▶) */
+@container (max-width:460px){.sw-page[data-theme=terminal] .sw-panel .sw-flist{grid-template-columns:14px fit-content(22ch) 0 39px max-content 0 1fr;column-gap:6px}
+ .sw-page[data-theme=terminal] .sw-panel .sw-fd,.sw-page[data-theme=terminal] .sw-panel .sw-nowb{display:none}
+ .sw-page[data-theme=terminal] .sw-panel .sw-pips i{width:4px}
  .sw-page[data-theme=terminal] .sw-panel .sw-por{transform:none}
  .sw-page[data-theme=terminal] .sw-panel .sw-hero{grid-template-columns:64px minmax(0,1fr)}}
 /* calm: an earlier run is history, not live — no glow, nothing moves */

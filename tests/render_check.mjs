@@ -1181,9 +1181,9 @@ await tick(4100)
   const n = u ? Number(u.style.getPropertyValue('--sw-n')) : 0
   check(u && n > 0 && [2, 3, 4, 5, 6, 7, 8].every(f => Number(u.style.getPropertyValue(`--sw-c${f}`)) === mod.unitCols(n, f)),
     `the page hands the stylesheet one column count per width step (n=${n})`)
-  check(/\.sw-page\[data-theme=terminal\] \.sw-panel \.sw-ft\{grid-template-columns:14px minmax\(0,1fr\) auto\}/.test(st)
-    && /\.sw-page\[data-theme=terminal\] \.sw-panel \.sw-ft \.sw-pips,\.sw-page\[data-theme=terminal\] \.sw-panel \.sw-nowb\{display:none\}/.test(st),
-    'a narrow Terminal file row keeps the name and what happened; the blocks and NOW column give way')
+  check(/@container \(max-width:460px\)\{\.sw-page\[data-theme=terminal\] \.sw-panel \.sw-flist\{grid-template-columns:14px fit-content\(22ch\) 0 39px max-content 0 1fr;/.test(st)
+    && !/@container \(max-width:460px\)\{\.sw-page\[data-theme=terminal\][^@]*\.sw-pips(?! i)[^{]*\{display:none/.test(st) && !/\.sw-panel \.sw-ft\{grid-template-columns/.test(st),
+    'a narrow Terminal file row keeps its name, thinner blocks and label on the shared columns; the folder and NOW badge give way')
 }
 filesFails = true
 await quiet(async () => {
