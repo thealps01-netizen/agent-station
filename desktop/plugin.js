@@ -80,11 +80,14 @@ const SWARM_AT = 8
 // Rows a focus panel lists before "Show N more": changed files, files only read.
 const CHANGED_ROWS = 8
 // The only-read chips shown before '+ N more'.
-const READ_CHIPS = 6
+const READ_ROWS = 6
 // Blocks on a changed file's card: one per edit; more edits fill the row and the label says how many.
 const PIPS = 8
 // A subagent's task is shown up to this many characters before "Show all".
 const TASK_CHARS = 180
+// An answer longer than this (or than ANSWER_LINES lines) opens folded to ANSWER_LINES lines.
+const ANSWER_CHARS = 360
+const ANSWER_LINES = 6
 // How long a unit that just finished (or failed) plays its moment.
 const FLASH_MS = 1400
 const THEMES = ['cockpit', 'terminal']
@@ -192,7 +195,6 @@ const BUNDLES = {
         noFiles: 'No files read or changed in this chat yet.',
         noFilesSub: 'No files read or changed with the file tools.',
         more: n => `Show ${n} more`,
-        moreChips: n => `+ ${n} more`,
         legend: '1 block = 1 edit',
         legendTm: '1 █ = 1 edit',
         note: 'Click a file to copy its path. Changes made by terminal commands or code runs are not listed — Review › Last turn shows every change.',
@@ -1132,7 +1134,8 @@ export function fileSpan(rows) {
  */
 function FileCard({ t, f, cwd, label, now, order, onToast }) {
   const { dir, name } = splitPath(f.path)
-  const edits = (f.writes || 0) + (f.deletes || 0) + (f.failed || 0) || (now ? 0 : 1)
+  const read = f.state === 'read'
+  const edits = read ? fileCount(f) : (f.writes || 0) + (f.deletes || 0) + (f.failed || 0) || (now ? 0 : 1)
   const text = label || t(`sw.file.op.${f.state}`, edits)
   const lit = f.state === 'delete' ? 0 : pips(edits)
   const copy = () => writeClip(f.path, t, onToast, t('sw.file.copied'))
@@ -1156,24 +1159,6 @@ function FileCard({ t, f, cwd, label, now, order, onToast }) {
             jsx('span', { className: 'sw-fl', children: text }, 'l')
           ]
         }, 'r')
-      ]
-    })
-  })
-}
-
-/** A file it only read, as a small chip: its name and how many times. */
-function ReadChip({ t, f, cwd, onToast }) {
-  const { dir, name } = splitPath(f.path)
-  const text = t('sw.file.op.read', fileCount(f))
-  return jsx(Tip, {
-    label: t('sw.file.tip', f.path),
-    children: jsxs('button', {
-      type: 'button', className: 'sw-fr sw-chip', 'data-op': 'read', onClick: () => writeClip(f.path, t, onToast, t('sw.file.copied')),
-      'aria-label': t('sw.file.name', name, dir ? dirLabel(dir, cwd, t) : t('sw.file.here'), text),
-      children: [
-        jsx('span', { className: 'sw-ci', 'aria-hidden': 'true', children: ICON.read() }, 'i'),
-        jsx('span', { className: 'sw-fn', children: name }, 'n'),
-        jsx('span', { className: 'sw-fx', children: `×${fileCount(f)}` }, 'x')
       ]
     })
   })
@@ -1210,20 +1195,19 @@ function ChangedFiles({ t, theme, count, rows, nowRows, cwd, verbOf, onToast }) 
 function ReadFiles({ t, rows, cwd, onToast }) {
   const [all, setAll] = useState(false)
   if (!rows.length) return null
-  const shown = all ? rows : rows.slice(0, READ_CHIPS)
+  const shown = all ? rows : rows.slice(0, READ_ROWS)
+  // Same rows as Changed — one block per read — so both lists line up.
   return jsxs('div', {
     className: 'sw-fsec', 'data-sec': 'read',
     children: [
-      jsx('h4', { className: 'sw-k', children: t('sw.focus.read', rows.length) }, 'h'),
-      jsxs('div', {
-        className: 'sw-chips',
-        children: [
-          ...shown.map(f => jsx(ReadChip, { t, f, cwd, onToast }, f.key)),
-          rows.length > shown.length
-            ? jsx('button', { type: 'button', className: 'sw-more sw-chipm', onClick: () => setAll(true), children: t('sw.focus.moreChips', rows.length - shown.length) }, 'more')
-            : null
-        ]
-      }, 'c')
+      jsx('div', { className: 'sw-fh', children: jsx('h4', { className: 'sw-k', children: t('sw.focus.read', rows.length) }, 'h') }, 'h'),
+      jsx('div', {
+        className: 'sw-fgrid',
+        children: shown.map((f, i) => jsx(FileCard, { t, f: { ...f, state: 'read' }, cwd, order: i, onToast }, f.key))
+      }, 'g'),
+      rows.length > shown.length
+        ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setAll(true), children: t('sw.focus.more', rows.length - shown.length) }, 'more')
+        : null
     ]
   })
 }
@@ -1261,7 +1245,11 @@ function Portrait({ t, theme, u }) {
 }
 
 /** The panel's top: portrait, what it does in one verb line, the big headline, where and how long. */
-function Hero({ t, theme, u, verb, head, file, where, chip, cursor }) {
+function Hero({ t, theme, u, verb, head, full, file, where, chip, cursor }) {
+  const headline = tabIndex => jsxs('div', {
+    className: `sw-head${file ? ' is-file' : ''}`, tabIndex,
+    children: [jsx('span', { className: 'sw-headt', children: head }, 'h'), cursor ? jsx('span', { className: 'sw-cur', 'aria-hidden': 'true' }, 'c') : null]
+  }, 'h')
   return jsxs('div', {
     className: 'sw-hero',
     children: [
@@ -1271,7 +1259,8 @@ function Hero({ t, theme, u, verb, head, file, where, chip, cursor }) {
         children: [
           // Keyed by its text: a new verb types in again.
           jsx('div', { className: 'sw-verb', children: verb }, `v-${verb}`),
-          jsxs('div', { className: `sw-head${file ? ' is-file' : ''}`, children: [jsx('span', { children: head }, 'h'), cursor ? jsx('span', { className: 'sw-cur', 'aria-hidden': 'true' }, 'c') : null] }, 'h'),
+          // One line: a long task or command ends in an ellipsis; the whole of it is in the tooltip.
+          full ? jsx(Tip, { label: full, children: headline(0) }, 'h') : headline(undefined),
           jsxs('div', { className: 'sw-meta', children: [where, chip ? ' ' : null, chip] }, 'm')
         ]
       }, 't')
@@ -1317,7 +1306,7 @@ function MainPanel({ t, theme, main, files, touching, tool, waitingOn, onToast }
     head = t('sw.focus.main.waiting', waitingOn)
   } else if (tool) {
     verb = t('sw.hero.now', toolVerb(t, tool.name))
-    head = tool.target ? jsx('code', { children: tool.target }, 'c') : t('sw.focus.main.working', toolVerb(t, tool.name))
+    head = tool.target ? jsx('code', { children: String(tool.target).split('\n', 1)[0] }, 'c') : t('sw.focus.main.working', toolVerb(t, tool.name))
   } else if (main.status === 'running') {
     verb = t('sw.hero.working')
     head = t('sw.focus.main.busy')
@@ -1334,7 +1323,7 @@ function MainPanel({ t, theme, main, files, touching, tool, waitingOn, onToast }
     className: 'sw-focus', 'data-kind': 'main', 'data-st': main.status, 'aria-label': t('sw.focus.mainLabel'),
     children: [
       jsx('div', { className: 'sw-ph sw-k', children: t('sw.focus.mainLabel') }, 'l'),
-      jsx(Hero, { t, theme, u: main, verb, head, file: Boolean(newest || tool?.target), where, cursor: main.status === 'running' }, 'hero'),
+      jsx(Hero, { t, theme, u: main, verb, head, full: !newest && tool?.target ? String(tool.target) : newest?.path, file: Boolean(newest || tool?.target), where, cursor: main.status === 'running' }, 'hero'),
       jsx(Tiles, {
         tiles: [
           { k: 'span', label: t('sw.tile.onTask'), v: fmtDuration(fileSpan([...mine.changed, ...mine.read]), t), tone: main.status === 'running' ? 'run' : undefined },
@@ -1360,6 +1349,7 @@ function subVerb(t, u) {
 function SubPanel({ t, theme, u, parentName, files, onToast }) {
   const [busy, setBusy] = useState(false)
   const [full, setFull] = useState(false)
+  const [allAnswer, setAllAnswer] = useState(false)
   // The backend serves a worker's output only to the chat that delegated it.
   const storedId = useContext(WatchedChat)
   const rec = u.rec || {}
@@ -1403,12 +1393,13 @@ function SubPanel({ t, theme, u, parentName, files, onToast }) {
     })
   }
   const answer = String(rec.summary || '').trim()
+  const longAnswer = answer.length > ANSWER_CHARS || answer.split('\n').length > ANSWER_LINES
   const cost = fmtCost(rec.cost_usd, rec.cost_status, t)
   return jsxs('section', {
     className: 'sw-focus', 'data-kind': 'sub', 'data-st': u.status, 'aria-label': t('sw.focus.subLabel'),
     children: [
       jsx('div', { className: 'sw-ph sw-k', children: t('sw.focus.subLabel') }, 'l'),
-      jsx(Hero, { t, theme, u, verb: subVerb(t, u), head: title, where: meta, chip, cursor: u.status === 'running' }, 'hero'),
+      jsx(Hero, { t, theme, u, verb: subVerb(t, u), head: title, full: goal, where: meta, chip, cursor: u.status === 'running' }, 'hero'),
       jsx(Tiles, {
         tiles: [
           { k: 'time', label: t('sw.tile.runTime'), v: time, tone: u.status === 'failed' ? 'bad' : u.status === 'running' ? 'run' : undefined },
@@ -1430,8 +1421,9 @@ function SubPanel({ t, theme, u, parentName, files, onToast }) {
         className: 'sw-ans', 'data-st': u.status,
         children: [
           jsxs('div', { className: 'sw-k sw-ansh', children: [jsx('span', { className: 'sw-sig', 'aria-hidden': 'true', children: [0, 1, 2, 3].map(i => jsx('i', {}, i)) }, 's'), t('sw.focus.answer')] }, 'k'),
-          jsx('div', { className: 'sw-anst', children: answer || t('sw.focus.noAnswer') }, 't'),
-          rec.summary_truncated ? jsx('div', { className: 'sw-fnote', children: t('sw.focus.answerCut') }, 'c') : null
+          jsx('div', { className: `sw-anst${longAnswer && !allAnswer ? ' is-folded' : ''}`, style: { '--sw-lines': ANSWER_LINES }, children: answer || t('sw.focus.noAnswer') }, 't'),
+          longAnswer ? jsx('button', { type: 'button', className: 'sw-more sw-ansm', 'aria-expanded': allAnswer, onClick: () => setAllAnswer(v => !v), children: t(allAnswer ? 'sw.focus.showLess' : 'sw.focus.showAll') }, 'm') : null,
+          rec.summary_truncated && (allAnswer || !longAnswer) ? jsx('div', { className: 'sw-fnote', children: t('sw.focus.answerCut') }, 'c') : null
         ]
       }, 'ans') : null,
       jsx(Files, { t, theme, mine, nowRows, verbOf: () => toolVerb(t, rec.last_tool), files, onToast, empty: t('sw.focus.noFilesSub') }, 'f'),
@@ -2562,7 +2554,8 @@ const CSS = `${TM_PALETTE}
 .sw-ptag{position:absolute;bottom:-6px;left:50%;z-index:2;transform:translateX(-50%);padding:1px 7px;font:700 11.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;white-space:nowrap;color:var(--ink);background:color-mix(in srgb,var(--c) 25%,var(--bg));box-shadow:inset 0 0 0 1px var(--c)}
 .sw-verb{font:12px var(--mono);letter-spacing:.18em;color:color-mix(in srgb,var(--c) 70%,var(--ink));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sw-page .sw-verb{animation:sw-type .6s steps(12,end)}
-.sw-head{margin:2px 0 4px;font-size:18px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.sw-head{display:flex;align-items:baseline;min-width:0;margin:2px 0 4px;font-size:18px;font-weight:600;line-height:1.3}
+.sw-headt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw-head.is-file{font:700 22px/1.2 var(--mono);text-shadow:0 0 16px color-mix(in srgb,var(--c,var(--run)) 60%,transparent)}
 .sw-head code{font-family:var(--mono)}
 .sw-nowf{display:inline-block;animation:sw-slide .45s ease-out}
@@ -2616,6 +2609,8 @@ const CSS = `${TM_PALETTE}
 .sw-sig i:nth-child(3){height:10px}
 .sw-sig i:nth-child(4){height:12px}
 .sw-anst{white-space:pre-line;overflow-wrap:anywhere}
+.sw-anst.is-folded{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:var(--sw-lines);overflow:hidden}
+.sw-ansm{display:inline-block;margin-top:6px}
 .sw-page[data-theme=terminal] .sw-ans{margin-top:18px;padding:12px 12px 8px;font-size:12.5px;background:color-mix(in srgb,var(--c) 10%,var(--bg));border:1px solid var(--c)}
 .sw-page[data-theme=terminal] .sw-ans::before,.sw-page[data-theme=terminal] .sw-ans::after,.sw-page[data-theme=terminal] .sw-sig{display:none}
 .sw-page[data-theme=terminal] .sw-ansh{position:absolute;top:-11px;left:10px;margin:0;padding:0 6px;background:var(--bg);color:color-mix(in srgb,var(--c) 70%,var(--ink))}
@@ -2634,6 +2629,7 @@ const CSS = `${TM_PALETTE}
 .sw-ft:hover{box-shadow:inset 0 0 0 1px var(--fc)}
 .sw-ft[data-op=failed]{--fc:var(--bad)}
 .sw-ft[data-op=delete]{--fc:var(--idle)}
+.sw-ft[data-op=read]{--fc:color-mix(in srgb,var(--a) 45%,var(--idle))}
 .sw-ft.is-now{--fc:var(--run);box-shadow:inset 0 0 0 1px var(--run),0 0 14px color-mix(in srgb,var(--run) 40%,transparent)}
 .sw-ft.is-now::after{content:"";position:absolute;top:0;bottom:0;left:-40%;width:40%;pointer-events:none;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--run) 28%,transparent),transparent)}
 .sw-page .sw-ft.is-now::after{animation:sw-sweep 1.4s ease-in-out .3s both}
@@ -2650,14 +2646,6 @@ const CSS = `${TM_PALETTE}
 .sw-pips i.on{background:var(--fc);box-shadow:0 0 6px var(--fc)}
 .sw-fl{min-width:0;margin-left:auto;text-align:right;font:11.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sw-ft[data-op=failed] .sw-fl{color:color-mix(in srgb,var(--bad) 55%,var(--ink))}
-.sw-chips{display:flex;flex-wrap:wrap;gap:6px}
-.sw-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:3px 9px;font:12px var(--mono);color:var(--dim);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 22%,transparent)}
-.sw-chip:hover{color:var(--ink);background:color-mix(in srgb,var(--a) 10%,transparent)}
-.sw-chip .sw-fn{font-weight:500;color:var(--ink)}
-.sw-ci{display:inline-flex;flex:none;width:12px;height:12px}
-.sw-ci svg{width:100%;height:100%}
-.sw-fx{flex:none}
-.sw-page .sw-chipm{display:inline-flex;align-items:center;margin:0;padding:3px 9px;text-decoration:none}
 .sw-page[data-theme=terminal] .sw-fsec{position:relative;margin-top:18px;padding:12px 10px 8px;border:1px solid var(--line)}
 .sw-page[data-theme=terminal] .sw-fsec>.sw-k,.sw-page[data-theme=terminal] .sw-fh{position:absolute;top:-11px;left:10px;margin:0;padding:0 6px;background:var(--bg)}
 .sw-page[data-theme=terminal] .sw-fsec[data-sec=none]>.sw-k{position:static;padding:0}
@@ -2667,7 +2655,7 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-leg{margin:0;font-size:12.5px}
 .sw-page[data-theme=terminal] .sw-leg::before{display:none}
 .sw-page[data-theme=terminal] .sw-fgrid{display:block}
-.sw-page[data-theme=terminal] .sw-ft{display:grid;grid-template-columns:14px minmax(0,1.3fr) minmax(0,1fr) 64px 76px 30px;gap:8px;align-items:center;min-height:20px;padding:0 4px;background:none;box-shadow:none}
+.sw-page[data-theme=terminal] .sw-ft{display:grid;width:100%;grid-template-columns:14px minmax(0,1.3fr) minmax(0,1fr) 64px 76px 30px;gap:8px;align-items:center;min-height:20px;padding:0 4px;background:none;box-shadow:none}
 .sw-page[data-theme=terminal] .sw-ft:hover{background:color-mix(in srgb,var(--a) 10%,transparent)}
 .sw-page[data-theme=terminal] .sw-ft::before{content:"";grid-column:1;grid-row:1}
 .sw-page[data-theme=terminal] .sw-ft.is-now{background:color-mix(in srgb,var(--run) 12%,transparent);box-shadow:none}
@@ -2680,13 +2668,6 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-pips i.on{background:var(--fc);box-shadow:none}
 .sw-page[data-theme=terminal] .sw-fl{grid-column:5;grid-row:1;letter-spacing:0;text-transform:lowercase;font-size:12px}
 .sw-page[data-theme=terminal] .sw-nowb{grid-column:6;grid-row:1;position:static;letter-spacing:0;font-weight:600}
-.sw-page[data-theme=terminal] .sw-chip{padding:0 8px 0 0;box-shadow:none}
-.sw-page[data-theme=terminal] .sw-chip::before{content:"◉";color:var(--dim)}
-.sw-page[data-theme=terminal] .sw-ci{display:none}
-.sw-page[data-theme=terminal] .sw-chip .sw-fn{font-weight:400}
-.sw-page[data-theme=terminal] .sw-chipm{padding:0}
-.sw-page[data-theme=terminal] .sw-chipm::before{content:"["}
-.sw-page[data-theme=terminal] .sw-chipm::after{content:"]"}
 .sw-fnote{margin:6px 0 0;font-size:12px;color:var(--dim)}
 .sw-note{margin:12px 0 0;font-size:12px;line-height:1.45;color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-note::before{content:"# "}

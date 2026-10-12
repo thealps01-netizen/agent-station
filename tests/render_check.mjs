@@ -534,7 +534,7 @@ await act(async () => { q('.sw-pick').click() })
 await act(async () => { document.body.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
 check(!q('.sw-menu'), 'Escape closes the picker')
 // a long task is cut, Show all opens it
-extraBatches = [{ started_at: 2600, workers: [{ session_id: 'c-long', goal: `Write the 'long-task' ${'detail '.repeat(40)}`, status: 'completed', duration_s: 9, tool_calls: 1, tokens: 0, summary: 'ok' }] }]
+extraBatches = [{ started_at: 2600, workers: [{ session_id: 'c-long', goal: `Write the 'long-task' ${'detail '.repeat(40)}`, status: 'completed', duration_s: 9, tool_calls: 1, tokens: 0, summary: Array.from({ length: 9 }, (_, i) => `answer line ${i}`).join('\n') }] }]
 await refresh()
 await act(async () => { unitNamed('long-task').click() })
 {
@@ -542,6 +542,20 @@ await act(async () => { unitNamed('long-task').click() })
   await act(async () => { q('.sw-focus .sw-task .sw-more').click() })
   check(short.endsWith('…Show all') && (q('.sw-focus .sw-task')?.textContent || '').length > short.length,
     `a long task is cut with Show all (${short.slice(-20)})`)
+  const head = q('.sw-focus .sw-head')
+  check(head?.querySelector('.sw-headt') && head.dataset.tip?.startsWith("Write the 'long-task' detail") && head.tabIndex === 0
+    && /\.sw-headt\{[^}]*white-space:nowrap[^}]*\}/.test(css) && /\.sw-headt\{[^}]*text-overflow:ellipsis/.test(css),
+    `the headline is one line with an ellipsis; the whole task is its tooltip (${head?.dataset.tip?.slice(0, 30)})`)
+  const ans = q('.sw-focus .sw-anst')
+  const fold = q('.sw-focus .sw-ansm')
+  check(ans?.classList.contains('is-folded') && ans.style.getPropertyValue('--sw-lines') === '6' && fold?.textContent === 'Show all' && fold.getAttribute('aria-expanded') === 'false'
+    && /\.sw-anst\.is-folded\{[^}]*-webkit-line-clamp:var\(--sw-lines\)/.test(css),
+    `a long answer opens folded to 6 lines with Show all (${fold?.textContent})`)
+  await act(async () => { fold.click() })
+  check(!q('.sw-focus .sw-anst')?.classList.contains('is-folded') && q('.sw-focus .sw-ansm')?.textContent === 'Show less'
+    && q('.sw-focus .sw-anst')?.textContent.includes('answer line 8'), 'Show all unfolds the whole answer')
+  await act(async () => { q('.sw-focus .sw-ansm').click() })
+  check(q('.sw-focus .sw-anst')?.classList.contains('is-folded') && q('.sw-focus .sw-ansm')?.textContent === 'Show all', 'Show less folds the answer again')
 }
 extraBatches = []
 await refresh()
@@ -1053,8 +1067,11 @@ check(fq('.sw-focus [data-sec=changed] .sw-leg')?.textContent === '1 block = 1 e
 check(mod.pips(3) === 3 && mod.pips(8) === 8 && mod.pips(12) === 8 && mod.pips(0) === 0 && mod.pips(null) === 0, 'the blocks stop at 8')
 check(rowOf('a.py')?.querySelector('.sw-fd')?.textContent === './src' && rowOf('README.md')?.querySelector('.sw-fd')?.textContent === 'chat folder'
   && /in …/.test(rowOf('x.md')?.getAttribute('aria-label') || '') && rowOf('x.md')?.dataset.tip.startsWith('C:/elsewhere')
-  && rowOf('x.md')?.classList.contains('sw-chip') && rowOf('x.md')?.querySelector('.sw-fx')?.textContent === '×1',
-  'a card names its folder relative to the chat; an only-read file is a chip with ×count; the full path is the tooltip')
+  && rowOf('x.md')?.classList.contains('sw-ft') && rowOf('x.md')?.dataset.op === 'read' && rowOf('x.md')?.querySelector('.sw-fl')?.textContent === 'read ×1'
+  && rowOf('x.md')?.querySelectorAll('.sw-pips i.on').length === 1 && rowOf('x.md')?.closest('.sw-fgrid')?.closest('[data-sec=read]'),
+  'a card names its folder relative to the chat; an only-read file is a row like a changed one (one block per read); the full path is the tooltip')
+check(/\.sw-page\[data-theme=terminal\] \.sw-ft\{display:grid;width:100%;/.test(css),
+  'a Terminal file row fills the line (a button sizes to its content, so rows would not line up)')
 check(rowOf('a.py')?.getAttribute('aria-label') === 'a.py in ./src: 3 edits', `a row is named for a screen reader (${rowOf('a.py')?.getAttribute('aria-label')})`)
 check(fqa('.sw-focus .sw-fnote').map(e => e.textContent).join('|') === '2 older files not listed|1 tool call could not be read',
   'unreadable calls and files past the list are said, never silently dropped')
@@ -1127,7 +1144,7 @@ check(/the files list — files 503/.test(fq('.sw-err')?.textContent || ''), `a 
 filesFails = false
 await act(async () => { stub.atoms.focusedSessionId.set('rt-m'); stub.atoms.focusedStoredSessionId.set('st-many') })
 await tick(10)
-check(sec('read').length === 6 && fq('.sw-focus [data-sec=read] .sw-more')?.textContent === '+ 39 more', `Only read shows its first chips and how many more (${fq('.sw-focus [data-sec=read] .sw-more')?.textContent})`)
+check(sec('read').length === 6 && fq('.sw-focus [data-sec=read] .sw-more')?.textContent === 'Show 39 more', `Only read shows its first rows and how many more (${fq('.sw-focus [data-sec=read] .sw-more')?.textContent})`)
 {
   const big = fqa('.sw-focus .sw-fr').find(b => b.querySelector('.sw-fn')?.textContent === 'big.js')
   check(big?.querySelector('.sw-pips')?.dataset.lit === '8' && big?.querySelectorAll('.sw-pips i.on').length === 8 && big?.querySelector('.sw-fl')?.textContent === '12 edits',
