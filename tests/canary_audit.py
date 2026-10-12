@@ -50,7 +50,7 @@ MUTATIONS = [
      "the shimmer ends with the call, too fast to see"),
     ("render", JS, "      doneRef.current?.()\n", "",
      "a finished file call does not reload the list"),
-    ("render", JS, "  if (f.last_failed) return 'failed'\n", "",
+    ("render", JS, "  if (active) return 'active'\n  if (f.last_failed) return 'failed'\n", "  if (active) return 'active'\n",
      "a failed last edit reads as edited"),
     ("render", JS, "    now.push(byKey.get(key) || {", "    if (byKey.get(key)) now.push(byKey.get(key) || {",
      "a file touched now but not yet recorded is not shown"),
@@ -134,7 +134,7 @@ MUTATIONS = [
      'a cut command does not say it is cut'),
     ("render", JS, "  if (!text) return onToast(t('sw.nothingToCopy'), true)\n", "", "copying an empty output reads Copied"),
     ("render", JS, "watched.held ? jsx(Tip", "false ? jsx(Tip", "a held chat is not marked as held"),
-    ("render", JS, "label: t('sw.retry')", "label: t('sw.refresh')", "the alert has no Try again button"),
+    ("render", JS, "className: 'sw-erra', children: jsx(IconButton, { label: t('sw.retry')", "className: 'sw-erra', children: jsx(IconButton, { label: t('sw.refresh')", "the alert has no Try again button"),
     # ── render: 1.4.0 cost and progress ─────────────────────────────────────────────────────
     ('render', JS, "return status === 'estimated' ? t('sw.cost.est', amount) : amount", 'return amount',
      'an estimated cost reads as a billed amount'),
@@ -247,12 +247,12 @@ MUTATIONS = [
      'a billed worker reads as an estimate'),
     # ── audit: the static rules ─────────────────────────────────────────────────────────────
     ("audit", JS, "t('sw.refresh')", "t('sw.refreshNow')", "i18n: a key missing from the bundle"),
-    ("audit", JS, "stopped: 'Stopped — closed before it finished'", "halted: 'Stopped'",
+    ("audit", JS, "          stopped: 'Stopped — closed before it finished'\n        },\n        did:", "          halted: 'Stopped'\n        },\n        did:",
      "i18n: a template leaf the page can ask for"),
     ("audit", JS, "'aria-label': label, 'aria-busy'", "'aria-busy'", "iconLabel: an icon button without a name"),
     ("audit", JS, "const GLYPH_INK = 'var(--dt-background)'", "const GLYPH_INK = '#fff'",
      "hexColor: a hard-coded colour"),
-    ("audit", JS, "className: 'sw-more', onClick", "className: 'sw-more', title: 'more', onClick",
+    ("audit", JS, "className: 'sw-more', onClick: () => setOlder(true)", "className: 'sw-more', title: 'more', onClick: () => setOlder(true)",
      "nativeTitle: a native tooltip"),
     ("audit", JS, "console.warn(`[${ID}] openSession failed`, err)\n      onToast(String(err?.message || err), true)", "void err",
      "silentCatch: a page catch that hides the error"),
@@ -268,6 +268,8 @@ MUTATIONS = [
      "the Live map look draws the Dot matrix tiles instead of the map"),
     ("render", JS, "jsx('style', { children: CSS + MAP_CSS }, 'css')", "jsx('style', { children: CSS }, 'css')",
      "the map's stylesheet is not on the page"),
+    ("livemap", JS, "function mapState(f) {\n  if (f.last_failed) return 'failed'\n", "function mapState(f) {\n",
+     "a file whose last change failed is drawn on the map as edited"),
     ("livemap", JS, "const MAP_LABEL_GAP = 8", "const MAP_LABEL_GAP = 0",
      "two map labels may touch and read as one name"),
     ("livemap", JS, "    if (mapFits(L.box, c.obs, c.W, c.H, 3) && !c.labels.some(o => mapHit(apart, o.box))) {",
@@ -307,7 +309,7 @@ MUTATIONS = [
      "a storage that fails (or is missing) breaks the page"),
     ("render", JS, "    children: tile || [\n      jsx('pre', { className: 'sw-spr', 'aria-hidden': 'true', children: sprite(icon) }, 'v'),",
      "    children: tile || [\n      jsx('span', { className: 'sw-utop', 'aria-hidden': 'true' }, 'v'),", "the Terminal look draws Dot matrix tiles, no ASCII sprites"),
-    ("render", JS, "jsx('span', { className: 'sw-ic', children: ICON[icon]() }, 'i')", "jsx('span', { className: 'sw-ic', children: u.name.slice(0, 1) }, 'i')",
+    ("render", JS, "        jsx('span', { className: 'sw-ic', children: ICON[icon]() }, 'i'),\n        jsx('span', { className: 'sw-us'", "        jsx('span', { className: 'sw-ic', children: u.name.slice(0, 1) }, 'i'),\n        jsx('span', { className: 'sw-us'",
      "a unit shows a letter badge instead of what it is doing"),
     ("render", JS, "  if (u.status === 'running') return u.act || 'think'\n", "",
      "a running unit's icon does not say what it is doing"),
@@ -579,8 +581,11 @@ def main() -> int:
             _copy_panel(tree)
             path = tree / rel
             text = path.read_text(encoding="utf-8")
-            if old not in text:
-                return False, f"FAIL  #{n:02d} {what}: anchor not found — the mutation could not be applied"
+            # An anchor that occurs twice mutates whichever comes first, not necessarily the code the
+            # mutation is named after: a later copy of the same line elsewhere would silently move it.
+            if text.count(old) != 1:
+                return False, (f"FAIL  #{n:02d} {what}: anchor found {text.count(old)} times — it must name one "
+                               "place; widen it until it is unique")
             path.write_text(text.replace(old, new, 1), encoding="utf-8")
             try:
                 code, out = _run(gate, tree)
