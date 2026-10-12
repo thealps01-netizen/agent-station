@@ -3,6 +3,28 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 1.8.0 — 2026-10-12
+
+### Added
+
+- **Replay tab** (Agents | Commands | Replay). Your requests in this chat, newest first, each with
+  "N edits · N files" (and how many failed). Pick one and its edits play one at a time: "Edit 3 of 4",
+  Previous / Next, Play (one edit every 1.5 s), and a row of numbered marks named by file. Each edit
+  names its file and folder, says in words what it did (+N lines added · −N lines removed, wrote the
+  whole file, deleted, moved), who made it (the main agent or a helper) and when, then shows the
+  lines: removed on red with −, added on green with +, context dimmed, "from line N" where Hermes
+  recorded it. 40 lines first, then Show the rest; long lines scroll inside the box. A failed edit
+  says why and that the file did not change. Read-only: no undo here. Changes made by scripts or
+  commands are not shown, and the tab says so.
+- Backend: `GET /replay` (the list, without lines) and `GET /replay_step` (one edit's lines; 403
+  for another chat's edit).
+
+### Fixed
+
+- **An edit no longer counts twice after compression.** Compressing a chat writes a copy of the kept
+  turns under the same call id; the files list counted the copy as a second edit (in this install
+  12,235 of 32,214 recent call ids had such a copy). Each call is now read once.
+
 ## 1.7.0 — 2026-10-11
 
 One look, one layout. The 1.6.0 deck tied agents to files with letters and colours, which read as a

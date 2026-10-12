@@ -6,7 +6,8 @@ are units whose sprite says what they are doing (editing, reading, running a com
 shows the selected agent — what it works on now, the files it changed and read, a subagent's task,
 model, answer and cost, with Copy answer and Open its chat. Earlier runs sit in a run picker; more
 than eight subagents turn into a grouped swarm. A Commands tab lists the chat's background shell
-commands (`terminal(background=true)`), running and finished. A status-bar chip (and, with a pet on
+commands (`terminal(background=true)`), running and finished. A Replay tab steps through the file
+edits the AI made after each of your requests, one edit at a time, as removed and added lines. A status-bar chip (and, with a pet on
 screen, a line in its bubble) shows the running batch's progress and cost while the page is closed.
 
 Plugin id `subagent-watch` · label **Subagents** · route `/subagent-watch` · MIT.
@@ -42,7 +43,8 @@ needs the copy step repeated — the release gate fails when the two drift apart
 
 ## Backend
 
-`GET /children` · `GET /output` · `GET /processes` · `GET /process_output` · `GET /files` — all read-only.
+`GET /children` · `GET /output` · `GET /processes` · `GET /process_output` · `GET /files` ·
+`GET /replay` · `GET /replay_step` — all read-only.
 
 `state.db` is opened with SQLite `mode=ro`, so the handle cannot write; the process list reads the
 files Hermes writes itself (`processes.json`, `logs/process-results/`). A session or process that

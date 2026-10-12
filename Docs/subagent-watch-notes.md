@@ -170,6 +170,36 @@ Source: the `tool_calls` of every message in the chat's compression chain and it
   files are in its text, so neither shimmers; both appear on reload.
 - At most `MAX_FILES` (400) files are returned, the rest counted in `more`; the page draws 40 and a
   "N more" button. The answer is cached until a message lands in any covered session.
+- **One call, once.** Compressing a conversation keeps the original rows and writes copies of the
+  turns it keeps, under the same session id and the same call id; in this install 12,235 of 32,214
+  call ids over 20 days sat in state.db twice. Every call is read once by `(session id, call id)`
+  (`_tool_calls`); before 1.8.0 such a copy counted as a second edit. A result's copy may be a
+  one-line stub where the original holds the full answer, so the longer result text wins.
+
+### Replay
+Source: the same calls as Files, only `write_file` and `patch`, read by `build_replay`.
+- **Grouped under the request they followed.** A request is a `user` message of the chat's own
+  compression chain; a message Hermes posts in the user's place is not one: a `display_kind` set
+  (finished delegation, background process, steer, model switch) or text starting with one of
+  Hermes' own markers (`[CONTEXT COMPACTION`, `[ASYNC DELEGATION`, `[IMPORTANT: …background
+  process`, `[System`, …; `_NOT_A_REQUEST`). A compressed copy of a request (same time, same text)
+  is the same request. A message made of parts (`\x00json:` + JSON) reads as its text parts. An
+  edit belongs to the last request before it in time, a worker's edit too; edits before the first
+  request sit under "Before your first request". A request with no edit is not listed.
+- **The lines of an edit.** A `patch` (replace mode) shows the unified diff Hermes returned in its
+  result (`diff`), with the real line number of each hunk. A result compression replaced with a stub
+  no longer has it, so the edit falls back to `difflib` over the call's own `old_string` /
+  `new_string` (no line number: "next part"). A V4A patch is one edit per file it names, its hunks
+  read by Hermes' own parser; a delete has no lines, a move names its target. A `write_file` is the
+  whole file as added lines.
+- **Failed.** The same rule as Files; the edit carries the error text (300 characters) and says it
+  was tried, not applied.
+- **Blind spot, said on the page.** Like Files: a script or command that writes a file leaves no
+  edit here.
+- **Limits.** 40 newest requests (`more_turns`), 200 edits each (`more_steps`), 400 lines per edit
+  (`cut`), 400 characters per line. `/replay` sends the list without lines; the page reads one edit's
+  lines from `/replay_step` when it is shown (403 for an edit of another chat). Cached like Files.
+- **Read-only.** No undo or restore: Hermes' own checkpoints (`/rollback`) own that.
 
 ## Not here on purpose
 Interrupt / steer / live transcript — the composer status stack already owns them.

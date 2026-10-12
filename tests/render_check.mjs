@@ -1042,6 +1042,15 @@ check(JSON.stringify(mod.fileTargets('read_file', { path: 'a' })) === '[{"path":
 check(!mod.fileTargets('patch', { mode: 'patch', path: 'a', patch: '*** Begin Patch' }).length && !mod.fileTargets('read_file', {}).length &&
   !mod.fileTargets('terminal', { command: 'cat a' }).length && !mod.fileTargets('write_file', null).length,
 'a V4A patch, a mirrored worker row (no args), a terminal call and missing args name no file here')
+// replay: an edit and its time in words
+{
+  const at = new Date(2026, 9, 12, 15, 23).getTime() / 1000
+  check(mod.fmtWhen(at, at + 60) === '15:23' && mod.fmtWhen(at - 86400, at) === 'yesterday 15:23' && /^Oct 9 15:23$/.test(mod.fmtWhen(at - 3 * 86400, at)) && mod.fmtWhen(undefined, at) === '',
+    `replay: an edit's time is the clock today, 'yesterday 15:23', else the date (${mod.fmtWhen(at - 3 * 86400, at)})`)
+  check(mod.stepSummary({ kind: 'diff', added: 1, removed: 2 }) === '+1 line added · −2 lines removed' && mod.stepSummary({ kind: 'whole', total: 7, added: 7 }) === 'Wrote the whole file · 7 lines'
+    && mod.stepSummary({ kind: 'delete' }) === 'Deleted the file' && mod.stepSummary({ kind: 'diff', added: 0, removed: 0 }) === 'No lines changed',
+    'replay: each edit says what it did in words: lines added and removed, a whole file, a delete')
+}
 check(mod.fileState({ last_failed: true, writes: 2 }, false) === 'failed' && mod.fileState({ writes: 1, last_failed: true }, true) === 'active' &&
   mod.fileState({ last_op: 'delete', deletes: 1, writes: 1 }) === 'delete' && mod.fileState({ reads: 3 }) === 'read' && mod.fileState({ writes: 1 }) === 'write',
 'a file state: now beats all, then a failed last change, deleted, edited, read only')
@@ -1282,6 +1291,78 @@ mod.default.register(quietCtx({ storage: undefined }))
   const { el, r } = await mountFresh()
   check(el.querySelector('.sw-page')?.dataset.theme === 'terminal', 'no ctx.storage at all: Terminal')
   await act(async () => r.unmount())
+}
+// 27. the Replay tab: requests newest first, one edit at a time, lines read per edit for this chat only
+{
+  const NOWS = Date.now() / 1000
+  const asked = []
+  const st = (id, path, extra = {}) => ({ id, path, kind: 'diff', added: 1, removed: 1, at: NOWS - 60, who: '', tool: 'patch', cut: 0, failed: false, error: '', ...extra })
+  const LIST = {
+    session_id: 'st-1', cwd: 'D:/Proj', more_turns: 2, calls: 4, unreadable: 1,
+    turns: [
+      { id: 't1', at: NOWS - 100, files: 2, more_steps: 0, ask: 'fix the header', steps: [st('a#0', 'D:/Proj/src/a.py'), st('b#0', 'D:/Proj/src/b.py', { failed: true, error: 'no match', who: 'c-d' }), st('c#0', 'D:/Proj/notes.md', { kind: 'whole', added: 3, removed: 0, total: 3 })] },
+      { id: 't0', at: NOWS - 5000, files: 1, more_steps: 0, ask: 'x'.repeat(500), steps: [st('z#0', 'D:/Proj/z.py')] }
+    ]
+  }
+  const LINES = { 'a#0': [['@', '12'], [' ', 'keep'], ['-', 'old line'], ['+', 'new line']], 'b#0': [['-', 'p'], ['+', 'q']], 'c#0': Array.from({ length: 45 }, (_, i) => ['+', `line ${i}`]), 'z#0': [['+', 'z']] }
+  const replayCtx = quietCtx({
+    rest: async path => {
+      if (path.startsWith('/replay_step')) {
+        const q = new URLSearchParams(path.split('?')[1])
+        asked.push([q.get('session_id'), q.get('step_id')])
+        return { id: q.get('step_id'), lines: LINES[q.get('step_id')], cut: q.get('step_id') === 'c#0' ? 7 : 0 }
+      }
+      if (path.startsWith('/replay')) { asked.push([new URLSearchParams(path.split('?')[1]).get('session_id'), 'list']); return LIST }
+      return ctx.rest(path)
+    }
+  })
+  mod.default.register(replayCtx)
+  await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
+  const { el, r } = await mountFresh()
+  const q = sel => el.querySelector(sel)
+  const qa = sel => [...el.querySelectorAll(sel)]
+  check(!asked.length, 'replay: nothing is read while the Replay tab is closed')
+  await act(async () => { q('[role=tab][data-tab=replay]').click() })
+  await tick(20)
+  const rows = qa('.sw-rturn')
+  check(rows.length === 2 && rows[0].getAttribute('aria-pressed') === 'true' && /3 edits · 2 files · 1 failed/.test(rows[0].textContent),
+    `replay: requests newest first, the newest open, its edits and files counted in words (${rows[0]?.textContent})`)
+  check(rows[1].querySelector('.sw-rask')?.classList.contains('sw-1l'), 'replay: a long request is one line with an ellipsis')
+  check(q('.sw-rof')?.textContent === 'Edit 1 of 3' && qa('.sw-rl[data-tag="-"]').length === 1 && qa('.sw-rl[data-tag="+"]').length === 1
+    && /from line 12/.test(q('.sw-rlines')?.textContent || ''),
+    `replay: the first edit shows its removed and added lines and where they start (${q('.sw-rof')?.textContent})`)
+  check(/\+1 line added · −1 line removed · by the main agent/.test(q('.sw-rwhat')?.textContent || ''), 'replay: an edit says in words what it did and who did it')
+  check(asked.every(([sid]) => sid === 'st-1') && asked.some(([, id]) => id === 'a#0'), 'replay: the list and the edit are read for this chat')
+  await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Next edit').click() })
+  await tick(20)
+  check(q('.sw-rof')?.textContent === 'Edit 2 of 3' && /This edit failed: no match/.test(q('.sw-rfail')?.textContent || '') && /by helper: docs-writer/.test(q('.sw-rwhat')?.textContent || ''),
+    `replay: Next shows the failed edit, why it failed, and the helper by name (${q('.sw-rwhat')?.textContent})`)
+  await act(async () => { qa('.sw-rmark')[2].click() })
+  await tick(20)
+  check(qa('.sw-rl').length === 40 && /Show the rest \(5 more lines\)/.test(q('.sw-rmore')?.textContent || '') && /7 more lines of this edit not loaded/.test(q('.sw-rdiff')?.textContent || ''),
+    'replay: a long edit shows 40 lines and Show the rest; lines the backend cut are counted')
+  await act(async () => { q('.sw-rmore .sw-ib').click() })
+  check(qa('.sw-rl').length === 45, 'replay: Show the rest shows every line')
+  await act(async () => { rows[1].click() })
+  await tick(20)
+  check(q('.sw-rof')?.textContent === 'Edit 1 of 1' && rows[1].getAttribute('aria-pressed') === 'true', 'replay: another request opens at its first edit')
+  await act(async () => { rows[0].click() })
+  await tick(20)
+  await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Play').click() })
+  await tick(1600)
+  check(q('.sw-rof')?.textContent === 'Edit 2 of 3', `replay: Play steps on by itself (${q('.sw-rof')?.textContent})`)
+  await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Pause').click() })
+  await tick(1600)
+  check(q('.sw-rof')?.textContent === 'Edit 2 of 3', 'replay: Pause stops it')
+  await act(async () => { rows[1].click() })
+  await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
+  await tick(20)
+  check(qa('.sw-rturn')[0]?.getAttribute('aria-pressed') === 'true' && q('.sw-rof')?.textContent === 'Edit 1 of 3',
+    'replay: another chat opens on its newest request, not the one picked in the last chat')
+  check(/2 older requests with edits not listed/.test(el.textContent) && /1 edit could not be read/.test(el.textContent), 'replay: requests and edits left out are counted, never silently dropped')
+  check(!el.querySelectorAll('[title]').length, 'replay: no native title= (the themed Tip owns hover text)')
+  await act(async () => r.unmount())
+  mod.default.register(quietCtx({}))
 }
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED')
 process.exit(failures ? 1 : 0)

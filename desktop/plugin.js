@@ -112,7 +112,7 @@ const BUNDLES = {
         heldTip: 'You clicked inside this page, so it keeps showing this chat. Click a chat to follow it again.'
       },
       tabs: {
-        label: 'Sections', agents: 'Agents', commands: 'Commands',
+        label: 'Sections', agents: 'Agents', commands: 'Commands', replay: 'Replay',
         running: n => `${n} command${n === 1 ? '' : 's'} running`
       },
       retry: 'Try again',
@@ -225,6 +225,44 @@ const BUNDLES = {
         runTime: 'run time', tools: 'tool calls', tokens: 'tokens', cost: 'cost'
       },
       modelTip: (model, effort) => (effort ? `${model} · reasoning effort ${effort}` : model),
+      replay: {
+        why: 'What the AI changed after each of your requests, edit by edit. Read-only. Changes made by scripts or commands are not shown.',
+        requests: 'Your requests, newest first',
+        beforeFirst: 'Before your first request',
+        noText: '(a request with no text)',
+        count: (edits, files) => `${edits} edit${edits === 1 ? '' : 's'} · ${files} file${files === 1 ? '' : 's'}`,
+        failedCount: n => `${n} failed`,
+        olderTurns: n => `${n} older request${n === 1 ? '' : 's'} with edits not listed`,
+        moreSteps: n => `${n} more edit${n === 1 ? '' : 's'} in this request not listed`,
+        unreadable: n => `${n} edit${n === 1 ? '' : 's'} could not be read`,
+        none: 'No file edits in this chat yet.',
+        of: (i, n) => `Edit ${i} of ${n}`,
+        prev: 'Previous edit',
+        next: 'Next edit',
+        play: 'Play',
+        pause: 'Pause',
+        playTip: 'Steps through the edits on its own, one every 1.5 seconds',
+        stepLabel: (i, name, failed) => `Edit ${i}: ${name}${failed ? ' (failed)' : ''}`,
+        markTip: (path, failed) => (failed ? `${path}
+This edit failed` : path),
+        by: name => `by helper: ${name}`,
+        byMain: 'by the main agent',
+        at: when => `at ${when}`,
+        yesterday: clock => `yesterday ${clock}`,
+        whole: n => `Wrote the whole file · ${n} line${n === 1 ? '' : 's'}`,
+        changed: (added, removed) => `+${added} line${added === 1 ? '' : 's'} added · −${removed} line${removed === 1 ? '' : 's'} removed`,
+        deleted: 'Deleted the file',
+        moved: to => `Moved the file to ${to}`,
+        failed: why => (why ? `This edit failed: ${why}` : 'This edit failed'),
+        failedNote: 'It was tried, not applied: the file did not change.',
+        noLines: 'No lines changed',
+        from: n => (n ? `from line ${n}` : 'next part'),
+        removedSign: 'removed',
+        addedSign: 'added',
+        rest: n => `Show the rest (${n} more line${n === 1 ? '' : 's'})`,
+        notLoaded: n => `${n} more line${n === 1 ? '' : 's'} of this edit not loaded (too long)`,
+        reading: 'Reading this edit…'
+      },
       file: {
         op: {
           active: 'now', write: n => `${n} edit${n === 1 ? '' : 's'}`, delete: 'deleted', failed: 'failed', read: n => `read ×${n}`
@@ -298,6 +336,8 @@ const BUNDLES = {
         k: n => `${n}k`
       },
       err: {
+        replay: 'Replay',
+        replayStep: 'This edit',
         title: 'Some parts could not be read:',
         history: 'earlier runs',
         live: 'live updates stopped',
@@ -683,6 +723,48 @@ function useFiles(storedId) {
   }, [load])
   const own = state.key === storedId ? state : { data: null, error: null }
   return { ...own, loading: Boolean(storedId) && !own.data && !own.error, reload: load }
+}
+
+/**
+ * The edits one stored session made, grouped under the user's requests, from the plugin backend:
+ * read while the Replay tab is open and polled like the commands (the backend answers from a cache
+ * until a message lands). An edit's lines are read when it is shown, once each.
+ */
+function useReplay(storedId, on) {
+  const [state, setState] = useState({ key: null, data: null, error: null })
+  const gen = useRef(0)
+  const load = useCallback(() => {
+    if (!storedId || !on) return
+    const mine = ++gen.current
+    setState(prev => (prev.key === storedId ? prev : { key: storedId, data: null, error: null }))
+    ctxRef.rest(`/replay?session_id=${encodeURIComponent(storedId)}`).then(
+      data => { if (mine === gen.current) setState({ key: storedId, data, error: null }) },
+      err => { if (mine === gen.current) setState(prev => ({ ...prev, key: storedId, error: String(err?.message || err) })) }
+    )
+  }, [storedId, on])
+  useEffect(() => {
+    load()
+    if (!storedId || !on) return undefined
+    return ctxRef.setInterval(load, POLL_MS)
+  }, [load])
+  const own = state.key === storedId ? state : { data: null, error: null }
+  return { ...own, loading: Boolean(storedId) && on && !own.data && !own.error, reload: load }
+}
+
+function useReplayStep(storedId, stepId) {
+  const cache = useRef(new Map())
+  const [, bump] = useState(0)
+  useEffect(() => { cache.current = new Map() }, [storedId])
+  const key = storedId && stepId ? `${storedId}|${stepId}` : ''
+  useEffect(() => {
+    if (!key || cache.current.has(key)) return
+    cache.current.set(key, { loading: true })
+    ctxRef.rest(`/replay_step?session_id=${encodeURIComponent(storedId)}&step_id=${encodeURIComponent(stepId)}`).then(
+      data => { cache.current.set(key, { data }); bump(n => n + 1) },
+      err => { cache.current.set(key, { error: String(err?.message || err) }); bump(n => n + 1) }
+    )
+  }, [key])
+  return key ? cache.current.get(key) || { loading: true } : {}
 }
 
 /**
@@ -1716,6 +1798,189 @@ function Commands({ t, theme, procs, now, storedId, openProc, toggleProc, onToas
   })
 }
 
+// ── replay ──────────────────────────────────────────────────────────────────
+
+const PEEK_LINES = 40
+const PLAY_MS = 1500
+
+/** When an edit happened: the clock today, 'yesterday 22:35', else the date and clock. */
+export function fmtWhen(at, now, t = enT) {
+  if (!Number.isFinite(at)) return ''
+  const d = new Date(at * 1000)
+  const clock = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+  const n = new Date(now * 1000)
+  const gap = Math.round((day(n) - day(d)) / 86400000)
+  if (gap <= 0) return clock
+  if (gap === 1) return t('sw.replay.yesterday', clock)
+  return `${d.toLocaleDateString('en', { month: 'short', day: 'numeric' })} ${clock}`
+}
+
+/** What an edit did, in words. */
+export function stepSummary(s, t = enT) {
+  if (s.kind === 'delete') return t('sw.replay.deleted')
+  if (s.kind === 'whole') return t('sw.replay.whole', s.total ?? s.added)
+  if (s.kind === 'move') return t('sw.replay.moved', s.to || '')
+  if (!s.added && !s.removed) return t('sw.replay.noLines')
+  return t('sw.replay.changed', s.added, s.removed)
+}
+
+function TurnRow({ t, turn, now, selected, onPick }) {
+  const failed = turn.steps.filter(s => s.failed).length
+  const ask = turn.id === 't-' ? t('sw.replay.beforeFirst') : turn.ask || t('sw.replay.noText')
+  return jsx(Tip, {
+    label: tipText(ask),
+    children: jsxs('button', {
+      type: 'button', className: 'sw-rturn', 'aria-pressed': selected, onClick: onPick,
+      children: [
+        jsx('span', { className: 'sw-rask sw-1l', children: ask }, 'a'),
+        jsxs('span', {
+          className: 'sw-rcount',
+          children: [
+            t('sw.replay.count', turn.steps.length + (turn.more_steps || 0), turn.files),
+            failed ? jsx('span', { className: 'sw-rbad', children: ` · ${t('sw.replay.failedCount', failed)}` }, 'f') : null
+          ]
+        }, 'c'),
+        jsx('span', { className: 'sw-rwhen', children: fmtWhen(turn.at ?? turn.steps[0]?.at, now, t) }, 'w')
+      ]
+    })
+  })
+}
+
+function DiffLines({ t, step, got }) {
+  const [all, setAll] = useState(false)
+  if (got.loading) return jsxs('p', { className: 'sw-cmnote sw-cmwait', children: [jsx('span', { className: 'sw-spin', 'aria-hidden': 'true' }, 's'), t('sw.replay.reading')] })
+  if (got.error) return jsx('p', { className: 'sw-cmnote sw-rbad', children: t('sw.err.withDetail', t('sw.err.replayStep'), got.error) })
+  const lines = got.data?.lines || []
+  if (!lines.length) return null
+  const shown = all ? lines : lines.slice(0, PEEK_LINES)
+  const hidden = lines.length - shown.length
+  return jsxs('div', {
+    className: 'sw-rdiff', 'data-failed': step.failed ? 'true' : undefined,
+    children: [
+      jsx('div', {
+        className: 'sw-rlines', tabIndex: 0, role: 'group', 'aria-label': stepSummary(step, t),
+        children: shown.map(([tag, text], i) => (tag === '@'
+          ? jsx('div', { className: 'sw-rl', 'data-tag': '@', children: jsx('span', { children: `⋯ ${t('sw.replay.from', text)}` }) }, i)
+          : jsxs('div', {
+            className: 'sw-rl', 'data-tag': tag,
+            children: [
+              jsx('span', { className: 'sw-rsign', 'aria-label': tag === '+' ? t('sw.replay.addedSign') : tag === '-' ? t('sw.replay.removedSign') : undefined, children: tag === '+' ? '+' : tag === '-' ? '−' : ' ' }, 's'),
+              jsx('span', { className: 'sw-rtext', children: text || ' ' }, 'x')
+            ]
+          }, i)))
+      }, 'l'),
+      hidden ? jsx('div', { className: 'sw-rmore', children: jsx(IconButton, { label: t('sw.replay.rest', hidden), icon: ICON.chev.bind(null, true), onClick: () => setAll(true), text: true }) }, 'm') : null,
+      got.data?.cut ? jsx('p', { className: 'sw-cmnote', children: t('sw.replay.notLoaded', got.data.cut) }, 'c') : null
+    ]
+  }, step.id)
+}
+
+function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, setPlaying, onToast }) {
+  const steps = turn.steps
+  const i = Math.min(index, steps.length - 1)
+  const step = steps[i]
+  const got = useReplayStep(storedId, step?.id)
+  const marks = useRef(null)
+  useEffect(() => {
+    const el = marks.current?.querySelector('[aria-current=step]')
+    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [i, turn.id])
+  if (!step) return null
+  const { dir, name } = splitPath(step.path)
+  const who = step.who ? t('sw.replay.by', names.get(step.who) || step.who) : t('sw.replay.byMain')
+  return jsxs('div', {
+    className: 'sw-rplay',
+    children: [
+      jsxs('div', {
+        className: 'sw-rbar',
+        children: [
+          jsx('b', { className: 'sw-rof', 'aria-live': 'polite', children: t('sw.replay.of', i + 1, steps.length) }, 'of'),
+          jsxs('div', {
+            className: 'sw-btns',
+            children: [
+              jsx(IconButton, { label: t('sw.replay.prev'), icon: ICON.chev.bind(null, false), onClick: () => { setPlaying(false); setIndex(i - 1) }, disabled: i === 0, text: true }, 'p'),
+              jsx(IconButton, { label: t('sw.replay.next'), icon: ICON.chev.bind(null, false), onClick: () => { setPlaying(false); setIndex(i + 1) }, disabled: i >= steps.length - 1, text: true }, 'n'),
+              jsx(Tip, { label: t('sw.replay.playTip'), children: jsx('span', { children: jsx(IconButton, { label: t(playing ? 'sw.replay.pause' : 'sw.replay.play'), icon: ICON.run, onClick: () => { if (!playing && i >= steps.length - 1) setIndex(0); setPlaying(!playing) }, disabled: steps.length < 2, text: true, primary: true }) }) }, 'go')
+            ]
+          }, 'b')
+        ]
+      }, 'bar'),
+      jsx('div', {
+        className: 'sw-rmarks', ref: marks, role: 'list',
+        children: steps.map((s, k) => jsx('span', {
+          role: 'listitem',
+          children: jsx(Tip, {
+            label: t('sw.replay.markTip', tipText(s.path), s.failed),
+            children: jsx('button', {
+              type: 'button', className: 'sw-rmark', 'data-at': k < i ? 'past' : k === i ? 'now' : 'next', 'data-failed': s.failed ? 'true' : undefined,
+              'aria-current': k === i ? 'step' : undefined,
+              'aria-label': t('sw.replay.stepLabel', k + 1, splitPath(s.path).name, s.failed), onClick: () => { setPlaying(false); setIndex(k) },
+              children: [jsx('b', { children: k + 1 }, 'n'), jsx('span', { className: 'sw-1l', children: splitPath(s.path).name }, 'f'), s.failed ? jsx('span', { className: 'sw-rbad', children: '✗' }, 'x') : null]
+            })
+          })
+        }, s.id))
+      }, 'marks'),
+      jsxs('div', {
+        className: 'sw-rstep', 'data-failed': step.failed ? 'true' : undefined,
+        children: [
+          jsxs('div', {
+            className: 'sw-rfile',
+            children: [
+              jsx(Tip, { label: tipText(step.path), children: jsx('b', { className: 'sw-rname sw-1l', tabIndex: 0, children: name }) }, 'n'),
+              dir ? jsx(OneLine, { text: dirLabel(dir, cwd, t), className: 'sw-rdir' }, 'd') : null
+            ]
+          }, 'f'),
+          jsx('p', { className: 'sw-rwhat', children: [stepSummary(step, t), who, t('sw.replay.at', fmtWhen(step.at, now, t))].join(' · ') }, 'w'),
+          step.failed ? jsxs('p', { className: 'sw-rfail', children: [jsx(OneLine, { text: t('sw.replay.failed', step.error) }, 'e'), jsx('span', { children: t('sw.replay.failedNote') }, 'n')] }, 'x') : null,
+          jsx(DiffLines, { t, step, got }, step.id)
+        ]
+      }, `step-${step.id}`)
+    ]
+  })
+}
+
+function Replay({ t, replay, now, names, storedId, onToast }) {
+  const turns = replay.data?.turns || []
+  const [turnId, setTurnId] = useState(null)
+  const [index, setIndex] = useState(0)
+  const [playing, setPlaying] = useState(false)
+  const turn = turns.find(x => x.id === turnId) || turns[0]
+  const count = turn ? turn.steps.length : 0
+  useEffect(() => {
+    if (!playing) return undefined
+    if (index >= count - 1) { setPlaying(false); return undefined }
+    return ctxRef.setTimeout(() => setIndex(index + 1), PLAY_MS)
+  }, [playing, index, count])
+  const pick = id => { setTurnId(id); setIndex(0); setPlaying(false) }
+  return jsxs('div', {
+    className: 'sw-replay', role: 'tabpanel', id: 'sw-tab-replay', 'aria-labelledby': 'sw-tabb-replay',
+    children: [
+      jsx('p', { className: 'sw-why', children: t('sw.replay.why') }, 'why'),
+      replay.loading
+        ? jsxs('p', { className: 'sw-cmnote sw-cmwait', children: [jsx('span', { className: 'sw-spin', 'aria-hidden': 'true' }, 's'), t('sw.loading')] }, 'w')
+        : !turns.length
+          ? (replay.error ? null : jsx('p', { className: 'sw-empty', children: t('sw.replay.none') }, 'none'))
+          : jsxs('div', {
+            className: 'sw-rgrid',
+            children: [
+              jsxs('section', {
+                className: 'sw-rturns',
+                children: [
+                  jsx('h3', { className: 'sw-k', children: t('sw.replay.requests') }, 'k'),
+                  jsx('div', { className: 'sw-rtlist', children: turns.map(x => jsx(TurnRow, { t, turn: x, now, selected: x.id === turn.id, onPick: () => pick(x.id) }, x.id)) }, 'l'),
+                  replay.data.more_turns ? jsx('p', { className: 'sw-pu', children: t('sw.replay.olderTurns', replay.data.more_turns) }, 'o') : null
+                ]
+              }, 'turns'),
+              jsx(Player, { t, turn, cwd: replay.data.cwd, now, names, storedId, index, setIndex, playing, setPlaying, onToast }, `play-${turn.id}`),
+              turn.more_steps ? jsx('p', { className: 'sw-pu', children: t('sw.replay.moreSteps', turn.more_steps) }, 'ms') : null
+            ]
+          }, 'g'),
+      replay.data?.unreadable ? jsx('p', { className: 'sw-pu', children: t('sw.replay.unreadable', replay.data.unreadable) }, 'u') : null
+    ]
+  })
+}
+
 // ── files: pure helpers (exported for the render check) ────────────────────
 
 /** posixpath.normpath, so a path folds the same way here as in the backend. */
@@ -1898,6 +2163,7 @@ export function Page() {
   const live = useLive(runtimeId, onBatchEnded)
   const procs = useProcesses(storedId)
   const files = useFiles(storedId)
+  const replay = useReplay(storedId, tab === 'replay')
   const { touching, tool } = useMainTools(runtimeId, files.data?.cwd, files.reload)
   const [toast, setToast] = useState(null)
   const procRows = procs.data?.processes || []
@@ -2012,9 +2278,10 @@ export function Page() {
     history.error ? t('sw.err.item', t('sw.err.history'), history.error) : null,
     live.error ? t('sw.err.item', t('sw.err.live'), live.error) : null,
     procs.error ? t('sw.err.item', t('sw.err.procs'), procs.error) : null,
-    files.error ? t('sw.err.item', t('sw.err.files'), files.error) : null
+    files.error ? t('sw.err.item', t('sw.err.files'), files.error) : null,
+    tab === 'replay' && replay.error ? t('sw.err.item', t('sw.err.replay'), replay.error) : null
   ].filter(Boolean)
-  const refreshAll = () => { history.reload(); procs.reload(); files.reload(); live.retry() }
+  const refreshAll = () => { history.reload(); procs.reload(); files.reload(); replay.reload(); live.retry() }
   const chatName = storedId ? history.data?.title || t('sw.chat.untitled', String(storedId).slice(-6)) : ''
   const noChat = !storedId && !runtimeId
   const loading = !noChat && history.loading && !history.data && !live.batches.length
@@ -2031,6 +2298,10 @@ export function Page() {
     })
   } else if (tab === 'commands') {
     body = jsx(Commands, { t, theme, procs, now, storedId, openProc, toggleProc, onToast })
+  } else if (tab === 'replay') {
+    const names = new Map(stored.flatMap(b => b.workers.map(w => [w.session_id, workerName(w.goal)])))
+    // Keyed by chat: another chat starts on its newest request, even when a live run keeps the page drawn.
+    body = jsx(Replay, { t, replay, now, names, storedId, onToast }, `replay-${storedId}`)
   } else if (nothing) {
     body = jsx('p', { className: 'sw-empty', children: t('sw.allFailed') })
   } else {
@@ -2060,7 +2331,7 @@ export function Page() {
 
   const tabs = noChat || loading ? null : jsxs('div', {
     className: 'sw-tabs', role: 'tablist', 'aria-label': t('sw.tabs.label'),
-    children: ['agents', 'commands'].map(id => jsxs('button', {
+    children: ['agents', 'commands', 'replay'].map(id => jsxs('button', {
       type: 'button', role: 'tab', id: `sw-tabb-${id}`, className: 'sw-tab', 'data-tab': id, 'aria-selected': tab === id,
       'aria-controls': `sw-tab-${id}`, onClick: () => setTab(id),
       children: [
@@ -2789,6 +3060,55 @@ const CSS = `${TM_PALETTE}
 @keyframes sw-sweep{from{left:-40%}to{left:100%}}
 @keyframes sw-reveal{from{clip-path:inset(0 0 100% 0)}}
 @keyframes sw-scan{from{background-position:-70% 0,0 0}to{background-position:170% 0,0 0}}
+/* replay */
+.sw-replay{display:flex;flex-direction:column;gap:12px;min-width:0}
+.sw-replay .sw-why{margin:0}
+.sw-rgrid{display:flex;flex-direction:column;gap:14px;min-width:0}
+.sw-rturns{display:flex;flex-direction:column;gap:6px;min-width:0}
+.sw-rturns h3{margin:0}
+.sw-rtlist{display:flex;flex-direction:column;max-height:172px;overflow:auto;box-shadow:inset 0 0 0 1px var(--line)}
+.sw-rturn{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"ask when" "count count";gap:0 12px;padding:6px 10px;border-left:2px solid transparent!important}
+.sw-rturn+.sw-rturn{border-top:1px solid var(--line)!important}
+.sw-rturn:hover{background:color-mix(in srgb,var(--a) 8%,transparent)}
+.sw-rturn[aria-pressed=true]{background:color-mix(in srgb,var(--a) 14%,transparent);border-left-color:var(--a)!important}
+.sw-rask{grid-area:ask;min-width:0;color:var(--ink)}
+.sw-rwhen{grid-area:when;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sw-rcount{grid-area:count;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-rbad{color:var(--bad)}
+.sw-rplay{display:flex;flex-direction:column;gap:10px;min-width:0}
+.sw-rbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+.sw-rof{font-weight:700;color:var(--ink);white-space:nowrap}
+.sw-rbar .sw-btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:0}
+.sw-rmarks{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;scrollbar-width:thin}
+.sw-rmark{display:inline-flex;align-items:baseline;gap:6px;max-width:170px;padding:2px 8px;white-space:nowrap;color:var(--dim);box-shadow:inset 0 0 0 1px var(--line)}
+.sw-rmark b{font-weight:700}
+.sw-rmark[data-at=past]{color:var(--ink)}
+.sw-rmark[data-at=now]{color:var(--bg);background:var(--a);box-shadow:none}
+.sw-rmark[data-at=now] .sw-rbad{color:var(--bg)}
+.sw-rstep{display:flex;flex-direction:column;gap:6px;min-width:0}
+.sw-page .sw-rstep{animation:sw-rin .25s ease-out}
+.sw-rfile{display:flex;align-items:baseline;gap:10px;min-width:0}
+.sw-rname{flex:0 1 auto;min-width:0;font-size:13.5px;color:var(--tm-hi,var(--ink))}
+.sw-rdir{flex:0 1 auto;min-width:0;color:var(--dim)}
+.sw-rwhat{margin:0;color:var(--dim)}
+.sw-rfail{display:flex;flex-direction:column;margin:0;padding:6px 10px;color:var(--ink);background:color-mix(in srgb,var(--bad) 14%,var(--bg));box-shadow:inset 2px 0 0 var(--bad)}
+.sw-rfail>span:last-child{color:var(--dim)}
+.sw-rdiff{display:flex;flex-direction:column;gap:6px;min-width:0}
+.sw-rlines{max-height:320px;overflow:auto;padding:4px 0;font:12px/1.6 var(--mono);white-space:pre;background:color-mix(in srgb,var(--a) 3%,var(--bg));box-shadow:inset 0 0 0 1px var(--line)}
+.sw-rdiff[data-failed=true] .sw-rlines{opacity:.7}
+.sw-rl{display:flex;min-width:max-content;padding-right:12px}
+.sw-page .sw-rl{animation:sw-rin .3s ease-out both}
+.sw-rsign{flex:none;width:24px;text-align:center;color:var(--dim)}
+.sw-rl[data-tag=" "]{color:var(--dim)}
+.sw-rl[data-tag="-"]{color:var(--ink);background:color-mix(in srgb,var(--bad) 20%,var(--bg))}
+.sw-rl[data-tag="-"] .sw-rsign{color:var(--bad)}
+.sw-rl[data-tag="+"]{color:var(--ink);background:color-mix(in srgb,var(--ok) 18%,var(--bg))}
+.sw-rl[data-tag="+"] .sw-rsign{color:var(--ok)}
+.sw-rl[data-tag="@"]{padding-left:24px;color:var(--dim);font-style:italic}
+.sw-rl[data-tag="@"]:not(:first-child){margin-top:4px;border-top:1px dashed var(--line)}
+.sw-rmore{display:flex}
+@keyframes sw-rin{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@container (min-width:640px){.sw-rgrid{display:grid;grid-template-columns:minmax(200px,34%) minmax(0,1fr);align-items:start}.sw-rtlist{max-height:520px}.sw-rgrid>.sw-pu{grid-column:2}}
 @media (prefers-reduced-motion:reduce){.sw-page *,.sw-page *::before,.sw-page *::after{animation:none!important;transition:none!important}}
 `
 

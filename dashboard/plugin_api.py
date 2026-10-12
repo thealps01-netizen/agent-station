@@ -23,6 +23,9 @@ Routes (mounted at /api/plugins/subagent-watch/):
   GET /process_output?session_id=<id>&process_id=<proc_...> -> a finished process's output tail
   GET /files?session_id=<id>     -> the files that conversation and its workers read or wrote with
                                     the file tools (read_file, write_file, patch); see list_files
+  GET /replay?session_id=<id>    -> that conversation's edits (write_file, patch) grouped under the user's
+                                    request they followed, newest first, without their lines; see build_replay
+  GET /replay_step?session_id=<id>&step_id=<id> -> one edit's removed / added lines; 403 for another chat's
 
 Files are read from the tool calls state.db recorded — the same messages the chat shows. Edits made
 through terminal commands or code runs carry no file path Hermes records, so they never appear here;
@@ -58,6 +61,19 @@ FILE_TOOLS = ("read_file", "write_file", "patch")
 MAX_FILES = 400  # a conversation that touched more lists its newest MAX_FILES and says how many more
 _FILES_CACHE: dict[tuple, dict] = {}
 _DRIVE = re.compile(r"^[A-Za-z]:/")
+EDIT_TOOLS = ("write_file", "patch")
+MAX_TURNS = 40  # newest requests with edits; older ones are counted in `more_turns`
+MAX_STEPS = 200  # edits listed per request; the rest are counted in `more_steps`
+STEP_LINES = 400  # lines served per edit; the rest are counted in `cut`
+LINE_CHARS = 400
+ASK_CHARS = 300
+_REPLAY_CACHE: dict[tuple, dict] = {}
+# Messages Hermes itself posts in the user's place: they continue a request, they are not one.
+_NOT_A_REQUEST = re.compile(
+    r"^\[(CONTEXT COMPACTION|ASYNC DELEGATION|IMPORTANT: Background process|IMPORTANT: \d+ background process"
+    r"|IMPORTANT: You are running|OUT-OF-BAND USER MESSAGE|Your active task list|STILL IN PROGRESS|System"
+    r"|Background process)")
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)")
 
 
 def _home() -> Path:
@@ -624,14 +640,9 @@ def _worker_ids(conn: sqlite3.Connection, owners: list[str]) -> dict[str, str]:
     return found
 
 
-def list_files(conn: sqlite3.Connection, session_id: str) -> dict:
-    """The files one conversation (and its workers) read or wrote with the file tools, newest first.
-
-    Each file: how often it was read and written, when it was last touched, whether its last write
-    failed, and who touched it (`who`: "" for the chat itself, else the worker's session id) and who
-    changed it (`editors`, same ids: a successful write or delete). Calls whose arguments cannot be read are counted, never
-    dropped. The answer is cached until a new message lands in any of the sessions it covers.
-    """
+def _scope(conn: sqlite3.Connection, session_id: str) -> tuple[list[str], dict[str, str], list[str], str | None, tuple]:
+    """One conversation's sessions (its links, then its workers' sessions), its folder, and a stamp
+    that changes when a message lands in any of them."""
     ids = _lineage(conn, session_id)
     workers = _worker_ids(conn, ids)
     every = ids + list(workers)
@@ -641,16 +652,17 @@ def list_files(conn: sqlite3.Connection, session_id: str) -> dict:
         f"select cwd from sessions where id in ({','.join('?' * len(ids))}) and cwd is not null and cwd != '' "
         "order by started_at desc limit 1", ids).fetchone()
     cwd = cwd_row["cwd"] if cwd_row else None
-    key = (session_id, tuple(every), stamp["n"], stamp["m"], cwd)
-    cached = _FILES_CACHE.get(key)
-    if cached is not None:
-        return cached
-    cwds = {r["id"]: r["cwd"] for r in conn.execute(f"select id, cwd from sessions where id in ({marks})", every)}
-    results = {r["tool_call_id"]: r["content"] for r in conn.execute(
-        f"select tool_call_id, substr(content, 1, 2000) content from messages where session_id in ({marks}) "
-        "and role = 'tool' and tool_call_id is not null", every)}
-    files: dict[str, dict] = {}
-    calls = unreadable = 0
+    return ids, workers, every, cwd, (session_id, tuple(every), stamp["n"], stamp["m"], cwd)
+
+
+def _tool_calls(conn: sqlite3.Connection, every: list[str], names: tuple[str, ...]):
+    """Each call to one of `names` in these sessions, once, oldest first: (session_id, timestamp, call id,
+    name, parsed arguments or None).
+
+    Compressing a conversation keeps the original rows and writes copies of the turns it keeps, so one
+    call can sit in state.db twice under the same call id; the first row is the call."""
+    marks = ",".join("?" * len(every))
+    seen: set = set()
     rows = conn.execute(
         f"select session_id, tool_calls, timestamp from messages where session_id in ({marks}) "
         "and tool_calls is not null and tool_calls != '' order by id", every)
@@ -662,41 +674,81 @@ def list_files(conn: sqlite3.Connection, session_id: str) -> dict:
         for call in batch if isinstance(batch, list) else []:
             fn = call.get("function") if isinstance(call, dict) else None
             name = fn.get("name") if isinstance(fn, dict) else None
-            if name not in FILE_TOOLS:
+            if name not in names:
                 continue
-            calls += 1
+            cid = call.get("id") or call.get("call_id")
+            once = (row["session_id"], cid) if cid else (row["session_id"], name, str(fn.get("arguments")), row["timestamp"])
+            if once in seen:
+                continue
+            seen.add(once)
             try:
                 args = json.loads(fn.get("arguments") or "{}")
             except (TypeError, ValueError):
                 args = None
-            targets = _targets(name, args)
-            if not targets:
-                unreadable += 1
-                continue
-            failed = _failed(results.get(call.get("id") or call.get("call_id")))
-            for raw, op in targets:
-                path = _absolute(raw, cwds.get(row["session_id"]) or cwd)
-                k = path_key(path)
-                f = files.setdefault(k, {"key": k, "path": path, "reads": 0, "writes": 0, "deletes": 0, "failed": 0,
-                                         "first_at": row["timestamp"], "last_at": row["timestamp"], "last_op": op,
-                                         "last_failed": False, "who": [], "editors": []})
-                f["path"] = path
-                if failed:
-                    f["failed"] += 1
-                elif op == "read":
-                    f["reads"] += 1
-                elif op == "delete":
-                    f["deletes"] += 1
-                else:
-                    f["writes"] += 1
-                who = workers.get(row["session_id"], "")
-                if who not in f["who"]:
-                    f["who"].append(who)
-                if not failed and op != "read" and who not in f["editors"]:
-                    f["editors"].append(who)
-                f["last_at"] = row["timestamp"]
-                f["last_op"] = op
-                f["last_failed"] = failed
+            yield row["session_id"], row["timestamp"], cid, name, args
+
+
+def _results(conn: sqlite3.Connection, every: list[str], chars: int) -> dict[str, str]:
+    """Each call id's result text (first `chars`). A compressed copy may hold a one-line stub where the
+    original row holds the full answer: the longer text wins."""
+    marks = ",".join("?" * len(every))
+    out: dict[str, str] = {}
+    for r in conn.execute(
+            f"select tool_call_id, substr(content, 1, {int(chars)}) content from messages where session_id in ({marks}) "
+            "and role = 'tool' and tool_call_id is not null order by id", every):
+        text = r["content"] or ""
+        if len(text) > len(out.get(r["tool_call_id"], "")):
+            out[r["tool_call_id"]] = text
+    return out
+
+
+def list_files(conn: sqlite3.Connection, session_id: str) -> dict:
+    """The files one conversation (and its workers) read or wrote with the file tools, newest first.
+
+    Each file: how often it was read and written, when it was last touched, whether its last write
+    failed, and who touched it (`who`: "" for the chat itself, else the worker's session id) and who
+    changed it (`editors`, same ids: a successful write or delete). Calls whose arguments cannot be read are counted, never
+    dropped. The answer is cached until a new message lands in any of the sessions it covers.
+    """
+    ids, workers, every, cwd, key = _scope(conn, session_id)
+    cached = _FILES_CACHE.get(key)
+    if cached is not None:
+        return cached
+    marks = ",".join("?" * len(every))
+    cwds = {r["id"]: r["cwd"] for r in conn.execute(f"select id, cwd from sessions where id in ({marks})", every)}
+    results = _results(conn, every, 2000)
+    files: dict[str, dict] = {}
+    calls = unreadable = 0
+    for sid, at, cid, name, args in _tool_calls(conn, every, FILE_TOOLS):
+        calls += 1
+        targets = _targets(name, args)
+        if not targets:
+            unreadable += 1
+            continue
+        failed = _failed(results.get(cid))
+        for raw, op in targets:
+            path = _absolute(raw, cwds.get(sid) or cwd)
+            k = path_key(path)
+            f = files.setdefault(k, {"key": k, "path": path, "reads": 0, "writes": 0, "deletes": 0, "failed": 0,
+                                     "first_at": at, "last_at": at, "last_op": op,
+                                     "last_failed": False, "who": [], "editors": []})
+            f["path"] = path
+            if failed:
+                f["failed"] += 1
+            elif op == "read":
+                f["reads"] += 1
+            elif op == "delete":
+                f["deletes"] += 1
+            else:
+                f["writes"] += 1
+            who = workers.get(sid, "")
+            if who not in f["who"]:
+                f["who"].append(who)
+            if not failed and op != "read" and who not in f["editors"]:
+                f["editors"].append(who)
+            f["last_at"] = at
+            f["last_op"] = op
+            f["last_failed"] = failed
     ordered = sorted(files.values(), key=lambda f: f["last_at"] or 0, reverse=True)
     answer = {"session_id": session_id, "cwd": cwd, "files": ordered[:MAX_FILES],
               "more": max(0, len(ordered) - MAX_FILES), "calls": calls, "unreadable": unreadable}
@@ -704,6 +756,224 @@ def list_files(conn: sqlite3.Connection, session_id: str) -> dict:
         _FILES_CACHE.clear()
     _FILES_CACHE[key] = answer
     return answer
+
+
+def _message_text(content) -> str:
+    """A message's words. Hermes stores a message made of parts (text plus an image) as the reserved
+    prefix '\\x00json:' and the parts as JSON; only the text parts are words."""
+    text = str(content or "")
+    if not text.startswith("\x00json:"):
+        return text
+    try:
+        parts = json.loads(text[len("\x00json:"):])
+    except ValueError:
+        return ""
+    if isinstance(parts, str):
+        return parts
+    return " ".join(str(p.get("text") or "") for p in parts if isinstance(p, dict) and p.get("type") in ("text", "input_text")) \
+        if isinstance(parts, list) else ""
+
+
+def _requests(conn: sqlite3.Connection, ids: list[str]) -> list[tuple[float, str]]:
+    """The user's own requests in this conversation, oldest first: (time, text). A message Hermes posts in
+    the user's place (a finished delegation, a background process, a compression summary) is not one;
+    a compressed copy of a request is the same request."""
+    marks = ",".join("?" * len(ids))
+    has_kind = any(c[1] == "display_kind" for c in conn.execute("pragma table_info(messages)"))
+    kind = "display_kind" if has_kind else "null"
+    out, seen = [], set()
+    for r in conn.execute(f"select timestamp, content, {kind} kind from messages where session_id in ({marks}) "
+                          "and role = 'user' order by timestamp, id", ids):
+        text = _message_text(r["content"])
+        if r["kind"] not in (None, "") or _NOT_A_REQUEST.match(text.lstrip()):
+            continue
+        once = (round(float(r["timestamp"] or 0), 3), text[:400])
+        if once in seen:
+            continue
+        seen.add(once)
+        out.append((float(r["timestamp"] or 0), text))
+    return out
+
+
+def _one_line(text: str, limit: int) -> str:
+    flat = " ".join(str(text or "").split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "\u2026"
+
+
+def _cap(lines: list[list[str]]) -> tuple[list[list[str]], int]:
+    kept = [[tag, text if len(text) <= LINE_CHARS else text[: LINE_CHARS - 1] + "\u2026"] for tag, text in lines[:STEP_LINES]]
+    return kept, max(0, len(lines) - STEP_LINES)
+
+
+def _unified(diff: str) -> list[list[str]]:
+    """A unified diff as [tag, text] rows: '@' opens a hunk (its text is the new file's first line number),
+    then ' ' context, '-' removed, '+' added. File headers and 'no newline' notes are dropped."""
+    out: list[list[str]] = []
+    in_hunk = False
+    for raw in diff.splitlines():
+        hunk = _HUNK.match(raw)
+        if hunk or raw.startswith("@@"):
+            in_hunk = True
+            out.append(["@", hunk.group(1) if hunk else ""])
+        elif not in_hunk or raw.startswith("\\"):
+            continue
+        elif raw[:1] in (" ", "-", "+"):
+            out.append([raw[:1], raw[1:]])
+        elif raw == "":
+            out.append([" ", ""])
+    return out
+
+
+def _snippet_diff(old: str, new: str) -> list[list[str]]:
+    import difflib
+
+    rows = _unified("\n".join(difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="", n=2)))
+    return [["@", ""] if tag == "@" else [tag, text] for tag, text in rows]
+
+
+def _error(result: str | None) -> str:
+    head = (result or "").strip()
+    if head.startswith("{"):
+        try:
+            data = json.loads(head)
+        except ValueError:
+            return _one_line(head, ASK_CHARS)
+        if isinstance(data, dict):
+            return _one_line(str(data.get("error") or data.get("message") or ""), ASK_CHARS)
+    line = head.split("\n", 1)[0]
+    return _one_line(line.split(" FAILED:", 1)[1] if " FAILED:" in line else "", ASK_CHARS)
+
+
+def _edit_steps(name: str, args, result: str | None) -> list[dict] | None:
+    """One step per file an edit call changed: its kind and its lines. None when the arguments cannot be read.
+
+    A patch's own result carries the unified diff Hermes applied (real line numbers, context); a result
+    rewritten by compression no longer does, so the step falls back to the call's own text: the replaced
+    snippet, or the hunks of a V4A patch read by Hermes' parser. write_file writes a whole file."""
+    if not isinstance(args, dict):
+        return None
+    if name == "write_file":
+        path = args.get("path")
+        if not isinstance(path, str) or not path:
+            return None
+        content = args.get("content")
+        lines = [["+", line] for line in str(content or "").splitlines()]
+        return [{"path": path, "kind": "whole", "lines": lines, "total": len(lines)}]
+    if args.get("mode", "replace") != "patch":
+        path = args.get("path")
+        if not isinstance(path, str) or not path:
+            return None
+        diff = None
+        try:
+            data = json.loads(result) if (result or "").lstrip().startswith("{") else None
+            diff = data.get("diff") if isinstance(data, dict) else None
+        except ValueError:
+            diff = None
+        lines = _unified(diff) if isinstance(diff, str) and diff.strip() else _snippet_diff(
+            str(args.get("old_string") or ""), str(args.get("new_string") or ""))
+        return [{"path": path, "kind": "diff", "lines": lines}]
+    text = args.get("patch")
+    if not isinstance(text, str):
+        return None
+    try:
+        from tools.patch_parser import parse_v4a_patch
+
+        ops, error = parse_v4a_patch(text)
+    except Exception as exc:  # noqa: BLE001 - a changed core parser must not become a 500
+        log.warning("subagent-watch: V4A parser unavailable (%s: %s)", type(exc).__name__, exc)
+        return None
+    if error or not ops:
+        return None
+    steps = []
+    for op in ops:
+        kind = getattr(getattr(op, "operation", None), "value", None)
+        if not isinstance(op.file_path, str) or not op.file_path:
+            continue
+        if kind == "delete":
+            steps.append({"path": op.file_path, "kind": "delete", "lines": []})
+            continue
+        lines = []
+        for hunk in getattr(op, "hunks", None) or []:
+            lines.append(["@", ""])
+            lines += [[hl.prefix if hl.prefix in (" ", "-", "+") else " ", str(hl.content)] for hl in hunk.lines]
+        if kind == "add":
+            steps.append({"path": op.file_path, "kind": "whole", "lines": [l for l in lines if l[0] != "@"],
+                          "total": sum(1 for l in lines if l[0] == "+")})
+        elif kind == "move":
+            steps.append({"path": op.file_path, "kind": "move", "to": op.new_path, "lines": lines})
+        else:
+            steps.append({"path": op.file_path, "kind": "diff", "lines": lines})
+    return steps or None
+
+
+def build_replay(conn: sqlite3.Connection, session_id: str) -> dict:
+    """The file edits of one conversation (and its workers), grouped under the user's request they
+    followed, newest request first; each edit with the lines it removed and added. Cached until a new
+    message lands in any session it covers."""
+    ids, workers, every, cwd, key = _scope(conn, session_id)
+    cached = _REPLAY_CACHE.get(key)
+    if cached is not None:
+        return cached
+    marks = ",".join("?" * len(every))
+    cwds = {r["id"]: r["cwd"] for r in conn.execute(f"select id, cwd from sessions where id in ({marks})", every)}
+    results = _results(conn, every, 200000)
+    asks = _requests(conn, ids)
+    turns = [{"id": f"t{i}", "at": at, "ask": _one_line(text, ASK_CHARS), "steps": []} for i, (at, text) in enumerate(asks)]
+    early = {"id": "t-", "at": None, "ask": "", "steps": []}
+    calls = unreadable = 0
+    for sid, at, cid, name, args in _tool_calls(conn, every, EDIT_TOOLS):
+        calls += 1
+        result = results.get(cid)
+        steps = _edit_steps(name, args, result)
+        if not steps:
+            unreadable += 1
+            continue
+        failed = _failed(result)
+        turn = early
+        for t in turns:
+            if t["at"] <= (at or 0):
+                turn = t
+            else:
+                break
+        for n, step in enumerate(steps):
+            lines, cut = _cap(step.pop("lines"))
+            step.update({
+                "id": f"{cid or calls}#{n}", "at": at, "who": workers.get(sid, ""), "tool": name,
+                "path": _absolute(step["path"], cwds.get(sid) or cwd),
+                "added": sum(1 for l in lines if l[0] == "+"), "removed": sum(1 for l in lines if l[0] == "-"),
+                "lines": lines, "cut": cut, "failed": failed, "error": _error(result) if failed else "",
+            })
+            if step.get("to"):
+                step["to"] = _absolute(step["to"], cwds.get(sid) or cwd)
+            turn["steps"].append(step)
+    with_edits = [t for t in ([early] + turns) if t["steps"]]
+    for t in with_edits:
+        t["files"] = len({path_key(s["path"]) for s in t["steps"]})
+        t["more_steps"] = max(0, len(t["steps"]) - MAX_STEPS)
+        t["steps"] = t["steps"][:MAX_STEPS]
+    with_edits.reverse()
+    answer = {"session_id": session_id, "cwd": cwd, "turns": with_edits[:MAX_TURNS],
+              "more_turns": max(0, len(with_edits) - MAX_TURNS), "calls": calls, "unreadable": unreadable}
+    if len(_REPLAY_CACHE) > 8:
+        _REPLAY_CACHE.clear()
+    _REPLAY_CACHE[key] = answer
+    return answer
+
+
+def list_replay(conn: sqlite3.Connection, session_id: str) -> dict:
+    """The replay list: every request and its edits without their lines (the page loads those per edit)."""
+    full = build_replay(conn, session_id)
+    return {**full, "turns": [{**t, "steps": [{k: v for k, v in s.items() if k != "lines"} for s in t["steps"]]}
+                              for t in full["turns"]]}
+
+
+def read_replay_step(conn: sqlite3.Connection, session_id: str, step_id: str) -> dict:
+    """One edit's lines; 403 when the edit is not in this conversation's replay."""
+    for t in build_replay(conn, session_id)["turns"]:
+        for s in t["steps"]:
+            if s["id"] == step_id:
+                return {"id": step_id, "lines": s["lines"], "cut": s["cut"]}
+    raise HTTPException(status_code=403, detail="edit belongs to another conversation")
 
 
 @router.get("/children")
@@ -735,3 +1005,15 @@ def process_output(session_id: str, process_id: str) -> dict:
 def files(session_id: str) -> dict:
     with closing(_connect()) as conn:
         return list_files(conn, session_id)
+
+
+@router.get("/replay")
+def replay(session_id: str) -> dict:
+    with closing(_connect()) as conn:
+        return list_replay(conn, session_id)
+
+
+@router.get("/replay_step")
+def replay_step(session_id: str, step_id: str) -> dict:
+    with closing(_connect()) as conn:
+        return read_replay_step(conn, session_id, step_id)

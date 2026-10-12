@@ -28,7 +28,7 @@ const htmlPath = htmlArg || path.join(__dirname, 'preview.html')
 const outPath = outArg || path.join(__dirname, 'preview.png')
 const WIDTH = 1340 // room for two 640 px look columns side by side
 const SHOT_WIDTH = 690 // one look per PNG
-const SCREENS = 11
+const SCREENS = 12
 const LOOKS = ['terminal']
 
 app.disableHardwareAcceleration()
@@ -145,10 +145,20 @@ const PREPARE = `(() => {
     .map(el => (el.className + ' [' + (el.textContent || '').slice(0, 24) + ']'))
   // LAYOUT: nothing inside a frame may be wider than the frame (a horizontal scrollbar on the page),
   // and the header's pieces must not paint over each other or wrap a pill onto two lines.
+  // Content inside a box that scrolls sideways (its own scrollbar) and itself fits (a diff's long line, a row of
+  // step marks) moves that box's scrollbar, not the page's; the box is measured instead. A box that
+  // only hides its overflow (the panel) is no excuse: hidden content is clipped content.
+  const insideClip = (el, f, edge) => {
+    for (let p = el.parentElement; p && p !== f && !p.classList.contains('sw-page') && !p.classList.contains('sw-bd'); p = p.parentElement) {
+      const ox = getComputedStyle(p).overflowX
+      if (ox === 'auto' || ox === 'scroll') return p.getBoundingClientRect().right <= edge
+    }
+    return false
+  }
   const overflow = [...document.querySelectorAll('.swp-frame')].flatMap((f, i) => {
     const edge = f.getBoundingClientRect().right + 0.5
     return [...f.querySelectorAll('*')]
-      .filter(el => el.getBoundingClientRect().right > edge && getComputedStyle(el).display !== 'none')
+      .filter(el => el.getBoundingClientRect().right > edge && getComputedStyle(el).display !== 'none' && !insideClip(el, f, edge))
       .filter(el => !el.parentElement || el.parentElement.getBoundingClientRect().right <= edge)
       .map(el => 'frame ' + (i + 1) + ' .' + String(el.className).split(' ')[0] + ' ends '
         + Math.round(el.getBoundingClientRect().right - edge + 0.5) + 'px past the frame')

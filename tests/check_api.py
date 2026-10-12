@@ -571,6 +571,9 @@ def build_files_fixture() -> None:
     call("F2", 205, "write_file", {"path": "D:/Proj/src/d.py"}, result="[write_file] wrote to D:/Proj/src/d.py")
     call("F2", 206, "write_file", {"path": "D:/Proj/src/e.py"}, result="[write_file] D:/Proj/src/e.py FAILED")
     call("G", 101, "write_file", {"path": "/other/secret.txt", "content": "s"})
+    # Compression keeps the original rows and writes copies of the turns it keeps: c2 again, same id.
+    copy = db.execute("select session_id, role, content, timestamp, tool_calls from messages where tool_calls like '%\"c2\"%'").fetchone()
+    db.execute("insert into messages (session_id, role, content, timestamp, tool_calls) values (?,?,?,?,?)", copy)
     db.commit()
     db.close()
 
@@ -613,6 +616,8 @@ def run_files() -> None:
         check(by.get("d:/proj/gone.txt", {}).get("deletes") == 1, "files: a V4A delete is a delete")
         check(not any("x.txt" in k for k in by), "files: a terminal command's redirect is not a file-tool call")
         check(not any("secret" in k for k in by), "files: another chat's files never show")
+        check(a is not None and a["writes"] == 2 and got["calls"] == 13,
+              "files: a compressed copy of a call (same call id) is counted once, not as a second edit")
         check(got["unreadable"] == 2 and got["calls"] == 13,
               f"files: unparseable arguments and an unreadable patch are counted, not dropped "
               f"[unreadable {got['unreadable']}, calls {got['calls']}]")
@@ -657,6 +662,144 @@ def run_files() -> None:
         api._db_path = saved
 
 
+REPLAY_DB = HERE / ".out" / "replay_state.db"
+
+
+def build_replay_fixture() -> None:
+    """A chat R1 -> R2 (compression) and its worker RW, with requests and edits; another chat Q."""
+    REPLAY_DB.unlink(missing_ok=True)
+    db = sqlite3.connect(REPLAY_DB)
+    db.executescript(
+        "create table sessions (id text primary key, model text, model_config text, parent_session_id text,"
+        " started_at real not null, ended_at real, end_reason text, tool_call_count integer default 0,"
+        " input_tokens integer default 0, output_tokens integer default 0, last_activity_at real,"
+        " source text not null default 'cli', title text, estimated_cost_usd real, actual_cost_usd real,"
+        " cost_status text, cwd text);"
+        "create table messages (id integer primary key autoincrement, session_id text, role text, content text,"
+        " timestamp real, tool_calls text, tool_call_id text, display_kind text);")
+
+    def session(sid, started, ended=None, reason=None, parent=None, delegate_from=None):
+        cfg = json.dumps({"_delegate_from": delegate_from} if delegate_from else {})
+        db.execute("insert into sessions (id, model, model_config, parent_session_id, started_at, ended_at,"
+                   " end_reason, cwd) values (?,?,?,?,?,?,?,?)", (sid, "m", cfg, parent, started, ended, reason, "D:\\Proj"))
+
+    def say(sid, ts, text, kind=None):
+        db.execute("insert into messages (session_id, role, content, timestamp, display_kind) values (?,?,?,?,?)",
+                   (sid, "user", text, ts, kind))
+
+    def call(sid, ts, cid, name, args, result='{"success": true}'):
+        fn = {"name": name, "arguments": args if isinstance(args, str) else json.dumps(args)}
+        db.execute("insert into messages (session_id, role, content, timestamp, tool_calls) values (?,?,?,?,?)",
+                   (sid, "assistant", "", ts, json.dumps([{"id": cid, "type": "function", "function": fn}])))
+        db.execute("insert into messages (session_id, role, content, timestamp, tool_call_id) values (?,?,?,?,?)",
+                   (sid, "tool", result, ts + 0.1, cid))
+
+    session("R1", 100, 200, "compression")
+    session("R2", 200, parent="R1")
+    session("RW", 150, 170, "completed", delegate_from="R1")
+    session("Q", 100)
+    call("R1", 90, "r0", "write_file", {"path": "notes.md", "content": "a\nb"})
+    say("R1", 100, "fix   the header\nplease")
+    applied = "--- a/src/a.py\n+++ b/src/a.py\n@@ -5,3 +5,3 @@\n ctx\n-old\n+new\n\\ No newline at end of file\n"
+    call("R1", 101, "r1", "patch", {"path": "src/a.py", "old_string": "old", "new_string": "new"},
+         result=json.dumps({"success": True, "diff": applied}))
+    call("R1", 102, "r2", "patch", {"path": "src/a.py", "old_string": "x\ny", "new_string": "x\nz\nw"},
+         result="[patch] src/a.py ok")  # a compressed result: the diff comes from the call's own text
+    call("R1", 103, "r3", "write_file", {"path": "D:/Proj/README.md", "content": "hi"},
+         result='{"error": "Refusing to overwrite README.md"}')
+    call("RW", 160, "r4", "write_file", {"path": "D:/Proj/docs/guide.md", "content": "1\n2\n3"})
+    call("R1", 170, "r5", "patch", "{not json")
+    say("R2", 200, "[CONTEXT COMPACTION — REFERENCE ONLY] earlier turns")
+    say("R2", 200.2, "[ASYNC DELEGATION BATCH COMPLETE] worker done", "async_delegation_complete")
+    # The agent goes on after a finished delegation: still the same request.
+    call("R2", 200.25, "r7", "write_file", {"path": "D:/Proj/after.md", "content": "x"})
+    say("R2", 200.4, "\x00json:" + json.dumps([{"type": "text", "text": "now the patch"}, {"type": "image_url", "image_url": {"url": "x"}}]))
+    call("R2", 201, "r6", "patch", {"mode": "patch", "patch": "*** Begin Patch\n*** Update File: D:/Proj/src/b.py\n@@\n keep\n-a\n+b\n"
+                                                              "*** Delete File: D:/Proj/gone.txt\n*** End Patch"})
+    copy = db.execute("select session_id, role, content, timestamp, tool_calls from messages where tool_calls like '%\"r6\"%'").fetchone()
+    db.execute("insert into messages (session_id, role, content, timestamp, tool_calls) values (?,?,?,?,?)", copy)
+    say("R2", 300, "a request with no edits")
+    say("Q", 100, "someone else's chat")
+    call("Q", 101, "q1", "write_file", {"path": "/other/secret.txt", "content": "s"})
+    db.commit()
+    db.close()
+
+
+def run_replay() -> None:
+    build_replay_fixture()
+    saved = api._db_path
+    api._db_path = lambda: REPLAY_DB
+    api._REPLAY_CACHE.clear()
+    try:
+        with api._connect() as conn:
+            got = api.list_replay(conn, "R2")
+            full = api.build_replay(conn, "R2")
+            again = api.build_replay(conn, "R2")
+            asks = [t["ask"] for t in got["turns"]]
+            check(again is full, "replay: a second read with no new message is served from the cache")
+            check(asks == ["now the patch", "fix the header please", ""],
+                  f"replay: requests newest first, one line each; messages Hermes posts in the user's place are not "
+                  f"requests; a request with no edits is not listed; edits before the first request are kept [{asks}]")
+            check(all("lines" not in s for t in got["turns"] for s in t["steps"]),
+                  "replay: the list carries no lines (the page reads them per edit)")
+            fix = full["turns"][1]
+            kinds = [(s["path"].replace("\\", "/"), s["kind"], s["added"], s["removed"], s["failed"], s["who"]) for s in fix["steps"]]
+            check(kinds == [("D:/Proj/src/a.py", "diff", 1, 1, False, ""), ("D:/Proj/src/a.py", "diff", 2, 1, False, ""),
+                            ("D:/Proj/README.md", "whole", 1, 0, True, ""), ("D:/Proj/docs/guide.md", "whole", 3, 0, False, "RW"),
+                            ("D:/Proj/after.md", "whole", 1, 0, False, "")],
+                  f"replay: each edit in order, with its file, lines added and removed, failure and who made it "
+                  f"(the worker by its session); an edit after a finished delegation stays under the request [{kinds}]")
+            check(fix["files"] == 4, f"replay: a request counts each file once [{fix['files']}]")
+            first = fix["steps"][0]["lines"]
+            check(first == [["@", "5"], [" ", "ctx"], ["-", "old"], ["+", "new"]],
+                  f"replay: a patch shows the diff Hermes applied, with its real line number [{first}]")
+            snip = fix["steps"][1]["lines"]
+            check([l for l in snip if l[0] != "@"] == [[" ", "x"], ["-", "y"], ["+", "z"], ["+", "w"]],
+                  f"replay: a compressed result falls back to the call's own old and new text [{snip}]")
+            check(fix["steps"][2]["error"] == "Refusing to overwrite README.md",
+                  "replay: a failed edit carries why it failed")
+            v4a = full["turns"][0]["steps"]
+            check([(s["kind"], s["added"], s["removed"]) for s in v4a] == [("diff", 1, 1), ("delete", 0, 0)],
+                  f"replay: a V4A patch is one edit per file it names, read once though compression copied it "
+                  f"[{[(s['kind'], s['added'], s['removed']) for s in v4a]}]")
+            check(full["unreadable"] == 1 and full["calls"] == 8,
+                  f"replay: an edit whose arguments cannot be read is counted, not dropped [{full['unreadable']} of {full['calls']}]")
+            check(not any("secret" in s["path"] for t in full["turns"] for s in t["steps"]), "replay: another chat's edits never show")
+            sid = fix["steps"][0]["id"]
+            check(api.read_replay_step(conn, "R2", sid)["lines"] == first, "replay: one edit's lines by its id")
+            try:
+                api.read_replay_step(conn, "Q", sid)
+                refused = False
+            except api.HTTPException as exc:
+                refused = exc.status_code == 403
+            check(refused, "replay: an edit asked for under another chat is refused (403)")
+            api.STEP_LINES, cap = 2, api.STEP_LINES
+            api._REPLAY_CACHE.clear()
+            try:
+                capped = api.build_replay(conn, "R2")["turns"][1]["steps"][3]
+            finally:
+                api.STEP_LINES = cap
+                api._REPLAY_CACHE.clear()
+            check(len(capped["lines"]) == 2 and capped["cut"] == 1 and capped["total"] == 3,
+                  "replay: past STEP_LINES the rest of an edit is counted in `cut`; a whole file keeps its real length")
+        fresh = sqlite3.connect(REPLAY_DB)
+        fresh.execute("insert into messages (session_id, role, content, timestamp, tool_calls) values (?,?,?,?,?)",
+                      ("R2", "assistant", "", 301, json.dumps([{"id": "late", "function": {
+                          "name": "write_file", "arguments": json.dumps({"path": "late.md", "content": "x"})}}])))
+        fresh.commit()
+        fresh.close()
+        with api._connect() as conn:
+            later = api.list_replay(conn, "R2")
+        check(later["turns"][0]["ask"] == "a request with no edits" and later["turns"][0]["steps"][0]["path"].endswith("late.md"),
+              "replay: a new edit is read at once and lands under the request it followed")
+        check(any(getattr(r, "path", "") == "/replay" and "GET" in r.methods for r in api.router.routes)
+              and any(getattr(r, "path", "") == "/replay_step" and "GET" in r.methods for r in api.router.routes),
+              "replay: /replay and /replay_step are GET routes")
+    finally:
+        api._db_path = saved
+        api._REPLAY_CACHE.clear()
+
+
 def run_live() -> None:
     core = env.core_dir()
     if core is None:
@@ -684,6 +827,10 @@ def run_live() -> None:
             seen = api.list_files(conn, busy["session_id"])
             check(bool(seen["files"]), f"live: {len(seen['files'])} files read for a chat that wrote one, "
                                        f"{seen['unreadable']} of {seen['calls']} calls unreadable")
+        if busy:
+            seen = api.build_replay(conn, busy["session_id"])
+            check(bool(seen["turns"]), f"live: {sum(len(t['steps']) for t in seen['turns'])} edits under "
+                                       f"{len(seen['turns'])} requests, {seen['unreadable']} of {seen['calls']} calls unreadable")
         if not owner:
             print("SKIP  live: no process receipts in this home")
             return
@@ -696,6 +843,7 @@ def run_live() -> None:
 
 run_fixture()
 run_files()
+run_replay()
 if "--live" in sys.argv:
     run_live()
 print("\nALL PASSED" if not fails else f"\n{fails} FAILED")

@@ -1,10 +1,11 @@
 name: subagent-watch
 label: Subagent Watch
-version: 1.7.0
+version: 1.8.0
 description: >-
   Subagent Watch — read-only desktop page for delegate_task workers, in a Terminal
   look: the main agent and each subagent as a unit showing what it does, one focus panel with its files, answer and cost, earlier runs in a picker, full worker output; a status-bar
   progress chip (and pet line) for the running batch; plus the chat's background shell
-  commands (running and finished, with exit code and output tail).
+  commands (running and finished, with exit code and output tail); a Replay tab that steps
+  through the file edits made after each request.
 author: Muhammed Enes Alpler
 kind: standalone

@@ -16,6 +16,7 @@
  *    9. Narrow (380 px): units wrap into rows, nothing scrolls sideways.
  *   10. The status-bar chip, and the header's "held" state after a click inside the page.
  *   11. 40 subagents: the grouped swarm (failed by name, working, waiting, done).
+ *   12. The Replay tab: a request's edits, one open as removed / added lines; a failed edit; narrow.
  *
  * Every frame carries `data-screen` and `data-look`; this script exits 1 when a screen is missing in
  * either look, and shot.cjs re-checks the same in the real engine (a missing screen is RED).
@@ -36,7 +37,7 @@ const HERE_URL = new URL('.', import.meta.url)
 const HERE = fileURLToPath(HERE_URL).replace(/\\/g, '/')
 const STUB = `${HERE_URL.href}.out/sdk-stub.mjs`
 const SRC = `${HERE}../desktop/plugin.js`
-export const SCREENS = 11
+export const SCREENS = 12
 export const LOOKS = ['terminal']
 
 try {
@@ -125,6 +126,34 @@ const FILES = {
     { key: 'c:/users/someone/appdata/local/hermes/hermes-agent/apps/desktop/src/sdk/index.ts', path: 'C:/Users/someone/AppData/Local/hermes/hermes-agent/apps/desktop/src/sdk/index.ts', reads: 2, writes: 0, deletes: 0, failed: 0, last_op: 'read', last_failed: false, last_at: NOW - 700 }
   ]
 }
+// Screen 12: the chat's edits under the user's requests, newest first, as GET /replay answers.
+const step = (id, path, kind, added, removed, at, extra = {}) => ({ id, path, kind, added, removed, at, who: '', tool: kind === 'whole' ? 'write_file' : 'patch', cut: 0, failed: false, error: '', ...extra })
+const REPLAY = {
+  session_id: 'st-1', cwd: 'C:/work/panel', more_turns: 0, calls: 9, unreadable: 0,
+  turns: [
+    {
+      id: 't2', at: NOW - 900, files: 3, more_steps: 0,
+      ask: 'the header wraps at 380 px and the long command pushes the panel wider, fix both and keep the copy button where it is',
+      steps: [
+        step('c1#0', 'C:/work/panel/desktop/plugin.js', 'diff', 3, 2, NOW - 880),
+        step('c2#0', 'C:/work/panel/tests/render_check.mjs', 'diff', 1, 1, NOW - 860, { failed: true, error: "Could not find a match for old_string in 'tests/render_check.mjs'" }),
+        step('c3#0', 'C:/work/panel/tests/render_check.mjs', 'diff', 6, 0, NOW - 840, { who: 'c-f' }),
+        step('c4#0', 'C:/work/panel/CHANGELOG.md', 'whole', 7, 0, NOW - 820, { total: 7 })
+      ]
+    },
+    { id: 't1', at: NOW - 5000, files: 1, more_steps: 0, ask: 'add a copy button', steps: [step('c0#0', 'C:/work/panel/desktop/plugin.js', 'diff', 4, 1, NOW - 4980)] },
+    { id: 't-', at: null, files: 1, more_steps: 0, ask: '', steps: [step('cz#0', 'C:/work/panel/notes.md', 'whole', 2, 0, NOW - 90000, { total: 2 })] }
+  ]
+}
+const REPLAY_LINES = {
+  'c1#0': [['@', '412'], [' ', 'function Header({ t, chatName }) {'], [' ', "  return jsxs('header', {"], ['-', "    className: 'sw-hd',"], ['-', "    children: [jsx('h2', { children: t('title') }), chatName]"],
+    ['+', "    className: 'sw-hd sw-wrap',"], ['+', "    children: [jsx('h2', { className: 'sw-ht', children: t('title') }), jsx(OneLine, { text: chatName })],"], ['+', "    'data-narrow': narrow ? 'true' : undefined"], [' ', '  })'], [' ', '}']],
+  'c2#0': [['@', ''], ['-', "  expect(q('.sw-hd').className).toBe('sw-hd')"], ['+', "  expect(q('.sw-hd').className).toBe('sw-hd sw-wrap')"]],
+  'c3#0': [['@', '88'], [' ', "test('header', () => {"], ['+', "  render({ width: 380 })"], ['+', "  expect(q('.sw-hd').scrollWidth).toBeLessThanOrEqual(380)"], ['+', "  const cmd = q('.sw-cmd')"], ['+', '  expect(cmd.scrollWidth).toBeGreaterThan(cmd.clientWidth)'], ['+', "  expect(getComputedStyle(cmd).whiteSpace).toBe('nowrap')"], ['+', "  expect(q('.sw-copy')).toBeTruthy()"], [' ', '})']],
+  'c4#0': ['## 1.7.1', '', '- The header no longer wraps at 380 px.', '- A long command stays on one line and scrolls inside its box.', '- The copy button keeps its place.', '', '## 1.7.0'].map(l => ['+', l]),
+  'c0#0': [['@', '600'], ['-', "  jsx('pre', { children: command })"], ['+', "  jsxs('div', { children: ["], ['+', "    jsx('pre', { children: command }),"], ['+', "    jsx(IconButton, { label: t('copyCommand') })"], ['+', '  ] })']],
+  'cz#0': [['+', '# notes'], ['+', 'header: check 380 px']]
+}
 const OUTPUT = 'building 14 entries…\nerror: Cannot find module \'./sdk-stub.mjs\'\n    at build.mjs:41:9\nexit 1'
 const NEVER = new Promise(() => {})
 
@@ -159,6 +188,11 @@ function makeCtx(look, { fail = false, live = false, empty = false, loading = fa
         return { id, command: p.command, output: id === 'proc_bad' ? OUTPUT : id === 'proc_quiet' ? '' : '12 passed in 41.8s', output_truncated: false }
       }
       if (path.startsWith('/output')) return { text: 'answer' }
+      if (path.startsWith('/replay_step')) {
+        const id = new URLSearchParams(path.split('?')[1]).get('step_id')
+        return { id, lines: REPLAY_LINES[id] || [], cut: 0 }
+      }
+      if (path.startsWith('/replay')) return REPLAY
       throw new Error(`unexpected ${path}`)
     },
     os: { writeClipboard: async () => true }
@@ -231,7 +265,8 @@ const TITLES = {
   8: '8 · No chat selected · loading · several sources failing',
   9: '9 · Narrow (380 px): units wrap into rows; nothing scrolls sideways',
   10: '10 · The status-bar chip · the header "held" state after a click inside the page',
-  11: '11 · 40 subagents: the grouped swarm — failed by name, then working, waiting, done'
+  11: '11 · 40 subagents: the grouped swarm — failed by name, then working, waiting, done',
+  12: "12 · Replay tab — a request's edits one at a time: removed and added lines, a failed edit, narrow"
 }
 
 for (const look of LOOKS) {
@@ -303,6 +338,26 @@ for (const look of LOOKS) {
     await act(async () => root.unmount())
     host.remove()
   }
+  const openReplay = async ({ q }) => {
+    await click(q('[role=tab][data-tab=replay]'))
+    await tick(20)
+    if (!q('.sw-rturn')) problems.push(`12/${look}: the replay list did not render`)
+  }
+  await frame(12, look, `${TITLES[12]} — edit 1 of 4`, {}, async h => {
+    await openReplay(h)
+    if (!h.qa('.sw-rl[data-tag="-"]').length || !h.qa('.sw-rl[data-tag="+"]').length) problems.push(`12/${look}: the open edit shows no removed / added lines`)
+  })
+  await frame(12, look, `${TITLES[12]} — the failed edit`, {}, async h => {
+    await openReplay(h)
+    await click(h.qa('.sw-rmark')[1])
+    await tick(20)
+    if (!h.q('.sw-rfail')) problems.push(`12/${look}: the failed edit does not say it failed`)
+  })
+  await frame(12, look, `${TITLES[12]} — narrow (380 px), a whole-file write`, { narrow: true }, async h => {
+    await openReplay(h)
+    await click(h.qa('.sw-rmark')[3])
+    await tick(20)
+  })
   await frame(11, look, TITLES[11], {}, async ({ emit, q }) => {
     for (const [i, name] of SWARM_NAMES.entries()) await emit('subagent.spawn_requested', { subagent_id: `w${i}`, delegation_id: 'dw', goal: `Sweep '${name}' module`, task_index: i })
     for (let i = 0; i < 30; i++) await emit('subagent.start', { subagent_id: `w${i}`, delegation_id: 'dw', goal: `Sweep '${SWARM_NAMES[i]}' module`, child_session_id: `kw${i}`, started_at: NOW - 200 })
