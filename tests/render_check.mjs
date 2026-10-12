@@ -178,10 +178,17 @@ const FILES = {
       { key: 'd:/proj/readme.md', path: 'D:\\Proj\\README.md', reads: 0, writes: 0, deletes: 0, failed: 1, who: [''], editors: [], last_op: 'write', last_failed: true, last_at: 20 },
       { key: 'd:/proj/src/b.py', path: 'D:\\Proj\\src\\b.py', reads: 1, writes: 0, deletes: 0, failed: 0, who: [''], editors: [], last_op: 'read', last_failed: false, last_at: 15 },
       { key: 'd:/proj/old.txt', path: 'D:\\Proj\\old.txt', reads: 0, writes: 1, deletes: 1, failed: 0, who: [''], editors: [''], last_op: 'delete', last_failed: false, last_at: 10 },
-      { key: 'c:/elsewhere/very/long/folder/name/that/goes/on/and/on/x.md', path: 'C:/elsewhere/very/long/folder/name/that/goes/on/and/on/x.md', reads: 1, writes: 0, deletes: 0, failed: 0, who: [''], editors: [], last_op: 'read', last_failed: false, last_at: 5 }
+      { key: 'c:/elsewhere/very/long/folder/name/that/goes/on/and/on/x.md', path: 'C:/elsewhere/very/long/folder/name/that/goes/on/and/on/x.md', reads: 1, writes: 0, deletes: 0, failed: 0, who: [''], editors: [], last_op: 'read', last_failed: false, first_at: 2, last_at: 5 }
     ]
   },
-  'st-many': { cwd: '/w', unreadable: 0, more: 0, files: Array.from({ length: 45 }, (_, i) => ({ key: `/w/f${i}.txt`, path: `/w/f${i}.txt`, reads: 1, writes: 0, deletes: 0, failed: 0, who: [''], editors: [], last_op: 'read', last_failed: false, last_at: 100 - i })) }
+  'st-many': {
+    cwd: '/w', unreadable: 0, more: 0,
+    files: [
+      // Twelve edits: more than the card's 8 blocks.
+      { key: '/w/big.js', path: '/w/big.js', reads: 0, writes: 12, deletes: 0, failed: 0, who: [''], editors: [''], last_op: 'write', last_failed: false, last_at: 200 },
+      ...Array.from({ length: 45 }, (_, i) => ({ key: `/w/f${i}.txt`, path: `/w/f${i}.txt`, reads: 1, writes: 0, deletes: 0, failed: 0, who: [''], editors: [], last_op: 'read', last_failed: false, last_at: 100 - i }))
+    ]
+  }
 }
 // Scenario state: extra stored batches and held (pending) reads. The fixtures below are never mutated.
 let extraBatches = []
@@ -277,7 +284,9 @@ const ctx = {
     if (path.startsWith('/process_output')) {
       if (procOutputFails) throw new Error('output 503')
       const q = new URLSearchParams(path.split('?')[1])
+      if (holds.procout) await holds.procout
       if (q.get('process_id') === 'proc_quiet') return { id: 'proc_quiet', command: 'true', output: '', output_truncated: false }
+      if (q.get('process_id') === 'proc_kill') return { id: 'proc_kill', command: 'sleep 999', output: 'step 1 ok\nTraceback (most recent call last):\n  at work()\nsleep: FAILED\n', output_truncated: false }
       return { id: q.get('process_id'), command: `FULL ${q.get('process_id')}`, output: `tail of ${q.get('process_id')} in ${q.get('session_id')}`, output_truncated: true }
     }
     throw new Error(`unexpected ${path}`)
@@ -434,7 +443,10 @@ check(q('.sw-page')?.dataset.theme === 'terminal' && q('.sw-tgb[data-theme=termi
 check(units().length === 3 && units().every(u => u.querySelector('pre.sw-spr')) && !q('.sw-hex')
   && units().map(u => u.querySelector('.sw-us').textContent).join() === '[IDLE],[OK ],[ERR]',
   `Terminal draws ASCII sprite boxes with status tags (${units().map(u => u.querySelector('.sw-us')?.textContent)})`)
-check(/TERMINAL PALETTE START/.test(css) && /\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-ok\)/.test(css), 'Terminal paints from its own palette block')
+check(!/TERMINAL PALETTE/.test(css) && /\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-acc\)/.test(css) && /--tm-acc:color-mix\(in srgb,var\(--ui-accent\)/.test(css)
+  && /--tm-ok:color-mix\(in srgb,var\(--ui-green\)/.test(css) && /--tm-bad:color-mix\(in srgb,var\(--ui-red\)/.test(css) && /--tm-run:color-mix\(in srgb,var\(--ui-yellow\)/.test(css)
+  && /--tm-bg:color-mix\(in srgb,var\(--ui-accent\) \d+%,var\(--dt-background\)\)/.test(css) && !/#[0-9a-f]{3,8}\b/i.test(css),
+  'Terminal takes the theme: the accent is its ink, the theme tones its statuses, its ground the theme background; no literal colour')
 await act(async () => { q('.sw-tgb[data-theme=cockpit]').click() })
 check(q('.sw-page')?.dataset.theme === 'cockpit' && kept.get('theme') === 'cockpit' && units().every(u => u.querySelector('.sw-hex')),
   'and back to Cockpit hex units')
@@ -471,7 +483,16 @@ await act(async () => { unitNamed('alpha-panel').click() })
   `the model chip shows model · effort, its tooltip the full id (${f.querySelector('.sw-model')?.dataset.tip})`)
   check(f.querySelector('.sw-task')?.textContent.includes("Polish 'alpha-panel' visuals") && f.querySelector('.sw-anst')?.textContent === 'Alpha answer paragraph.',
     'it shows its task and its answer')
-  check(f.querySelector('.sw-stats')?.textContent === '40 tools · 120k tokens · ~$1.50', `tools, tokens and cost (${f.querySelector('.sw-stats')?.textContent})`)
+  const tiles = [...f.querySelectorAll('.sw-tile')].map(x => `${x.querySelector('.sw-tl')?.textContent}=${x.querySelector('.sw-tn')?.textContent}`).join('|')
+  check(tiles === 'run time=5m 12s|tool calls=40|tokens=120k|cost=~$1.50', `a subagent's stat tiles: run time, tool calls, tokens, cost — every number labelled (${tiles})`)
+  const tools = f.querySelector('.sw-tile[data-k=tools] .sw-tn')
+  check(tools?.dataset.count === '40' && tools?.style.getPropertyValue('--sw-n') === '40' && !f.querySelector('.sw-tile[data-k=cost] .sw-tn')?.dataset.count,
+    'a whole number counts up from 0 (a CSS counter, so the reduced-motion lock stops it); any other value rolls in')
+  check(f.querySelector('.sw-hero .sw-verb')?.textContent === '✓ DONE' && f.querySelector('.sw-hero .sw-por')?.dataset.st === 'completed' && f.querySelector('.sw-hero .sw-ptag')?.textContent === 'done'
+    && f.querySelector('.sw-hero .sw-por .sw-pring') && f.querySelector('.sw-hero .sw-meta .sw-model'),
+  `the hero: a portrait in its status ring with its tag, the verb line, the task as headline, where + model chip (${f.querySelector('.sw-verb')?.textContent})`)
+  check(f.querySelector('.sw-ans')?.dataset.st === 'completed' && f.querySelector('.sw-ans .sw-sig')?.children.length === 4 && f.querySelector('.sw-ans .sw-ansh')?.textContent === 'Its answer',
+    'its answer is a transmission card: its status colour, a signal mark, a heading')
   check(qa('.sw-focus .sw-btns .sw-ib.is-text').map(b => b.textContent).join('|') === 'Copy answer|Open its chat', 'labelled actions, not bare icons')
 }
 const [copyBtn, openBtn] = qa('.sw-focus .sw-btns .sw-ib')
@@ -549,8 +570,10 @@ check(q('.sw-pu')?.textContent === '1 record could not be read and is not listed
 }
 check(rest.includes('/process_output?session_id=st-1&process_id=proc_bad'), 'opening a command reads its output for THIS chat')
 check(q('.sw-cmo .sw-out')?.textContent === 'tail of proc_bad in st-1' && q('.sw-cmo .sw-pc')?.textContent === 'FULL proc_bad'
-  && /exit 1/.test(q('.sw-cmo .sw-cmeta')?.textContent || '') && /in \/w/.test(q('.sw-cmo .sw-cmeta')?.textContent || ''),
-  `an opened row shows exit code, cwd, the full command and the output tail (${q('.sw-cmo .sw-cmeta')?.textContent})`)
+  && q('.sw-cmo .sw-exit')?.dataset.st === 'failed' && q('.sw-cmo .sw-exit b')?.textContent === '1' && q('.sw-cmo .sw-exit')?.getAttribute('aria-label') === 'exit 1'
+  && qa('.sw-cmo .sw-cchip').map(c => c.textContent).join('|') === 'dir/w|ran5s',
+  `an opened row: its exit code on a big status hex, dir and ran chips, the full command, the output tail (${qa('.sw-cmo .sw-cchip').map(c => c.textContent)})`)
+check(q('.sw-cmo .sw-crt[data-state=output] .sw-ol')?.dataset.n === '1' && /1 line$/.test(q('.sw-cmo .sw-crth')?.textContent || ''), 'the output sits in a CRT box with numbered lines')
 check(/last/.test(q('.sw-cmo .sw-outl')?.textContent || ''), 'a cut output says it is the end only')
 {
   const btn = label => qa('.sw-cmo .sw-btns .sw-ib').find(b => b.textContent === label)
@@ -570,8 +593,9 @@ process.off('unhandledRejection', onUnhandled)
 await act(async () => { prs()[2].click() })
 procOutputFails = true
 await quiet(async () => { await act(async () => { prs()[2].click() }); await tick(5) })
-check(/Could not read its output: output 503/.test(q('.sw-cmerr[role=alert]')?.textContent || '') && q('.sw-cmerr .sw-ib')?.textContent === 'Try again',
-  'an unreadable output is an alert with Try again')
+check(/Could not read its output: output 503/.test(q('.sw-cmerr[role=alert]')?.textContent || '') && q('.sw-cmerr .sw-ib')?.textContent === 'Try again'
+  && q('.sw-cmerr .sw-crt[data-state=lost] .sw-nosig')?.textContent === 'NO SIGNAL',
+  'an unreadable output is an alert: NO SIGNAL, the message, Try again')
 procOutputFails = false
 await act(async () => { q('.sw-cmerr .sw-ib').click() })
 await tick(5)
@@ -580,10 +604,29 @@ check(q('.sw-cmo .sw-out')?.textContent === 'tail of proc_bad in st-1' && !q('.s
   const outReads = rest.filter(p => p.startsWith('/process_output')).length
   await act(async () => { prs()[0].click() })
   await tick(5)
-  check(/when the command finishes/.test(q('.sw-cmo[data-st=running] .sw-cmnote')?.textContent || '') && rest.filter(p => p.startsWith('/process_output')).length === outReads,
-    'a running command asks for no output yet and says when it is shown')
+  check(q('.sw-cmo[data-st=running] .sw-cmnote')?.textContent === 'Still running — its output appears here when it finishes.' && rest.filter(p => p.startsWith('/process_output')).length === outReads
+    && q('.sw-cmo[data-st=running] .sw-radar') && !q('.sw-cmo[data-st=running] .sw-exit'),
+    'a running command: a radar, no output asked for yet, and when it is shown')
   check(qa('.sw-cmo').length === 2, `opening one command keeps the others open (${qa('.sw-cmo').length} open)`)
 }
+{
+  const release = hold('procout')
+  await act(async () => { prs()[1].click() })
+  await tick(5)
+  const killed = () => qa('.sw-cmo').find(c => c.dataset.st === 'stopped')
+  check(killed()?.querySelector('.sw-crt[data-state=reading][role=status] .sw-scan') && killed()?.querySelector('.sw-crth')?.textContent === 'Reading its output…',
+    'while its output is read: a scan bar and what is happening')
+  await act(async () => { release() })
+  await tick(5)
+  const lines = [...(killed()?.querySelectorAll('.sw-ol') || [])]
+  check(lines.map(l => l.dataset.n).join() === '1,2,3,4' && lines.map(l => l.classList.contains('is-bad')).join() === 'false,true,false,true' && /4 lines$/.test(killed()?.querySelector('.sw-crth')?.textContent || ''),
+    `output lines are numbered and the error lines are highlighted (${lines.map(l => l.className).join()})`)
+  check(killed()?.querySelector('.sw-exit b')?.textContent === '-15' && killed()?.querySelector('.sw-exit span')?.textContent === 'killed' && killed()?.querySelector('.sw-exit')?.getAttribute('aria-label') === 'killed',
+    'a killed command says so on its exit mark')
+  await act(async () => { prs()[1].click() })
+}
+check(mod.outputLines('ok\nError: x\nall FAILED\n  Traceback\nException!\nfine\n').map(l => l.bad).join() === 'false,true,true,true,true,false',
+  'error / failed / exception / traceback lines are errors, in any case; a final newline adds no line')
 {
   const procPolls = rest.filter(p => p.startsWith('/processes')).length
   await tick(3100)
@@ -788,7 +831,7 @@ check(/first 4000 characters/.test(q('.sw-cmo .sw-cmeta')?.textContent || ''), `
 await act(async () => { prs()[1].click() })
 await act(async () => { prs()[0].click() })
 await tick(5)
-check(q('.sw-cmo .sw-cmnote')?.textContent === 'It printed nothing.', 'a command that printed nothing says so')
+check(q('.sw-cmo .sw-crt[data-state=quiet] .sw-quiet')?.textContent === '— IT PRINTED NOTHING —', 'a command that printed nothing says so')
 await toTab('agents')
 
 // 16c. live races: a queued worker before Hermes lists it, a stale snapshot after a complete, and
@@ -989,20 +1032,30 @@ const fqa = s => [...fhost.querySelectorAll(s)]
 const sec = name => fqa(`.sw-focus [data-sec=${name}] .sw-fr`)
 const rowOf = name => fqa('.sw-focus .sw-fr').find(b => b.querySelector('.sw-fn')?.textContent === name)
 check(rest.some(p => p === '/files?session_id=st-f'), 'files are read for the stored chat id')
+{
+  const tiles = fqa('.sw-focus .sw-tile').map(x => `${x.querySelector('.sw-tl')?.textContent}=${x.querySelector('.sw-tn')?.textContent}`).join('|')
+  check(tiles === 'on task=28s|files touched=5|changed=3|only read=2', `the main agent's stat tiles: on task, files touched, changed, only read (${tiles})`)
+  check(fq('.sw-focus .sw-verb')?.textContent === '○ IDLE' && fq('.sw-focus .sw-ptag')?.textContent === 'main' && fq('.sw-focus .sw-por')?.dataset.st === 'idle',
+    `an idle main agent's hero says so, tagged MAIN (${fq('.sw-focus .sw-verb')?.textContent})`)
+}
 const note = fq('.sw-focus .sw-note')?.textContent || ''
 check(/terminal commands or code runs are not listed/.test(note) && /Review › Last turn/.test(note), `the panel says what it cannot see and where every change is (${note})`)
 check(sec('changed').map(r => r.querySelector('.sw-fn').textContent).join() === 'a.py,README.md,old.txt' && sec('read').map(r => r.querySelector('.sw-fn').textContent).join() === 'b.py,x.md',
   `the main agent's files: Changed (its edits, a failed change, a delete) and Only read (${sec('changed').length}/${sec('read').length})`)
 check(rowOf('a.py')?.dataset.op === 'write' && rowOf('README.md')?.dataset.op === 'failed' && rowOf('old.txt')?.dataset.op === 'delete' && rowOf('b.py')?.dataset.op === 'read',
   'each file state is its own row kind: edited, failed, deleted, read only')
-check(rowOf('a.py')?.querySelector('.sw-fl')?.textContent === 'edit ×3' && rowOf('README.md')?.querySelector('.sw-fl')?.textContent === 'failed' && rowOf('old.txt')?.querySelector('.sw-fl')?.textContent === 'deleted',
+check(rowOf('a.py')?.querySelector('.sw-fl')?.textContent === '3 edits' && rowOf('README.md')?.querySelector('.sw-fl')?.textContent === 'failed' && rowOf('old.txt')?.querySelector('.sw-fl')?.textContent === 'deleted',
   `a changed row says EDIT ×n / FAILED / DELETED (${rowOf('a.py')?.querySelector('.sw-fl')?.textContent})`)
-check(parseInt(rowOf('a.py')?.querySelector('.sw-fbar i')?.style.width) > parseInt(rowOf('README.md')?.querySelector('.sw-fbar i')?.style.width),
-  'a bar is as long as the edit count')
+check(rowOf('a.py')?.querySelector('.sw-pips')?.dataset.lit === '3' && rowOf('a.py')?.querySelectorAll('.sw-pips i').length === 8 && rowOf('a.py')?.querySelectorAll('.sw-pips i.on').length === 3
+  && rowOf('README.md')?.querySelectorAll('.sw-pips i.on').length === 1 && !rowOf('old.txt')?.querySelector('.sw-pips') && rowOf('a.py')?.classList.contains('sw-ft'),
+  'a changed file is a card: one lit block per edit out of 8, none for a delete')
+check(fq('.sw-focus [data-sec=changed] .sw-leg')?.textContent === '1 block = 1 edit', 'the blocks are explained: 1 block = 1 edit')
+check(mod.pips(3) === 3 && mod.pips(8) === 8 && mod.pips(12) === 8 && mod.pips(0) === 0 && mod.pips(null) === 0, 'the blocks stop at 8')
 check(rowOf('a.py')?.querySelector('.sw-fd')?.textContent === './src' && rowOf('README.md')?.querySelector('.sw-fd')?.textContent === 'chat folder'
-  && rowOf('x.md')?.querySelector('.sw-fd')?.textContent.startsWith('…') && rowOf('x.md')?.dataset.tip.startsWith('C:/elsewhere'),
-  'a row names its folder relative to the chat; the full path is its tooltip')
-check(rowOf('a.py')?.getAttribute('aria-label') === 'a.py in ./src: edit ×3', `a row is named for a screen reader (${rowOf('a.py')?.getAttribute('aria-label')})`)
+  && /in …/.test(rowOf('x.md')?.getAttribute('aria-label') || '') && rowOf('x.md')?.dataset.tip.startsWith('C:/elsewhere')
+  && rowOf('x.md')?.classList.contains('sw-chip') && rowOf('x.md')?.querySelector('.sw-fx')?.textContent === '×1',
+  'a card names its folder relative to the chat; an only-read file is a chip with ×count; the full path is the tooltip')
+check(rowOf('a.py')?.getAttribute('aria-label') === 'a.py in ./src: 3 edits', `a row is named for a screen reader (${rowOf('a.py')?.getAttribute('aria-label')})`)
 check(fqa('.sw-focus .sw-fnote').map(e => e.textContent).join('|') === '2 older files not listed|1 tool call could not be read',
   'unreadable calls and files past the list are said, never silently dropped')
 await act(async () => { rowOf('b.py').click() })
@@ -1014,24 +1067,32 @@ check(clip.at(-1) === 'D:\\Proj\\src\\b.py' && fq('.sw-toast')?.textContent === 
   check(fq('.sw-focus')?.dataset.kind === 'sub' && sec('changed').map(r => r.querySelector('.sw-fn').textContent).join() === 'a.py' && !sec('read').length
     && /changed 1 file/.test(fq('.sw-focus .sw-meta')?.textContent || ''),
   `a subagent's panel lists the files it changed, from /files who/editors (${fq('.sw-focus .sw-meta')?.textContent})`)
+  const watchdog = [...fhost.querySelectorAll('.sw-agents button.sw-unit')].find(u => u.textContent.includes('wiki-watchdog'))
+  await act(async () => { watchdog.click() })
+  check(fq('.sw-focus .sw-verb')?.textContent === '✕ STOPPED WITH AN ERROR' && fq('.sw-focus .sw-ans')?.dataset.st === 'failed' && fq('.sw-focus .sw-tile[data-k=time]')?.dataset.tone === 'bad'
+    && fq('.sw-focus .sw-head')?.textContent === "Watch the 'wiki-watchdog' panel",
+  `a failed subagent: the verb says it stopped with an error, its answer and run time in red (${fq('.sw-focus .sw-verb')?.textContent})`)
   await act(async () => { fhost.querySelector('.sw-agents button.sw-unit').click() })
 }
 // working on now (1.6.0's shimmer): the main agent's live file calls
 const filesReads = () => rest.filter(p => p === '/files?session_id=st-f').length
-const nowNames = () => sec('now').map(r => r.querySelector('.sw-fn').textContent).join()
+const nowRows = () => fqa('.sw-focus .sw-fr.is-now')
+const nowNames = () => nowRows().map(r => r.querySelector('.sw-fn').textContent).join()
 const mainUnit = () => fhost.querySelector('.sw-agents button.sw-unit')
 await emit('tool.start', 'rt-other', { tool_id: 'x1', name: 'read_file', args: { path: 'D:\\Proj\\src\\b.py' } })
-check(!sec('now').length, "another chat's tool call is not this chat's work")
+check(!nowRows().length, "another chat's tool call is not this chat's work")
 await emit('tool.start', 'rt-f', { tool_id: 'm1', name: 'read_file', args: {}, preview: 'worker row' })
 await emit('tool.start', 'rt-f', { tool_id: 'v1', name: 'patch', args: { mode: 'patch', path: 'src/b.py', patch: '*** Update File: D:/Proj/src/b.py' } })
-check(!sec('now').length, 'a mirrored worker row and a V4A patch name no file')
+check(!nowRows().length, 'a mirrored worker row and a V4A patch name no file')
 await emit('tool.complete', 'rt-f', { tool_id: 'm1' })
 await emit('tool.complete', 'rt-f', { tool_id: 'v1' })
 await emit('tool.start', 'rt-f', { tool_id: 't1', name: 'read_file', args: { path: 'src/b.py' } })
-check(nowNames() === 'b.py' && fq('.sw-focus .sw-head')?.textContent === 'Reading b.py' && mainUnit()?.dataset.icon === 'read' && mainUnit()?.dataset.st === 'running',
-  `a file call of the focused chat is the 'Working on now' row, and the main agent's icon reads (${fq('.sw-focus .sw-head')?.textContent})`)
+check(nowNames() === 'b.py' && fq('.sw-focus .sw-head')?.textContent === 'b.py' && fq('.sw-focus .sw-verb')?.textContent === '▶ READING NOW' && mainUnit()?.dataset.icon === 'read' && mainUnit()?.dataset.st === 'running',
+  `a file call of the focused chat is the NOW card and the headline, the verb line reads (${fq('.sw-focus .sw-verb')?.textContent} ${fq('.sw-focus .sw-head')?.textContent})`)
+check(sec('changed')[0]?.classList.contains('is-now') && nowRows()[0]?.querySelector('.sw-nowb')?.textContent === 'NOW' && /worked on now/.test(nowRows()[0]?.getAttribute('aria-label') || ''),
+  'the NOW card leads the grid, badged NOW, and says so to a screen reader')
 await emit('tool.start', 'rt-f', { tool_id: 't2', name: 'write_file', args: { path: 'D:/Proj/src/new.ts', content: 'x' } })
-check(nowNames() === 'b.py,new.ts' && fq('.sw-focus .sw-head')?.textContent === 'Editing new.ts' && rowOf('new.ts')?.dataset.op === 'active' && mainUnit()?.dataset.icon === 'edit',
+check(nowNames() === 'b.py,new.ts' && fq('.sw-focus .sw-head')?.textContent === 'new.ts' && fq('.sw-focus .sw-verb')?.textContent === '▶ EDITING NOW' && rowOf('new.ts')?.dataset.op === 'active' && mainUnit()?.dataset.icon === 'edit',
   'a file not yet recorded appears at once; the newest file is the head line and the icon edits')
 const readsBefore = filesReads()
 await emit('tool.complete', 'rt-f', { tool_id: 't1', name: 'read_file' })
@@ -1041,7 +1102,7 @@ await tick(4100)
 check(nowNames() === 'new.ts', 'the row ends after the linger; a call still running keeps its own')
 await emit('tool.complete', 'rt-f', { tool_id: 't2', name: 'write_file' })
 await tick(4100)
-check(!sec('now').length && !rowOf('new.ts') && mainUnit()?.dataset.st === 'idle', 'once every call ended nothing is worked on now, and an unrecorded file leaves with it')
+check(!nowRows().length && !rowOf('new.ts') && mainUnit()?.dataset.st === 'idle', 'once every call ended nothing is worked on now, and an unrecorded file leaves with it')
 // 26. reduced motion turns every animation off; every moment exists
 {
   const pageCss = mod.default && (fq('style')?.textContent || '')
@@ -1049,8 +1110,11 @@ check(!sec('now').length && !rowOf('new.ts') && mainUnit()?.dataset.st === 'idle
   check(/@media \(prefers-reduced-motion:reduce\)\{\.sw-page \*,\.sw-page \*::before,\.sw-page \*::after\{animation:none!important;transition:none!important\}\}/.test(pageCss)
     && animated.length > 5 && animated.every(s => s.split(',').every(one => /^\.sw-(page|panel|unit|sk|ld|bign|nowf|fr|spr|frow)/.test(one.trim()) || /^\.sw-page /.test(one.trim()))),
   `reduced motion stops every page animation (${animated.length} animated rules, all inside the page)`)
-  check(['sw-close', 'sw-shake', 'sw-up', 'sw-slide', 'sw-breathe', 'sw-type', 'sw-blink'].every(k => new RegExp(`@keyframes ${k}\\{`).test(pageCss)),
-    'the moments exist: ring closes, shake, count up, slide, breathe, retyped tag, cursor blink')
+  check(['sw-close', 'sw-shake', 'sw-up', 'sw-slide', 'sw-breathe', 'sw-type', 'sw-blink', 'sw-count', 'sw-in', 'sw-sweep', 'sw-reveal', 'sw-scan'].every(k => new RegExp(`@keyframes ${k}\\{`).test(pageCss)),
+    'the moments exist: ring closes, shake, count up, slide, breathe, retyped tag, cursor blink, tile count-up, cards in turn, NOW sweep, answer reveal, scan')
+  check(['.sw-page .sw-tn[data-count]', '.sw-page .sw-ft', '.sw-page .sw-ft.is-now::after', '.sw-page .sw-ans', '.sw-page .sw-scan', '.sw-page .sw-radar'].every(sel => animated.includes(sel))
+    && /@property --sw-n\{syntax:"<integer>"/.test(pageCss),
+    'a panel opening moves: numbers count up, cards appear in turn, a light sweeps the NOW card, the answer reveals — all inside the reduced-motion lock')
 }
 check(/\.sw-units\{display:flex;[^}]*flex-wrap:wrap/.test(fq('style')?.textContent || '') && /\.sw-cellgrid\{display:flex;flex-wrap:wrap/.test(fq('style')?.textContent || ''),
   'units and swarm cells wrap: nothing scrolls sideways')
@@ -1063,7 +1127,12 @@ check(/the files list — files 503/.test(fq('.sw-err')?.textContent || ''), `a 
 filesFails = false
 await act(async () => { stub.atoms.focusedSessionId.set('rt-m'); stub.atoms.focusedStoredSessionId.set('st-many') })
 await tick(10)
-check(sec('read').length === 3 && fq('.sw-focus [data-sec=read] .sw-more')?.textContent === 'Show 42 more', `Only read shows its first rows and how many more (${fq('.sw-focus [data-sec=read] .sw-more')?.textContent})`)
+check(sec('read').length === 6 && fq('.sw-focus [data-sec=read] .sw-more')?.textContent === '+ 39 more', `Only read shows its first chips and how many more (${fq('.sw-focus [data-sec=read] .sw-more')?.textContent})`)
+{
+  const big = fqa('.sw-focus .sw-fr').find(b => b.querySelector('.sw-fn')?.textContent === 'big.js')
+  check(big?.querySelector('.sw-pips')?.dataset.lit === '8' && big?.querySelectorAll('.sw-pips i.on').length === 8 && big?.querySelector('.sw-fl')?.textContent === '12 edits',
+    `more than 8 edits fill the row and the label says the real count (${big?.querySelector('.sw-fl')?.textContent})`)
+}
 await act(async () => { fq('.sw-focus [data-sec=read] .sw-more').click() })
 check(sec('read').length === 45 && !fq('.sw-focus [data-sec=read] .sw-more'), 'Show more lists every file')
 

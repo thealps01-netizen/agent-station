@@ -12,30 +12,43 @@ code to learn; the page now names each agent by what it is doing and shows one a
 
 - **Two looks: Cockpit (default) and Terminal.** A small COCKPIT | TERMINAL toggle in the header
   switches them; the choice is kept per user (`ctx.storage`) and falls back to Cockpit when storage is
-  missing or fails. Cockpit takes only the app theme's tokens (its accent is your theme's accent);
-  Terminal is a fixed phosphor-green palette with ASCII sprite boxes and `[RUN]` / `[OK ]` / `[ERR]`
-  tags. The status-bar chip follows the chosen look.
+  missing or fails. Both take only the app theme's tokens: Cockpit's accent is your theme's accent;
+  Terminal is a CRT look whose ink and glow are that same accent (its statuses the theme's green, red
+  and yellow, its ground derived from the theme background), with ASCII sprite boxes and `[RUN]` /
+  `[OK ]` / `[ERR]` tags. No colour is hard-coded anywhere — the static audit's former exception for
+  a fixed Terminal palette is gone. The status-bar chip follows the chosen look.
 - **The main agent is a unit too,** the first one, tagged MAIN and selected by default. Each unit's
   icon is what it is doing — editing (pencil), reading (eye), running a command (prompt), waiting
   (hourglass), done (check), failed (cross), stopped (square), idle. No letter badges anywhere.
-- **One focus panel** below the units shows the selected agent. The main agent: what it is working
-  on now (the file name slides in when it changes), the files it changed (a bar as long as the edit
-  count; EDIT ×n / FAILED / DELETED), the files it only read (first rows, then Show N more), and the
-  note that terminal and code-run changes are not listed (Review › Last turn). A subagent: its task
-  (Show all), model · effort chip, its answer, its changed and read files (from `/files` `who` /
-  `editors`), Copy answer, Open its chat, tools · tokens · cost. Hover a file for its full path,
-  click to copy it.
+- **One focus panel** below the units shows the selected agent. Its top is a hero: a big portrait
+  in its status ring (Terminal: a bordered sprite box) tagged MAIN or with its status, a verb line
+  (▶ EDITING NOW, ✕ STOPPED WITH AN ERROR, …), a large headline — the file the main agent works on
+  now, a subagent's task — and where / how long, with a subagent's model · effort chip. Labelled stat
+  tiles follow: the main agent's on task (its first to last file touch) / files touched / changed /
+  only read; a subagent's run time / tool calls / tokens / cost. Changed files are a grid of cards
+  (name, folder, one block per edit up to 8 — more fill the row and the label says the real count —
+  N EDITS / FAILED / DELETED; 1 block = 1 edit); the file worked on now leads with a NOW badge. Files
+  only read are small chips with ×count and + N more. Terminal draws the same as bordered boxes with
+  bar rows. A subagent's task (Show all) and its answer as a transmission card in its status colour
+  (Terminal: a box labelled >> its answer), Copy answer and Open its chat as cut-corner keys. Hover a
+  file for its full path, click to copy it; the note that terminal and code-run changes are not
+  listed (Review › Last turn) stays.
 - **Run picker** replaces the Earlier list: "Current run ▾" lists earlier runs with mini status
   cells, time ago, done/total and cost (+ Show N older runs); an earlier run is shown calmly with
   Back to now.
 - **Tabs:** Agents | Commands (the badge counts running commands). The Commands tab says once what
-  these are and opens each command in place: exit code, folder, output tail, Copy output.
+  these are and opens each command in place: its exit code on a big status hex (Terminal: an EXIT
+  box), dir / ran chips, the output tail in a CRT box with line numbers and error lines highlighted,
+  Copy output / Copy command. While it runs a radar says its output appears when it finishes; while
+  the output is read a scan bar runs; an unreadable output says NO SIGNAL with Try again; an empty
+  one says — IT PRINTED NOTHING —.
 - **More than 8 subagents become a swarm:** the main agent on top ("waiting on N"), failed ones by
   name, working ones as small cells (hover names them, click selects), waiting and done collapsed.
   At narrow widths units wrap; nothing scrolls sideways.
 - **Motion:** a finishing unit closes its ring and the score counts up, a failing one shakes red, the
-  busy main agent breathes; Terminal retypes its tag and blinks a cursor. All of it is off under
-  reduced motion.
+  busy main agent breathes; Terminal retypes its tag and blinks a cursor. When a panel opens its
+  numbers count up, the file cards appear in turn, a light sweeps the NOW card and the answer
+  reveals. All of it is off under reduced motion.
 
 ### Removed
 

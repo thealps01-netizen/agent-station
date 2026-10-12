@@ -118,7 +118,7 @@ const filesFor = live => {
 const FILES = {
   session_id: 'st-1', cwd: 'C:/work/panel', unreadable: 0, more: 0,
   files: [
-    { key: 'c:/work/panel/desktop/plugin.js', path: 'C:/work/panel/desktop/plugin.js', reads: 6, writes: 4, deletes: 0, failed: 0, last_op: 'write', last_failed: false, last_at: NOW - 30 },
+    { key: 'c:/work/panel/desktop/plugin.js', path: 'C:/work/panel/desktop/plugin.js', reads: 6, writes: 4, deletes: 0, failed: 0, last_op: 'write', last_failed: false, first_at: NOW - 1500, last_at: NOW - 30 },
     { key: 'c:/work/panel/tests/render_check.mjs', path: 'C:/work/panel/tests/render_check.mjs', reads: 2, writes: 1, deletes: 0, failed: 1, last_op: 'write', last_failed: true, last_at: NOW - 60 },
     { key: 'c:/work/panel/dashboard/plugin_api.py', path: 'C:/work/panel/dashboard/plugin_api.py', reads: 3, writes: 0, deletes: 0, failed: 0, last_op: 'read', last_failed: false, last_at: NOW - 120 },
     { key: 'c:/work/panel/changelog.md', path: 'C:/work/panel/CHANGELOG.md', reads: 1, writes: 2, deletes: 0, failed: 0, last_op: 'write', last_failed: false, last_at: NOW - 400 },

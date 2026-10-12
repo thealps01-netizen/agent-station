@@ -1,7 +1,7 @@
 # Subagent Watch
 
 A Hermes **Desktop** plugin. A read-only page for the `delegate_task` workers of the focused chat, in
-two looks — **Cockpit** (default, takes your theme's accent) and **Terminal** (fixed phosphor green),
+two looks — **Cockpit** (default) and **Terminal** (a CRT look), both coloured by your theme's accent,
 switched in the header and remembered. The main agent and each subagent are units whose icon says what
 they are doing (editing, reading, running a command, waiting, done, failed, stopped); one focus panel
 shows the selected agent — what it works on now, the files it changed and read, a subagent's task,

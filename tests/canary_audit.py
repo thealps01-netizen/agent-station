@@ -10,6 +10,7 @@ run against the copy:
   audit     tests/audit_static.py over the copied tree      (i18n, a11y, colours, silent catches)
 
 Run: python canary_audit.py        (exit 0 = every mutation caught, the repo untouched)
+     SW_CANARY_ONLY=12,40 python canary_audit.py   re-runs only those mutations (numbers as printed)
 
 Mutations run in parallel (`SW_CANARY_JOBS`, default 8): a render run mostly waits on poll timers,
 and one at a time the list outgrew the CI job's time limit.
@@ -128,7 +129,8 @@ MUTATIONS = [
      "a failed poll of the chat the page left counts against the new chat"),
     ("render", JS, "const fetches = p.status !== 'running' && p.has_output !== false", "const fetches = p.status !== 'running'",
      "a command with no receipt asks for output and shows a 404"),
-    ("render", JS, "    cut ? t('sw.proc.commandCut', command.length) : ''", "    ''", "a cut command does not say it is cut"),
+    ('render', JS, "cut ? jsx('span', { className: 'sw-cmcut'", "false ? jsx('span', { className: 'sw-cmcut'",
+     'a cut command does not say it is cut'),
     ("render", JS, "  if (!text) return onToast(t('sw.nothingToCopy'), true)\n", "", "copying an empty output reads Copied"),
     ("render", JS, "watched.held ? jsx(Tip", "false ? jsx(Tip", "a held chat is not marked as held"),
     ("render", JS, "label: t('sw.retry')", "label: t('sw.refresh')", "the alert has no Try again button"),
@@ -290,14 +292,14 @@ MUTATIONS = [
      "every file is every agent's"),
     ("render", JS, "    const edit = editors.includes(who) || (f.last_failed && !editors.length && f.last_op !== 'read')",
      "    const edit = true", "a file an agent only read is listed as changed"),
-    ("render", JS, "const pct = Math.max(8, Math.round((fileCount(f) / Math.max(1, max)) * 100))", "const pct = 100",
-     "every file's bar is as long, however often it was edited"),
-    ("render", JS, "active: 'now', write: n => `edit ×${n}`", "active: 'now', write: 'edited'",
-     "a changed row does not say how often it was edited"),
+    ('render', JS, "const lit = f.state === 'delete' ? 0 : pips(edits)", "const lit = f.state === 'delete' ? 0 : pips(1)",
+     'every file card lights one block, however often it was edited'),
+    ('render', JS, "active: 'now', write: n => `${n} edit${n === 1 ? '' : 's'}`", "active: 'now', write: 'edited'",
+     'a changed card does not say how often it was edited'),
     ("render", JS, "      if (event?.session_id !== runtimeId) return\n      const p = event.payload || {}\n      if (!p.tool_id) return",
      "      const p = event.payload || {}\n      if (!p.tool_id) return", "another chat's tool call is shown as this chat's work now"),
-    ("render", JS, "      now.length ? jsxs('div', {\n        className: 'sw-fsec', 'data-sec': 'now',", "      false ? jsxs('div', {\n        className: 'sw-fsec', 'data-sec': 'now',",
-     "the main agent's panel drops its 'Working on now' row"),
+    ('render', JS, "  const now = fileGroups(all, touching).filter(f => f.state === 'active')", '  const now = []',
+     "the main agent's panel drops its NOW card"),
     ("render", JS, "unreadable ? jsx('p', { className: 'sw-fnote is-bad'", "false ? jsx('p', { className: 'sw-fnote is-bad'",
      "unreadable file calls are hidden"),
     ("render", JS, "more ? jsx('p', { className: 'sw-fnote', children: t('sw.file.notListed', more) }", "false ? jsx('p', { className: 'sw-fnote', children: t('sw.file.notListed', more) }",
@@ -306,9 +308,9 @@ MUTATIONS = [
      "the panel no longer says what it cannot see"),
     ("render", JS, "longTask ? jsx('button', { type: 'button', className: 'sw-more sw-inl'", "false ? jsx('button', { type: 'button', className: 'sw-more sw-inl'",
      "a cut task has no Show all"),
-    ("render", JS, "chip ? jsx(Tip, { label: t('sw.modelTip', rec.model, rec.effort)", "chip ? jsx(Tip, { label: ''",
-     "the model chip has no tooltip with the full model id and effort"),
-    ("render", JS, "fmtTokens(rec.tokens, t), fmtCost(rec.cost_usd, rec.cost_status, t)) }", "fmtTokens(rec.tokens, t), '') }",
+    ('render', JS, "chipText ? jsx(Tip, { label: t('sw.modelTip', rec.model, rec.effort)", "chipText ? jsx(Tip, { label: ''",
+     'the model chip has no tooltip with the full model id and effort'),
+    ('render', JS, "{ k: 'cost', label: t('sw.tile.cost'), v: cost }", "{ k: 'cost', label: t('sw.tile.cost'), v: '' }",
      "a subagent's panel drops its cost"),
     ("render", JS, "    if (sid) setSelected(sid)\n", "", "the selected subagent is lost when its run finishes"),
     ("render", JS, "    el.focus()\n", "", "focus does not follow a finished run to its selected unit"),
@@ -350,7 +352,8 @@ MUTATIONS = [
      "the all-failed view is blank"),
     ("render", JS, "      procs.loading\n        ? jsxs('p', { className: 'sw-cmnote sw-cmwait'", "      false\n        ? jsxs('p', { className: 'sw-cmnote sw-cmwait'",
      "background commands have no loading state"),
-    ("render", JS, "    p.cwd ? t('sw.proc.cwd', p.cwd) : '',", "    '',", "an opened command does not say where it ran"),
+    ('render', JS, "p.cwd ? [t('sw.proc.dirK'), p.cwd] : null,", 'null,',
+     'an opened command does not say where it ran'),
     ("render", JS, "unreadable ? jsx('p', { className: 'sw-pu'", "false ? jsx('p', { className: 'sw-pu'",
      "unreadable command records are hidden"),
     ("render", JS, "chatName ? jsx('span', { className: 'sw-chatn'", "false ? jsx('span', { className: 'sw-chatn'",
@@ -365,15 +368,78 @@ MUTATIONS = [
     ("audit", JS, "box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--a)}",
      "box-shadow:0 8px 24px rgb(0 0 0 / .4),inset 0 0 0 1px var(--a)}", "hexColor: a hard-coded rgb() shadow"),
     ("audit", JS, "--raised:color-mix(in srgb,var(--a) 8%,var(--bg))}", "--raised:#1a1a1c}",
-     "hexColor: a literal colour outside the Terminal palette block"),
-    ("audit", JS, "/* TERMINAL PALETTE END */", "/* palette end */",
-     "terminalPalette: an unclosed palette block (every literal would pass)"),
-    ("audit", JS, "/* TERMINAL PALETTE END */", "  .sw-x{color:#fff}\n/* TERMINAL PALETTE END */",
-     "terminalPalette: a rule that paints with a literal inside the palette block"),
+     "hexColor: a literal colour in the page CSS"),
+    ('audit', JS, '--tm-acc:color-mix(in srgb,var(--ui-accent) 70%,var(--ui-text-primary));', '--tm-acc:#7cf29a;',
+     'hexColor: a fixed literal in the Terminal palette (the old exception is gone)'),
+    ('audit', JS, '--tm-bad:color-mix(in srgb,var(--ui-red) 82%,var(--ui-text-primary));', '--tm-bad:rgb(255 90 90);',
+     'hexColor: an rgb() literal in the Terminal palette'),
     ("audit", JS, ".sw-note{margin:12px 0 0;font-size:12px;line-height:1.45;color:var(--dim)}", ".sw-note{margin:12px 0 0;font-size:12px;line-height:1.45;color:var(--ui-red)}",
      "toneInk: a tone used as text ink"),
     ("audit", JS, "className: 'sw-tabn', role: 'img', 'aria-label': procs.error ? t('sw.countFailed') : t('sw.tabs.running', procsRunning), ",
      "className: 'sw-tabn', role: 'img', ", "markName: a tab count without an accessible name"),
+    # ── 1.7.0 focus panel and opened areas (the approved panel mock) ─────────────────────────
+    ('render', JS, "if (u.status !== 'running') return t(`sw.hero.${u.status}`)", "if (u.status !== 'running') return t('sw.hero.working')",
+     "a finished subagent's verb line does not say how it ended"),
+    ('render', JS, "head = jsx('code', { className: 'sw-nowf', children: splitPath(newest.path).name }, `c-${newest.key}`)", "head = t('sw.focus.main.busy')",
+     "the main agent's headline is not the file it works on now"),
+    ('render', JS, "const tag = u.main ? t('sw.main.tag')", "const tag = u.main ? t('sw.st.idle')",
+     "the main agent's portrait is not tagged MAIN"),
+    ('render', JS, "jsx('span', { className: 'sw-tl', children: x.label }, 'l')", 'null',
+     "a stat tile's number has no label"),
+    ('render', JS, "'data-count': x.n, style: { '--sw-n': x.n },", '',
+     "a tile's number does not count up"),
+    ('render', JS, 'return firsts.length && lasts.length ? Math.max(0, Math.max(...lasts) - Math.min(...firsts)) : null', 'return null',
+     "the main agent's on-task tile is always empty"),
+    ('render', JS, 'Math.max(0, Math.min(PIPS, Math.floor(Number(n) || 0)))', 'Math.max(0, Math.floor(Number(n) || 0))',
+     'a file card lights more blocks than its row holds'),
+    ('render', JS, 'const text = label || t(`sw.file.op.${f.state}`, edits)', 'const text = label || t(`sw.file.op.${f.state}`, Math.min(edits, PIPS))',
+     'a card past 8 edits says 8, not its real count'),
+    ('render', JS, "jsx('span', { className: 'sw-leg', children: t(theme === 'terminal' ? 'sw.focus.legendTm' : 'sw.focus.legend') }, 'l')", 'null',
+     'the blocks are not explained (no 1 block = 1 edit)'),
+    ('render', JS, "now ? jsx('span', { className: 'sw-nowb', 'aria-hidden': 'true', children: t('sw.file.nowBadge') }, 'now') : null", 'null',
+     'the file worked on now has no NOW badge'),
+    ('render', JS, "className: `sw-fr sw-ft${now ? ' is-now' : ''}`", "className: 'sw-fr sw-ft'",
+     'the file worked on now does not glow as the NOW card'),
+    ('render', JS, '...nowRows.map((f, i) => jsx(FileCard, { t, f, cwd, label: verbOf(f), now: true, order: i, onToast }, `now-${f.key}`)),\n          ...shown.map((f, i) => jsx(FileCard, { t, f, cwd, order: nowRows.length + i, onToast }, f.key))', '...shown.map((f, i) => jsx(FileCard, { t, f, cwd, order: nowRows.length + i, onToast }, f.key)),\n          ...nowRows.map((f, i) => jsx(FileCard, { t, f, cwd, label: verbOf(f), now: true, order: i, onToast }, `now-${f.key}`))',
+     'the NOW card does not lead the grid'),
+    ('render', JS, 'const shown = all ? rows : rows.slice(0, READ_CHIPS)', 'const shown = all ? rows : rows.slice(0, 3)',
+     'only-read files show too few chips before + N more'),
+    ('render', JS, "className: 'sw-ans', 'data-st': u.status,", "className: 'sw-ans',",
+     'the answer card does not take its status colour'),
+    ('render', JS, "[0, 1, 2, 3].map(i => jsx('i', {}, i))", '[]',
+     'the answer card has no signal mark'),
+    ('render', JS, "if (p.status === 'running') return jsx('span', { className: 'sw-radar'", "if (false) return jsx('span', { className: 'sw-radar'",
+     'a running command shows an exit mark instead of the radar'),
+    ('render', JS, "children: [jsx('b', { children: code }, 'b'),", "children: [jsx('b', { children: '' }, 'b'),",
+     'the exit hex does not show the exit code'),
+    ('render', JS, "className: 'sw-exit', 'data-st': p.status,", "className: 'sw-exit',",
+     'the exit hex does not take its status colour'),
+    ('render', JS, 'export const ERROR_LINE = /error|failed|exception|traceback/i', 'export const ERROR_LINE = /error/',
+     'failed / exception / traceback lines (or any case) are not errors'),
+    ('render', JS, "className: `sw-ol${l.bad ? ' is-bad' : ''}`", "className: 'sw-ol'",
+     'error lines in the output are not highlighted'),
+    ('render', JS, "'data-n': l.n,", '',
+     'output lines are not numbered'),
+    ('render', JS, "whileRunning: 'Still running — its output appears here when it finishes.'", "whileRunning: 'Running.'",
+     'a running command does not say when its output appears'),
+    ('render', JS, "jsx('div', { className: 'sw-scan', 'aria-hidden': 'true' }, 's')", 'null',
+     'reading the output shows no scan bar'),
+    ('render', JS, "jsx('span', { className: 'sw-nosig', children: t('sw.proc.noSignal') }, 'g'), ", '',
+     'an unreadable output does not say NO SIGNAL'),
+    ('render', JS, "className: 'sw-crt', 'data-state': 'quiet'", "className: 'sw-crt', 'data-state': 'output'",
+     'an empty output is not the IT PRINTED NOTHING state'),
+    ('render', JS, '.sw-page[data-theme=terminal]{--a:var(--tm-acc);', '.sw-page[data-theme=terminal]{--a:var(--tm-ok);',
+     "Terminal paints in its green status, not the theme's accent"),
+    ('render', JS, '--tm-ok:color-mix(in srgb,var(--ui-green) 82%', '--tm-ok:color-mix(in srgb,var(--ui-accent) 82%',
+     "Terminal's done status is not the theme's green"),
+    ('render', JS, '@keyframes sw-count{', '@keyframes sw-counted{',
+     'the stat numbers do not count up'),
+    ('render', JS, '.sw-page .sw-ft{animation:sw-in', '.sw-ft{animation:sw-in',
+     'the file cards animate outside the reduced-motion lock'),
+    ('render', JS, '.sw-page .sw-ft.is-now::after{animation:sw-sweep', '.sw-ft.is-now::after{animation:sw-sweep',
+     'the NOW sweep runs outside the reduced-motion lock'),
+    ('render', JS, '.sw-page .sw-ans{animation:sw-reveal', '.sw-ans{animation:sw-reveal',
+     'the answer reveal runs outside the reduced-motion lock'),
 ]
 
 
@@ -442,9 +508,11 @@ def main() -> int:
             return caught, f"{'OK  ' if caught else 'FAIL'}  #{n:02d} [{gate}] {what}  ->  {fired[:110]}"
 
         jobs = max(1, int(os.environ.get("SW_CANARY_JOBS", "8")))
+        only = {int(x) for x in os.environ.get("SW_CANARY_ONLY", "").split(",") if x.strip()}
+        picked = [(n, m) for n, m in enumerate(MUTATIONS, 1) if not only or n in only]
         with ThreadPoolExecutor(max_workers=jobs) as pool:
-            runs = [pool.submit(one, n, *m) for n, m in enumerate(MUTATIONS, 1)]
-            for (*_, what), run in zip(MUTATIONS, runs):  # printed in list order
+            runs = [pool.submit(one, n, *m) for n, m in picked]
+            for (_, (*_, what)), run in zip(picked, runs):  # printed in list order
                 caught, line = run.result()
                 print(line, flush=True)
                 if not caught:
@@ -452,7 +520,8 @@ def main() -> int:
     untouched = _sha_tree(ROOT) == before
     if not untouched:
         failures.append("the repo's own files changed during the run")
-    print(f"\ncanary: {len(MUTATIONS) - len(failures)}/{len(MUTATIONS)} caught · repo untouched {untouched}")
+    ran = len(picked)
+    print(f"\ncanary: {ran - len(failures)}/{ran} caught · repo untouched {untouched}")
     return 1 if failures else 0
 
 

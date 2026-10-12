@@ -20,8 +20,8 @@
  *             finished, from the backend's /processes; a row opens its exit code, folder and the
  *             end of its output (/process_output).
  *   Looks     two themes over the same page: Cockpit (the default; theme tokens only, the accent
- *             is the app's --ui-accent) and Terminal (a fixed phosphor palette, declared once in
- *             TM_PALETTE). The choice is kept in the plugin's ctx.storage; a missing or failing
+ *             is the app's --ui-accent) and Terminal (a CRT palette derived from the same theme
+ *             tokens in TM_PALETTE). The choice is kept in the plugin's ctx.storage; a missing or failing
  *             storage falls back to Cockpit and never breaks the page.
  *   Progress  the focused chat's running batch as a status-bar chip (finished/total, a bar, the
  *             cost so far) and, when a pet is on screen, as a line in its speech bubble. Fed by
@@ -79,7 +79,10 @@ const DIR_CHARS = 48
 const SWARM_AT = 8
 // Rows a focus panel lists before "Show N more": changed files, files only read.
 const CHANGED_ROWS = 8
-const READ_ROWS = 3
+// The only-read chips shown before '+ N more'.
+const READ_CHIPS = 6
+// Blocks on a changed file's card: one per edit; more edits fill the row and the label says how many.
+const PIPS = 8
 // A subagent's task is shown up to this many characters before "Show all".
 const TASK_CHARS = 180
 // How long a unit that just finished (or failed) plays its moment.
@@ -168,7 +171,8 @@ const BUNDLES = {
           busy: 'Working — no tool running right now',
           idle: 'Idle — waiting for your message',
           unknown: 'No tool running right now',
-          touched: n => (n ? `touched ${n} file${n === 1 ? '' : 's'} in this chat` : 'no files touched in this chat yet')
+          touched: n => (n ? `touched ${n} file${n === 1 ? '' : 's'} in this chat` : 'no files touched in this chat yet'),
+          in: dir => `in ${dir}`
         },
         line: {
           running: (time, act) => [time ? `Working ${time}` : 'Working', act].filter(Boolean).join(' — '),
@@ -188,6 +192,9 @@ const BUNDLES = {
         noFiles: 'No files read or changed in this chat yet.',
         noFilesSub: 'No files read or changed with the file tools.',
         more: n => `Show ${n} more`,
+        moreChips: n => `+ ${n} more`,
+        legend: '1 block = 1 edit',
+        legendTm: '1 █ = 1 edit',
         note: 'Click a file to copy its path. Changes made by terminal commands or code runs are not listed — Review › Last turn shows every change.',
         task: 'Task',
         showAll: 'Show all',
@@ -196,14 +203,29 @@ const BUNDLES = {
         answerCut: 'Shortened here — Copy answer copies all of it.',
         noAnswer: 'No answer was recorded.',
         copy: 'Copy answer',
-        open: 'Open its chat',
-        meta: (tools, tokens, cost) => [`${tools} tool${tools === 1 ? '' : 's'}`, tokens ? `${tokens} tokens` : '', cost || ''].filter(Boolean).join(' · ')
+        open: 'Open its chat'
+      },
+      hero: {
+        now: verb => `▶ ${verb.toUpperCase()} NOW`,
+        waiting: n => `⧗ WAITING ON ${n} SUBAGENT${n === 1 ? '' : 'S'}`,
+        working: '▶ WORKING',
+        idle: '○ IDLE',
+        queued: '⧗ WAITING TO START',
+        completed: '✓ DONE',
+        failed: '✕ STOPPED WITH AN ERROR',
+        stopped: '■ STOPPED BEFORE IT FINISHED'
+      },
+      tile: {
+        onTask: 'on task', touched: 'files touched', changed: 'changed', read: 'only read',
+        runTime: 'run time', tools: 'tool calls', tokens: 'tokens', cost: 'cost'
       },
       modelTip: (model, effort) => (effort ? `${model} · reasoning effort ${effort}` : model),
       file: {
         op: {
-          active: 'now', write: n => `edit ×${n}`, delete: 'deleted', failed: 'failed', read: n => `read ×${n}`
+          active: 'now', write: n => `${n} edit${n === 1 ? '' : 's'}`, delete: 'deleted', failed: 'failed', read: n => `read ×${n}`
         },
+        nowBadge: 'NOW',
+        nowLabel: label => `${label}, worked on now`,
         tip: path => `${path}\nClick to copy the path`,
         name: (name, dir, label) => `${name} in ${dir}: ${label}`,
         copied: 'Path copied',
@@ -219,16 +241,23 @@ const BUNDLES = {
           running: 'Running', completed: 'Finished (exit 0)', failed: 'Failed', stopped: 'Stopped before it finished'
         },
         exit: c => `exit ${c}`,
+        noExit: 'no exit code recorded',
+        exitTag: 'exit',
         killed: 'killed',
-        cwd: d => `in ${d}`,
+        killedTag: 'killed',
+        dirK: 'dir',
+        ranK: 'ran',
+        runningK: 'running',
+        lines: n => `${n} line${n === 1 ? '' : 's'}`,
+        noSignal: 'NO SIGNAL',
         copyCommand: 'Copy command',
         copyOutput: 'Copy output',
-        output: 'End of output',
+        output: 'Last lines of output',
         outputCut: n => `last ${n} characters`,
         commandCut: n => `Only the first ${n} characters of this command are shown and copied.`,
         noOutput: 'No output was recorded.',
-        printedNothing: 'It printed nothing.',
-        whileRunning: 'Still running — the output is shown here when the command finishes.',
+        printedNothing: '— IT PRINTED NOTHING —',
+        whileRunning: 'Still running — its output appears here when it finishes.',
         reading: 'Reading its output…',
         unreadable: n => `${n} record${n === 1 ? '' : 's'} could not be read and ${n === 1 ? 'is' : 'are'} not listed`
       },
@@ -1080,48 +1109,97 @@ export function agentFiles(files, who) {
   return { changed, read }
 }
 
-/** How many times a row's bar counts: its changes, or its reads. */
+/** How many times a file counts: its changes, or its reads. */
 function fileCount(f) {
   return f.state === 'read' ? f.reads || 1 : (f.writes || 0) + (f.deletes || 0) + (f.failed || 0) || 1
 }
 
-function FileRow({ t, f, cwd, max, label, onToast }) {
+/** A changed file's lit blocks: one per edit, at most PIPS. A longer run fills the row; its label says the real count. */
+export function pips(n) {
+  return Math.max(0, Math.min(PIPS, Math.floor(Number(n) || 0)))
+}
+
+/** The span of an agent's file work in this chat: its first file touch to its last, or null. */
+export function fileSpan(rows) {
+  const firsts = (rows || []).map(f => f.first_at).filter(Number.isFinite)
+  const lasts = (rows || []).map(f => f.last_at).filter(Number.isFinite)
+  return firsts.length && lasts.length ? Math.max(0, Math.max(...lasts) - Math.min(...firsts)) : null
+}
+
+/**
+ * A changed file as a card: name, folder, one block per edit (capped at PIPS), what happened. The
+ * file worked on now glows with a NOW badge. Hover names the full path; a click copies it.
+ */
+function FileCard({ t, f, cwd, label, now, order, onToast }) {
   const { dir, name } = splitPath(f.path)
-  const pct = Math.max(8, Math.round((fileCount(f) / Math.max(1, max)) * 100))
-  const text = label || t(`sw.file.op.${f.state}`, fileCount(f))
+  const edits = (f.writes || 0) + (f.deletes || 0) + (f.failed || 0) || (now ? 0 : 1)
+  const text = label || t(`sw.file.op.${f.state}`, edits)
+  const lit = f.state === 'delete' ? 0 : pips(edits)
   const copy = () => writeClip(f.path, t, onToast, t('sw.file.copied'))
   return jsx(Tip, {
     label: t('sw.file.tip', f.path),
     children: jsxs('button', {
-      type: 'button', className: `sw-fr${f.state === 'active' ? ' is-now' : ''}`, 'data-op': f.state, onClick: copy,
-      'aria-label': t('sw.file.name', name, dir ? dirLabel(dir, cwd, t) : t('sw.file.here'), text),
+      type: 'button', className: `sw-fr sw-ft${now ? ' is-now' : ''}`, 'data-op': f.state, onClick: copy, style: { '--i': order },
+      'aria-label': t('sw.file.name', name, dir ? dirLabel(dir, cwd, t) : t('sw.file.here'), now ? t('sw.file.nowLabel', text) : text),
       children: [
-        jsx('span', { className: 'sw-tick', 'aria-hidden': 'true' }, 'k'),
+        now ? jsx('span', { className: 'sw-nowb', 'aria-hidden': 'true', children: t('sw.file.nowBadge') }, 'now') : null,
+        // Keyed by the file: when the file worked on changes, its name slides in anew.
+        jsx('span', { className: 'sw-fn', children: name }, `n-${f.key}`),
+        dir ? jsx('span', { className: 'sw-fd', children: dirLabel(dir, cwd, t) }, 'd') : null,
         jsxs('span', {
-          className: 'sw-fnw',
+          className: 'sw-pipr',
           children: [
-            // Keyed by the file: when the file worked on changes, its name slides in anew.
-            jsx('span', { className: 'sw-fn', children: name }, `n-${f.key}`),
-            dir ? jsx('span', { className: 'sw-fd', children: dirLabel(dir, cwd, t) }, 'd') : null
+            f.state === 'delete' ? null : jsx('span', {
+              className: 'sw-pips', 'aria-hidden': 'true', 'data-lit': lit,
+              children: Array.from({ length: PIPS }, (_, i) => jsx('i', { className: i < lit ? 'on' : undefined }, i))
+            }, 'p'),
+            jsx('span', { className: 'sw-fl', children: text }, 'l')
           ]
-        }, 'w'),
-        jsx('span', { className: 'sw-fbar', 'aria-hidden': 'true', children: jsx('i', { style: { width: `${pct}%` } }) }, 'b'),
-        jsx('span', { className: 'sw-fl', children: text }, 'l')
+        }, 'r')
       ]
     })
   })
 }
 
-function FileList({ t, sec, title, rows, limit, cwd, onToast, label }) {
+/** A file it only read, as a small chip: its name and how many times. */
+function ReadChip({ t, f, cwd, onToast }) {
+  const { dir, name } = splitPath(f.path)
+  const text = t('sw.file.op.read', fileCount(f))
+  return jsx(Tip, {
+    label: t('sw.file.tip', f.path),
+    children: jsxs('button', {
+      type: 'button', className: 'sw-fr sw-chip', 'data-op': 'read', onClick: () => writeClip(f.path, t, onToast, t('sw.file.copied')),
+      'aria-label': t('sw.file.name', name, dir ? dirLabel(dir, cwd, t) : t('sw.file.here'), text),
+      children: [
+        jsx('span', { className: 'sw-ci', 'aria-hidden': 'true', children: ICON.read() }, 'i'),
+        jsx('span', { className: 'sw-fn', children: name }, 'n'),
+        jsx('span', { className: 'sw-fx', children: `×${fileCount(f)}` }, 'x')
+      ]
+    })
+  })
+}
+
+function ChangedFiles({ t, theme, count, rows, nowRows, cwd, verbOf, onToast }) {
   const [all, setAll] = useState(false)
-  if (!rows.length) return null
-  const max = Math.max(...rows.map(fileCount))
-  const shown = all ? rows : rows.slice(0, limit)
+  if (!rows.length && !nowRows.length) return null
+  const shown = all ? rows : rows.slice(0, CHANGED_ROWS)
   return jsxs('div', {
-    className: 'sw-fsec', 'data-sec': sec,
+    className: 'sw-fsec', 'data-sec': 'changed',
     children: [
-      jsx('h4', { className: 'sw-k', children: title }, 'h'),
-      ...shown.map(f => jsx(FileRow, { t, f, cwd, max, label, onToast }, f.key)),
+      jsxs('div', {
+        className: 'sw-fh',
+        children: [
+          jsx('h4', { className: 'sw-k', children: count ? t('sw.focus.changed', count) : t('sw.focus.now') }, 'h'),
+          jsx('span', { className: 'sw-leg', children: t(theme === 'terminal' ? 'sw.focus.legendTm' : 'sw.focus.legend') }, 'l')
+        ]
+      }, 'h'),
+      jsx('div', {
+        className: 'sw-fgrid',
+        children: [
+          ...nowRows.map((f, i) => jsx(FileCard, { t, f, cwd, label: verbOf(f), now: true, order: i, onToast }, `now-${f.key}`)),
+          ...shown.map((f, i) => jsx(FileCard, { t, f, cwd, order: nowRows.length + i, onToast }, f.key))
+        ]
+      }, 'g'),
       rows.length > shown.length
         ? jsx('button', { type: 'button', className: 'sw-more', onClick: () => setAll(true), children: t('sw.focus.more', rows.length - shown.length) }, 'more')
         : null
@@ -1129,48 +1207,143 @@ function FileList({ t, sec, title, rows, limit, cwd, onToast, label }) {
   })
 }
 
-function Files({ t, mine, files, onToast, empty }) {
+function ReadFiles({ t, rows, cwd, onToast }) {
+  const [all, setAll] = useState(false)
+  if (!rows.length) return null
+  const shown = all ? rows : rows.slice(0, READ_CHIPS)
+  return jsxs('div', {
+    className: 'sw-fsec', 'data-sec': 'read',
+    children: [
+      jsx('h4', { className: 'sw-k', children: t('sw.focus.read', rows.length) }, 'h'),
+      jsxs('div', {
+        className: 'sw-chips',
+        children: [
+          ...shown.map(f => jsx(ReadChip, { t, f, cwd, onToast }, f.key)),
+          rows.length > shown.length
+            ? jsx('button', { type: 'button', className: 'sw-more sw-chipm', onClick: () => setAll(true), children: t('sw.focus.moreChips', rows.length - shown.length) }, 'more')
+            : null
+        ]
+      }, 'c')
+    ]
+  })
+}
+
+function Files({ t, theme, mine, nowRows = [], verbOf, files, onToast, empty }) {
   const cwd = files.data?.cwd
-  if (files.loading && !files.data) return jsx('p', { className: 'sw-empty', children: t('sw.loading') })
-  if (!mine.changed.length && !mine.read.length) {
+  if (files.loading && !files.data && !nowRows.length) return jsx('p', { className: 'sw-empty', children: t('sw.loading') })
+  if (!mine.changed.length && !mine.read.length && !nowRows.length) {
     return jsxs('div', { className: 'sw-fsec', 'data-sec': 'none', children: [jsx('h4', { className: 'sw-k', children: t('sw.focus.files') }, 'h'), jsx('p', { className: 'sw-empty', children: empty }, 'e')] })
   }
+  // The file worked on now is its own card at the front, not a second card further down.
+  const nowKeys = new Set(nowRows.map(f => f.key))
   return [
-    jsx(FileList, { t, sec: 'changed', title: t('sw.focus.changed', mine.changed.length), rows: mine.changed, limit: CHANGED_ROWS, cwd, onToast }, 'c'),
-    jsx(FileList, { t, sec: 'read', title: t('sw.focus.read', mine.read.length), rows: mine.read, limit: READ_ROWS, cwd, onToast }, 'r')
+    jsx(ChangedFiles, { t, theme, count: mine.changed.length, rows: mine.changed.filter(f => !nowKeys.has(f.key)), nowRows, cwd, verbOf, onToast }, 'c'),
+    jsx(ReadFiles, { t, rows: mine.read, cwd, onToast }, 'r')
   ]
 }
 
 // ── focus panel ──────────────────────────────────────────────────────────────
 
-function MainPanel({ t, main, files, touching, tool, waitingOn, onToast }) {
+/** The selected agent's big portrait: a hex in a status ring (Terminal: a bordered sprite), its tag under it. */
+function Portrait({ t, theme, u }) {
+  const icon = unitIcon(u)
+  const term = theme === 'terminal'
+  const tag = u.main ? t('sw.main.tag') : term ? t(`sw.tag.${u.status === 'running' ? u.act || 'think' : u.status}`) : t(`sw.st.${u.status}`)
+  return jsxs('span', {
+    className: 'sw-por', 'data-st': u.status, 'aria-hidden': 'true',
+    children: [
+      term ? jsx('span', { className: 'sw-pg', children: GLYPH[icon] || GLYPH.idle }, 'g') : jsx('span', { className: 'sw-pring' }, 'r'),
+      term ? null : jsx('span', { className: 'sw-phx' }, 'h'),
+      term ? null : jsx('span', { className: 'sw-ic', children: ICON[icon]() }, 'i'),
+      jsx('span', { className: 'sw-ptag', children: tag }, 't')
+    ]
+  })
+}
+
+/** The panel's top: portrait, what it does in one verb line, the big headline, where and how long. */
+function Hero({ t, theme, u, verb, head, file, where, chip, cursor }) {
+  return jsxs('div', {
+    className: 'sw-hero',
+    children: [
+      jsx(Portrait, { t, theme, u }, 'p'),
+      jsxs('div', {
+        className: 'sw-herot',
+        children: [
+          // Keyed by its text: a new verb types in again.
+          jsx('div', { className: 'sw-verb', children: verb }, `v-${verb}`),
+          jsxs('div', { className: `sw-head${file ? ' is-file' : ''}`, children: [jsx('span', { children: head }, 'h'), cursor ? jsx('span', { className: 'sw-cur', 'aria-hidden': 'true' }, 'c') : null] }, 'h'),
+          jsxs('div', { className: 'sw-meta', children: [where, chip ? ' ' : null, chip] }, 'm')
+        ]
+      }, 't')
+    ]
+  })
+}
+
+/**
+ * Labelled stat tiles. A whole number counts up from 0 as the panel opens (a CSS counter, so the
+ * reduced-motion lock stops it); any other value rolls in. The real value is always in the DOM.
+ */
+function Tiles({ tiles }) {
+  return jsx('div', {
+    className: 'sw-tiles',
+    children: tiles.map(x => jsxs('div', {
+      className: 'sw-tile', 'data-k': x.k, 'data-tone': x.tone,
+      children: [
+        Number.isInteger(x.n) && x.n >= 0
+          ? jsx('b', { className: 'sw-tn', 'data-count': x.n, style: { '--sw-n': x.n }, children: jsx('span', { children: String(x.n) }) }, `n-${x.n}`)
+          : jsx('b', { className: 'sw-tn', children: jsx('span', { children: x.v || '—' }) }, `v-${x.v}`),
+        jsx('span', { className: 'sw-tl', children: x.label }, 'l')
+      ]
+    }, x.k))
+  })
+}
+
+function MainPanel({ t, theme, main, files, touching, tool, waitingOn, onToast }) {
   const all = files.data?.files || []
+  const cwd = files.data?.cwd
   const mine = agentFiles(all, '')
   const now = fileGroups(all, touching).filter(f => f.state === 'active')
-  const verbOf = f => t((touching.get(f.key)?.op || f.last_op) === 'read' ? 'sw.verb.read' : 'sw.verb.edit')
-  let head
-  // The newest file it touches; keyed by it, so a new file name slides in.
+  const opOf = f => (touching.get(f.key)?.op || f.last_op) === 'read' ? 'read' : 'edit'
+  const verbOf = f => t(`sw.verb.${opOf(f)}`)
+  // The newest file it touches is the headline; keyed by it, so a new file name slides in.
   const newest = now[now.length - 1]
-  if (newest) head = [t('sw.focus.main.working', verbOf(newest)), ' ', jsx('code', { className: 'sw-nowf', children: splitPath(newest.path).name }, `c-${newest.key}`)]
-  else if (main.status === 'running' && main.act === 'wait') head = t('sw.focus.main.waiting', waitingOn)
-  else if (tool) head = [t('sw.focus.main.working', toolVerb(t, tool.name)), tool.target ? ' ' : '', tool.target ? jsx('code', { children: tool.target }, 'c') : null]
-  else head = main.status === 'running' ? t('sw.focus.main.busy') : t('sw.focus.main.idle')
+  let verb
+  let head
+  if (newest) {
+    verb = t('sw.hero.now', verbOf(newest))
+    head = jsx('code', { className: 'sw-nowf', children: splitPath(newest.path).name }, `c-${newest.key}`)
+  } else if (main.status === 'running' && main.act === 'wait') {
+    verb = t('sw.hero.waiting', waitingOn)
+    head = t('sw.focus.main.waiting', waitingOn)
+  } else if (tool) {
+    verb = t('sw.hero.now', toolVerb(t, tool.name))
+    head = tool.target ? jsx('code', { children: tool.target }, 'c') : t('sw.focus.main.working', toolVerb(t, tool.name))
+  } else if (main.status === 'running') {
+    verb = t('sw.hero.working')
+    head = t('sw.focus.main.busy')
+  } else {
+    verb = t('sw.hero.idle')
+    head = t('sw.focus.main.idle')
+  }
+  const newestDir = newest ? splitPath(newest.path).dir : ''
+  const touched = mine.changed.length + mine.read.length
+  const where = [newestDir ? t('sw.focus.main.in', dirLabel(newestDir, cwd, t)) : '', t('sw.focus.main.touched', touched)].filter(Boolean).join(' · ')
   const unreadable = files.data?.unreadable || 0
   const more = files.data?.more || 0
   return jsxs('section', {
     className: 'sw-focus', 'data-kind': 'main', 'data-st': main.status, 'aria-label': t('sw.focus.mainLabel'),
     children: [
       jsx('div', { className: 'sw-ph sw-k', children: t('sw.focus.mainLabel') }, 'l'),
-      jsxs('div', { className: 'sw-head', children: [jsx('span', { children: head }, 'h'), main.status === 'running' ? jsx('span', { className: 'sw-cur', 'aria-hidden': 'true' }, 'c') : null] }, 'h'),
-      jsx('div', { className: 'sw-meta', children: t('sw.focus.main.touched', mine.changed.length + mine.read.length) }, 'm'),
-      now.length ? jsxs('div', {
-        className: 'sw-fsec', 'data-sec': 'now',
-        children: [
-          jsx('h4', { className: 'sw-k', children: t('sw.focus.now') }, 'h'),
-          ...now.map(f => jsx(FileRow, { t, f, cwd: files.data?.cwd, max: 1, label: verbOf(f), onToast }, f.key))
+      jsx(Hero, { t, theme, u: main, verb, head, file: Boolean(newest || tool?.target), where, cursor: main.status === 'running' }, 'hero'),
+      jsx(Tiles, {
+        tiles: [
+          { k: 'span', label: t('sw.tile.onTask'), v: fmtDuration(fileSpan([...mine.changed, ...mine.read]), t), tone: main.status === 'running' ? 'run' : undefined },
+          { k: 'touched', label: t('sw.tile.touched'), n: touched },
+          { k: 'changed', label: t('sw.tile.changed'), n: mine.changed.length },
+          { k: 'read', label: t('sw.tile.read'), n: mine.read.length, tone: 'idle' }
         ]
-      }, 'now') : null,
-      jsx(Files, { t, mine, files, onToast, empty: t('sw.focus.noFiles') }, 'f'),
+      }, 'tiles'),
+      jsx(Files, { t, theme, mine, nowRows: now, verbOf, files, onToast, empty: t('sw.focus.noFiles') }, 'f'),
       more ? jsx('p', { className: 'sw-fnote', children: t('sw.file.notListed', more) }, 'more') : null,
       unreadable ? jsx('p', { className: 'sw-fnote is-bad', children: t('sw.file.unreadable', unreadable) }, 'u') : null,
       jsx('p', { className: 'sw-note', children: t('sw.focus.note') }, 'n')
@@ -1178,7 +1351,13 @@ function MainPanel({ t, main, files, touching, tool, waitingOn, onToast }) {
   })
 }
 
-function SubPanel({ t, u, parentName, files, onToast }) {
+/** A subagent's verb line: what it does now while it works, else how it ended. */
+function subVerb(t, u) {
+  if (u.status !== 'running') return t(`sw.hero.${u.status}`)
+  return u.rec?.last_tool ? t('sw.hero.now', toolVerb(t, u.rec.last_tool)) : t('sw.hero.working')
+}
+
+function SubPanel({ t, theme, u, parentName, files, onToast }) {
   const [busy, setBusy] = useState(false)
   const [full, setFull] = useState(false)
   // The backend serves a worker's output only to the chat that delegated it.
@@ -1196,8 +1375,13 @@ function SubPanel({ t, u, parentName, files, onToast }) {
         : t(u.status === 'failed' ? 'sw.focus.line.failed' : 'sw.focus.line.completed', time)
   const ended = TERMINAL.has(u.status)
   const meta = [line, ended ? t('sw.focus.did', mine.changed.length, mine.read.length) : '', parentName ? t('sw.focus.startedBy', parentName) : ''].filter(Boolean).join(' · ')
-  const chip = modelChip(rec.model, rec.effort)
+  const chipText = modelChip(rec.model, rec.effort)
+  const chip = chipText ? jsx(Tip, { label: t('sw.modelTip', rec.model, rec.effort), children: jsx('span', { className: 'sw-model', tabIndex: 0, children: chipText }) }, 'chip') : null
   const longTask = goal.length > TASK_CHARS
+  // A file tool's preview is a bare path: that file is the one it works on now.
+  const nowPath = doing && rec.tool_preview && /[\\/]/.test(String(rec.tool_preview)) && !/\s/.test(String(rec.tool_preview).trim())
+    ? String(rec.tool_preview).trim() : ''
+  const nowRows = nowPath ? [{ key: pathKey(nowPath), path: nowPath, state: 'active' }] : []
   const copy = async () => {
     if (!sid) return
     setBusy(true)
@@ -1219,13 +1403,20 @@ function SubPanel({ t, u, parentName, files, onToast }) {
     })
   }
   const answer = String(rec.summary || '').trim()
+  const cost = fmtCost(rec.cost_usd, rec.cost_status, t)
   return jsxs('section', {
     className: 'sw-focus', 'data-kind': 'sub', 'data-st': u.status, 'aria-label': t('sw.focus.subLabel'),
     children: [
       jsx('div', { className: 'sw-ph sw-k', children: t('sw.focus.subLabel') }, 'l'),
-      jsx('div', { className: 'sw-head', children: title }, 'h'),
-      jsx('div', { className: 'sw-meta', children: meta }, 'm'),
-      chip ? jsx(Tip, { label: t('sw.modelTip', rec.model, rec.effort), children: jsx('span', { className: 'sw-model', tabIndex: 0, children: chip }) }, 'chip') : null,
+      jsx(Hero, { t, theme, u, verb: subVerb(t, u), head: title, where: meta, chip, cursor: u.status === 'running' }, 'hero'),
+      jsx(Tiles, {
+        tiles: [
+          { k: 'time', label: t('sw.tile.runTime'), v: time, tone: u.status === 'failed' ? 'bad' : u.status === 'running' ? 'run' : undefined },
+          { k: 'tools', label: t('sw.tile.tools'), n: rec.tool_calls ?? rec.tool_count ?? 0 },
+          { k: 'tokens', label: t('sw.tile.tokens'), v: fmtTokens(rec.tokens, t) },
+          { k: 'cost', label: t('sw.tile.cost'), v: cost }
+        ]
+      }, 'tiles'),
       goal ? jsxs('p', {
         className: 'sw-task',
         children: [
@@ -1234,33 +1425,21 @@ function SubPanel({ t, u, parentName, files, onToast }) {
           longTask ? jsx('button', { type: 'button', className: 'sw-more sw-inl', onClick: () => setFull(v => !v), children: t(full ? 'sw.focus.showLess' : 'sw.focus.showAll') }, 'x') : null
         ]
       }, 'task') : null,
-      doing && rec.tool_preview && /[\\/]/.test(String(rec.tool_preview)) && !/\s/.test(String(rec.tool_preview).trim())
-        ? jsxs('div', {
-          className: 'sw-fsec', 'data-sec': 'now',
-          children: [
-            jsx('h4', { className: 'sw-k', children: t('sw.focus.now') }, 'h'),
-            jsx(FileRow, {
-              t, f: { key: pathKey(rec.tool_preview), path: String(rec.tool_preview).trim(), state: 'active' }, cwd: files.data?.cwd, max: 1,
-              label: toolVerb(t, rec.last_tool), onToast
-            }, 'r')
-          ]
-        }, 'now')
-        : null,
+      // Its answer arrives like a transmission: corner brackets, a signal mark, its status colour.
       ended ? jsxs('div', {
-        className: 'sw-ans',
+        className: 'sw-ans', 'data-st': u.status,
         children: [
-          jsx('div', { className: 'sw-k', children: t('sw.focus.answer') }, 'k'),
+          jsxs('div', { className: 'sw-k sw-ansh', children: [jsx('span', { className: 'sw-sig', 'aria-hidden': 'true', children: [0, 1, 2, 3].map(i => jsx('i', {}, i)) }, 's'), t('sw.focus.answer')] }, 'k'),
           jsx('div', { className: 'sw-anst', children: answer || t('sw.focus.noAnswer') }, 't'),
           rec.summary_truncated ? jsx('div', { className: 'sw-fnote', children: t('sw.focus.answerCut') }, 'c') : null
         ]
       }, 'ans') : null,
-      jsx(Files, { t, mine, files, onToast, empty: t('sw.focus.noFilesSub') }, 'f'),
+      jsx(Files, { t, theme, mine, nowRows, verbOf: () => toolVerb(t, rec.last_tool), files, onToast, empty: t('sw.focus.noFilesSub') }, 'f'),
       jsxs('div', {
         className: 'sw-btns',
         children: [
           jsx(IconButton, { label: t(busy ? 'sw.copying' : 'sw.focus.copy'), icon: ICON.copy, onClick: copy, disabled: !sid, busy, text: true, primary: true }, 'c'),
-          jsx(IconButton, { label: t('sw.focus.open'), icon: ICON.open, onClick: open, disabled: !sid, text: true }, 'o'),
-          jsx('span', { className: 'sw-stats', children: t('sw.focus.meta', rec.tool_calls ?? rec.tool_count ?? 0, fmtTokens(rec.tokens, t), fmtCost(rec.cost_usd, rec.cost_status, t)) }, 'm')
+          jsx(IconButton, { label: t('sw.focus.open'), icon: ICON.open, onClick: open, disabled: !sid, text: true }, 'o')
         ]
       }, 'b')
     ]
@@ -1361,7 +1540,27 @@ export function commandLine(command) {
   return String(command || '').split('\n').map(s => s.trim()).find(Boolean) || ''
 }
 
-function ProcDetail({ t, p, storedId, onToast }) {
+/** An output line that reads as an error. */
+export const ERROR_LINE = /error|failed|exception|traceback/i
+
+/** Output as numbered lines, each marked when it reads as an error. A final newline adds no empty line. */
+export function outputLines(text) {
+  return String(text || '').replace(/\r?\n$/, '').split(/\r?\n/).map((line, i) => ({ n: i + 1, line, bad: ERROR_LINE.test(line) }))
+}
+
+/** The big mark beside an opened command: its exit code in a status hex (Terminal: a bordered EXIT box), a radar while it runs. */
+function ExitMark({ t, p }) {
+  if (p.status === 'running') return jsx('span', { className: 'sw-radar', role: 'img', 'aria-label': t('sw.proc.status.running') })
+  const known = p.exit_code !== null && p.exit_code !== undefined
+  const code = known ? String(p.exit_code) : '?'
+  return jsxs('span', {
+    className: 'sw-exit', 'data-st': p.status, role: 'img',
+    'aria-label': p.status === 'stopped' ? t('sw.proc.killed') : known ? t('sw.proc.exit', code) : t('sw.proc.noExit'),
+    children: [jsx('b', { children: code }, 'b'), jsx('span', { children: t(p.status === 'stopped' ? 'sw.proc.killedTag' : 'sw.proc.exitTag') }, 's')]
+  })
+}
+
+function ProcDetail({ t, p, now, storedId, onToast }) {
   // Only a finished command's receipt has output; a checkpoint-only row (the app closed under it)
   // has none, and asking for it was a guaranteed 404 shown as a read failure.
   const fetches = p.status !== 'running' && p.has_output !== false
@@ -1380,48 +1579,80 @@ function ProcDetail({ t, p, storedId, onToast }) {
   // The receipt holds the whole command; the list row carries at most COMMAND_CHARS of it.
   const command = out.data?.command || p.command || ''
   const cut = !out.data?.command && p.command_truncated
-  const meta = [
-    p.status === 'stopped' ? t('sw.proc.killed') : p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : '',
-    p.cwd ? t('sw.proc.cwd', p.cwd) : '',
-    cut ? t('sw.proc.commandCut', command.length) : ''
-  ].filter(Boolean).join(' · ')
+  const ran = p.status === 'running' ? fmtDuration(p.started_at ? now - p.started_at : null, t) : fmtDuration(p.duration_s, t)
+  const chips = [
+    p.cwd ? [t('sw.proc.dirK'), p.cwd] : null,
+    ran ? [t(p.status === 'running' ? 'sw.proc.runningK' : 'sw.proc.ranK'), ran] : null
+  ].filter(Boolean)
   // The row already reads a short one-line command in full; the block is for what it cannot show.
   const showCommand = command !== commandLine(p.command) || command.length > ROW_COMMAND_CHARS || cut
   let body
   if (p.status === 'running') body = jsx('p', { className: 'sw-cmnote', children: t('sw.proc.whileRunning') })
-  else if (!fetches) body = jsx('p', { className: 'sw-cmnote', children: t('sw.proc.noOutput') })
-  else if (out.loading) body = jsxs('p', { className: 'sw-cmnote sw-cmwait', children: [jsx('span', { className: 'sw-spin', 'aria-hidden': 'true' }, 's'), t('sw.proc.reading')] })
-  else if (out.error) {
+  else if (!fetches) body = jsx('div', { className: 'sw-crt', 'data-state': 'none', children: jsx('p', { className: 'sw-cmnote sw-quiet', children: t('sw.proc.noOutput') }) })
+  else if (out.loading) {
+    body = jsxs('div', {
+      className: 'sw-crt', 'data-state': 'reading', role: 'status',
+      children: [jsx('div', { className: 'sw-crth', children: jsx('span', { children: t('sw.proc.reading') }) }, 'h'), jsx('div', { className: 'sw-scan', 'aria-hidden': 'true' }, 's')]
+    })
+  } else if (out.error) {
     body = jsxs('div', {
       className: 'sw-cmerr', role: 'alert',
       children: [
-        jsx('p', { children: t('sw.err.withDetail', t('sw.err.procOutput'), out.error) }, 'm'),
-        jsx(IconButton, { label: t('sw.retry'), icon: ICON.refresh, onClick: () => setAttempt(n => n + 1), text: true }, 'r')
+        jsxs('div', {
+          className: 'sw-crt', 'data-state': 'lost',
+          children: [jsx('span', { className: 'sw-nosig', children: t('sw.proc.noSignal') }, 'g'), jsx('p', { children: t('sw.err.withDetail', t('sw.err.procOutput'), out.error) }, 'm')]
+        }, 'c'),
+        jsx('div', { className: 'sw-btns', children: jsx(IconButton, { label: t('sw.retry'), icon: ICON.refresh, onClick: () => setAttempt(n => n + 1), text: true }) }, 'r')
       ]
     })
-  } else if (!out.data?.output) body = jsx('p', { className: 'sw-cmnote', children: t('sw.proc.printedNothing') })
+  } else if (!out.data?.output) body = jsx('div', { className: 'sw-crt', 'data-state': 'quiet', children: jsx('p', { className: 'sw-cmnote sw-quiet', children: t('sw.proc.printedNothing') }) })
   else {
-    body = [
-      jsxs('div', {
-        className: 'sw-k sw-outl',
-        children: [t('sw.proc.output'), out.data.output_truncated ? ` · ${t('sw.proc.outputCut', out.data.output.length)}` : '']
-      }, 'l'),
-      jsx('pre', { className: 'sw-out', children: out.data.output }, 'o')
-    ]
+    const lines = outputLines(out.data.output)
+    body = jsxs('div', {
+      className: 'sw-crt', 'data-state': 'output',
+      children: [
+        jsxs('div', {
+          className: 'sw-crth',
+          children: [
+            jsx('span', { className: 'sw-outl', children: [t('sw.proc.output'), out.data.output_truncated ? ` · ${t('sw.proc.outputCut', out.data.output.length)}` : ''].join('') }, 'l'),
+            jsx('span', { children: t('sw.proc.lines', lines.length) }, 'n')
+          ]
+        }, 'h'),
+        // Line numbers are drawn by CSS, so a selection copies the output alone.
+        jsx('pre', { className: 'sw-out', children: lines.map(l => jsx('span', { className: `sw-ol${l.bad ? ' is-bad' : ''}`, 'data-n': l.n, children: l.line || ' ' }, l.n)) }, 'o')
+      ]
+    })
   }
   return jsxs('div', {
     className: 'sw-cmo', 'data-st': p.status,
     children: [
-      meta ? jsx('div', { className: 'sw-cmeta', children: meta }, 'm') : null,
-      showCommand ? jsx('pre', { className: 'sw-pc', children: command }, 'c') : null,
-      body,
       jsxs('div', {
-        className: 'sw-btns',
+        className: 'sw-cbody',
         children: [
-          out.data?.output ? jsx(IconButton, { label: t('sw.proc.copyOutput'), icon: ICON.copy, onClick: () => writeClip(out.data.output, t, onToast), text: true, primary: true }, 'o') : null,
-          jsx(IconButton, { label: t('sw.proc.copyCommand'), icon: ICON.copy, onClick: () => writeClip(command, t, onToast), text: true }, 'c')
+          jsx(ExitMark, { t, p }, 'x'),
+          jsxs('div', {
+            className: 'sw-cmain',
+            children: [
+              chips.length || cut ? jsxs('div', {
+                className: 'sw-cmeta',
+                children: [
+                  ...chips.map(([k, v]) => jsxs('span', { className: 'sw-cchip', children: [jsx('span', { children: k }, 'k'), jsx('b', { children: v }, 'v')] }, k)),
+                  cut ? jsx('span', { className: 'sw-cmcut', children: t('sw.proc.commandCut', command.length) }, 'cut') : null
+                ]
+              }, 'm') : null,
+              showCommand ? jsx('pre', { className: 'sw-pc', children: command }, 'c') : null,
+              body,
+              jsxs('div', {
+                className: 'sw-btns',
+                children: [
+                  out.data?.output ? jsx(IconButton, { label: t('sw.proc.copyOutput'), icon: ICON.copy, onClick: () => writeClip(out.data.output, t, onToast), text: true, primary: true }, 'o') : null,
+                  jsx(IconButton, { label: t('sw.proc.copyCommand'), icon: ICON.copy, onClick: () => writeClip(command, t, onToast), text: true }, 'c')
+                ]
+              }, 'b')
+            ]
+          }, 'main')
         ]
-      }, 'b')
+      }, 'body')
     ]
   })
 }
@@ -1447,7 +1678,7 @@ function ProcRow({ t, theme, p, now, open, onToggle, storedId, onToast }) {
           jsx('span', { className: 'sw-chev', 'aria-hidden': 'true', children: ICON.chev(open) }, 'v')
         ]
       }, 'h'),
-      open ? jsx(ProcDetail, { t, p, storedId, onToast }, `d-${p.status}`) : null
+      open ? jsx(ProcDetail, { t, p, now, storedId, onToast }, `d-${p.status}`) : null
     ]
   })
 }
@@ -1808,8 +2039,8 @@ export function Page() {
               ]
             }, 'solo'),
         sel.main
-          ? jsx(MainPanel, { t, main, files, touching: calm ? new Map() : touching, tool: calm ? null : tool, waitingOn: active, onToast }, 'focus-main')
-          : jsx(SubPanel, { t, u: sel, parentName, files, onToast }, `focus-${sel.key}`)
+          ? jsx(MainPanel, { t, theme, main, files, touching: calm ? new Map() : touching, tool: calm ? null : tool, waitingOn: active, onToast }, 'focus-main')
+          : jsx(SubPanel, { t, theme, u: sel, parentName, files, onToast }, `focus-${sel.key}`)
       ]
     })
   }
@@ -2081,18 +2312,21 @@ function ProgressChip() {
   })
 }
 
-// The Terminal look's fixed phosphor palette. TERMINAL PALETTE START/END bound the ONLY colour
-// literals in this file: audit_static.py allows hex there and nowhere else, and only as custom
-// properties. Everything else reads these variables (Terminal) or the app's tokens (Cockpit).
+// The Terminal look's palette, derived from the app theme the way Cockpit's is: the theme's accent
+// is its ink and glow, the theme's green / red / yellow its statuses, the theme's background its
+// ground. Like the rest of this file it holds no colour literal (audit_static.py hexColor).
 const TM_PALETTE = `
-/* TERMINAL PALETTE START */
-.sw-page[data-theme=terminal],.sw-sbw[data-theme=terminal]{--tm-bg:#060a06;--tm-raised:#0b140b;--tm-ink:#b8f5b0;--tm-hi:#eaffe6;--tm-name:#d6ffd0;
- --tm-dim:#6f9f69;--tm-line:#1e3a1e;--tm-badline:#5a2020;--tm-run:#ffd166;--tm-bad:#ff6b6b;--tm-ok:#7dff7d;--tm-glow:#4cff4c;--tm-shade:#000000}
-/* TERMINAL PALETTE END */
+.sw-page[data-theme=terminal],.sw-sbw[data-theme=terminal]{--tm-acc:color-mix(in srgb,var(--ui-accent) 70%,var(--ui-text-primary));
+ --tm-bg:color-mix(in srgb,var(--ui-accent) 5%,var(--dt-background));--tm-raised:color-mix(in srgb,var(--ui-accent) 10%,var(--dt-background));
+ --tm-ink:color-mix(in srgb,var(--ui-accent) 30%,var(--ui-text-primary));--tm-hi:color-mix(in srgb,var(--ui-accent) 12%,var(--ui-text-primary));
+ --tm-name:color-mix(in srgb,var(--ui-accent) 20%,var(--ui-text-primary));--tm-dim:color-mix(in srgb,var(--ui-accent) 30%,var(--ui-text-secondary));
+ --tm-line:color-mix(in srgb,var(--ui-accent) 32%,var(--dt-background));--tm-badline:color-mix(in srgb,var(--ui-red) 45%,var(--dt-background));
+ --tm-run:color-mix(in srgb,var(--ui-yellow) 82%,var(--ui-text-primary));--tm-bad:color-mix(in srgb,var(--ui-red) 82%,var(--ui-text-primary));
+ --tm-ok:color-mix(in srgb,var(--ui-green) 82%,var(--ui-text-primary));--tm-glow:color-mix(in srgb,var(--ui-accent) 70%,transparent);--tm-shade:var(--ui-bg-sidebar)}
 `
 
-// The chip sits in the app's status bar, outside the page: Cockpit takes the app's tokens, Terminal
-// its own palette (TM_PALETTE, the one block that may hold colour literals).
+// The chip sits in the app's status bar, outside the page: both looks take the app's tokens (Terminal
+// through TM_PALETTE).
 const CHIP_CSS = `${TM_PALETTE}
 .sw-sbw{display:inline-flex;align-items:center}
 .sw-sb{display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 6px;border-radius:3px;border:0;background:transparent;
@@ -2122,7 +2356,7 @@ const CSS = `${TM_PALETTE}
 .sw-page{height:100%;min-height:0;overflow:auto;padding:16px 20px;font-size:12.5px;--mono:ui-monospace,"Cascadia Mono",Consolas,var(--dt-font-mono,monospace)}
 .sw-page[data-theme=cockpit]{--a:var(--ui-accent);--ink:var(--ui-text-primary);--dim:var(--ui-text-secondary);--bg:var(--dt-background);
  --run:var(--ui-yellow);--ok:var(--ui-green);--bad:var(--ui-red);--idle:var(--ui-text-tertiary);--line:color-mix(in srgb,var(--a) 42%,transparent);--raised:color-mix(in srgb,var(--a) 8%,var(--bg))}
-.sw-page[data-theme=terminal]{--a:var(--tm-ok);--ink:var(--tm-ink);--dim:var(--tm-dim);--bg:var(--tm-bg);
+.sw-page[data-theme=terminal]{--a:var(--tm-acc);--ink:var(--tm-ink);--dim:var(--tm-dim);--bg:var(--tm-bg);
  --run:var(--tm-run);--ok:var(--tm-ok);--bad:var(--tm-bad);--idle:var(--tm-dim);--line:var(--tm-line);--raised:var(--tm-raised)}
 .sw-page [data-st=running]{--c:var(--run)}
 .sw-page [data-st=completed]{--c:var(--ok)}
@@ -2142,7 +2376,7 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=cockpit] .sw-k{color:color-mix(in srgb,var(--a) 55%,var(--ink))}
 .sw-page[data-theme=terminal] .sw-k{letter-spacing:0;text-transform:lowercase;font-weight:400}
 .sw-cur{display:none}
-.sw-page[data-theme=terminal] .sw-cur{display:inline-block;width:8px;height:14px;margin-left:4px;vertical-align:-2px;background:var(--ok);box-shadow:0 0 8px var(--ok);animation:sw-blink 1.06s steps(1) infinite}
+.sw-page[data-theme=terminal] .sw-cur{display:inline-block;width:8px;height:14px;margin-left:4px;vertical-align:-2px;background:var(--a);box-shadow:0 0 8px var(--a);animation:sw-blink 1.06s steps(1) infinite}
 /* header */
 .sw-hd{display:flex;align-items:center;gap:10px;min-width:0}
 .sw-ht{flex:none;margin:0;font:700 13px var(--mono);letter-spacing:.2em;text-transform:uppercase;white-space:nowrap}
@@ -2161,17 +2395,23 @@ const CSS = `${TM_PALETTE}
 .sw-hd>.sw-tg+.sw-ib{margin-left:0}
 .sw-ib svg{width:14px;height:14px}
 .sw-ib:hover{color:var(--ink);background:color-mix(in srgb,var(--a) 12%,transparent)}
-.sw-ib.is-text{display:inline-flex;gap:6px;width:auto;height:auto;padding:5px 10px;font:12px var(--mono);letter-spacing:.04em;color:var(--ink)}
 .sw-ib.is-pri{background:color-mix(in srgb,var(--a) 20%,transparent)}
+/* labelled buttons are cut-corner keys; the primary one is filled */
+.sw-ib.is-text{display:inline-flex;align-items:center;gap:7px;width:auto;height:auto;padding:7px 14px;font:12px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
+ background:color-mix(in srgb,var(--a) 12%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 60%,transparent);clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
+.sw-ib.is-text:hover{background:color-mix(in srgb,var(--a) 26%,transparent)}
+.sw-page .sw-ib.is-text:focus-visible{outline-color:var(--ink);outline-offset:-5px}
+.sw-ib.is-text.is-pri{background:var(--a);color:var(--dt-primary-foreground);font-weight:700}
+.sw-ib.is-text.is-pri:hover{background:color-mix(in srgb,var(--a) 82%,var(--ink))}
 .sw-ib.is-busy{opacity:.7}
 .sw-ibi{display:inline-flex;width:13px;height:13px}
 .sw-ibi svg{width:100%;height:100%}
-.sw-page[data-theme=terminal] .sw-ib{box-shadow:none;color:var(--ok)}
-.sw-page[data-theme=terminal] .sw-ib.is-text::before{content:"["}
-.sw-page[data-theme=terminal] .sw-ib.is-text::after{content:"]"}
-.sw-page[data-theme=terminal] .sw-ib.is-text{padding:0;gap:4px;text-transform:lowercase;letter-spacing:0;color:var(--ok)}
+.sw-page[data-theme=terminal] .sw-ib{box-shadow:none;color:var(--a)}
+.sw-page[data-theme=terminal] .sw-ib.is-text{padding:1px 8px;gap:4px;clip-path:none;text-transform:lowercase;letter-spacing:0;font-weight:400;color:var(--ink);background:none;box-shadow:inset 0 0 0 1px var(--ink)}
+.sw-page[data-theme=terminal] .sw-ib.is-text:hover{background:color-mix(in srgb,var(--a) 18%,transparent)}
 .sw-page[data-theme=terminal] .sw-ib.is-text .sw-ibi{display:none}
 .sw-page[data-theme=terminal] .sw-ib.is-pri{background:none}
+.sw-page[data-theme=terminal] .sw-ib.is-text.is-pri{color:var(--bg);background:var(--ink)}
 /* tabs */
 .sw-tabs{display:flex;gap:18px;margin:12px 0;border-bottom:1px solid color-mix(in srgb,var(--a) 25%,transparent)}
 .sw-tab{display:inline-flex;align-items:center;gap:6px;padding:6px 0;margin-bottom:-1px;font:12px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);border-bottom:2px solid transparent!important}
@@ -2209,7 +2449,7 @@ const CSS = `${TM_PALETTE}
 .sw-ld{width:7px;height:7px;flex:none;background:var(--run);box-shadow:0 0 8px var(--run);transform:rotate(45deg);animation:sw-pulse 1.6s ease-in-out infinite}
 .sw-runm{min-width:0}
 .sw-back{margin-left:auto;font:12px var(--mono)!important;letter-spacing:.08em;text-transform:uppercase;color:var(--ink)!important;padding:3px 8px!important;box-shadow:inset 0 0 0 1px var(--a)}
-.sw-page[data-theme=terminal] .sw-back{box-shadow:none;text-transform:lowercase;letter-spacing:0;color:var(--ok)!important;padding:0!important}
+.sw-page[data-theme=terminal] .sw-back{box-shadow:none;text-transform:lowercase;letter-spacing:0;color:var(--a)!important;padding:0!important}
 .sw-page[data-theme=terminal] .sw-back::before{content:"[← "}.sw-page[data-theme=terminal] .sw-back::after{content:"]"}
 .sw-menu{position:absolute;z-index:8;left:0;top:calc(100% + 6px);width:min(380px,100%);padding:6px;background:var(--raised);color:var(--ink);
  box-shadow:0 10px 30px color-mix(in srgb,var(--bg) 70%,transparent),inset 0 0 0 1px var(--a)}
@@ -2225,7 +2465,7 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-mini i{transform:none;width:8px;height:10px}
 .sw-more{display:block;margin:4px 0 0 14px;font:12px var(--mono)!important;letter-spacing:.06em;text-transform:uppercase;color:var(--ink)!important;text-decoration:underline;text-decoration-color:var(--a);text-underline-offset:3px}
 .sw-more.sw-inl{display:inline;margin:0 0 0 6px}
-.sw-page[data-theme=terminal] .sw-more{text-transform:lowercase;letter-spacing:0;text-decoration:none;color:var(--ok)!important}
+.sw-page[data-theme=terminal] .sw-more{text-transform:lowercase;letter-spacing:0;text-decoration:none;color:var(--a)!important}
 .sw-page[data-theme=terminal] .sw-more::before{content:"[+] "}
 /* score */
 .sw-score{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
@@ -2270,7 +2510,7 @@ const CSS = `${TM_PALETTE}
 /* units: Terminal sprites */
 .sw-page[data-theme=terminal] .sw-units{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin:12px 0}
 .sw-page[data-theme=terminal] .sw-unit{width:auto;min-width:0;padding:8px 4px 6px!important;gap:2px;border:1px solid var(--line)}
-.sw-page[data-theme=terminal] .sw-unit.is-sel{border-color:var(--ok);box-shadow:0 0 12px color-mix(in srgb,var(--ok) 25%,transparent),inset 0 0 12px color-mix(in srgb,var(--ok) 12%,transparent)}
+.sw-page[data-theme=terminal] .sw-unit.is-sel{border-color:var(--a);box-shadow:0 0 12px color-mix(in srgb,var(--a) 25%,transparent),inset 0 0 12px color-mix(in srgb,var(--a) 12%,transparent)}
 .sw-spr{margin:0;font:12px/1.05 var(--mono);white-space:pre;color:var(--c)}
 .sw-page[data-theme=terminal] .sw-un{margin-top:4px;font:11.5px/1.3 var(--mono);color:var(--tm-name)}
 .sw-page[data-theme=terminal] .sw-us{letter-spacing:0;color:var(--c);animation:sw-type .6s steps(6,end)}
@@ -2293,60 +2533,164 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-cell{clip-path:none;width:22px;height:22px;background:none!important;border:1px solid var(--line)}
 .sw-page[data-theme=terminal] .sw-cell::after{display:none}
 .sw-page[data-theme=terminal] .sw-cell .sw-glyph{width:auto;height:auto;font:12px/1 var(--mono);color:var(--c)}
-.sw-page[data-theme=terminal] .sw-cell.is-sel{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent)!important}
+.sw-page[data-theme=terminal] .sw-cell.is-sel{border-color:var(--a);background:color-mix(in srgb,var(--a) 14%,transparent)!important}
 .sw-frow{display:flex;align-items:center;gap:10px;width:100%;padding:5px 10px!important;margin-bottom:4px;font-size:12.5px;border-left:3px solid var(--c)!important;background:color-mix(in srgb,var(--c) 8%,transparent)!important}
 .sw-frow.is-sel{box-shadow:inset 0 0 0 1px var(--a)}
 .sw-frn{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw-frx{flex:none;font:11.5px var(--mono);color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-frow{border-left:0!important;background:none!important;padding:0 0 0 12px!important;margin:0}
 /* focus panel */
-.sw-focus{position:relative;margin-top:18px;padding:14px 16px;background:color-mix(in srgb,var(--a) 5%,var(--bg))}
+.sw-focus{position:relative;margin-top:18px;padding:14px 16px 16px;background:color-mix(in srgb,var(--a) 5%,var(--bg))}
 .sw-page[data-theme=cockpit] .sw-focus{clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,14px 100%,0 calc(100% - 14px))}
 .sw-page[data-theme=cockpit] .sw-focus::before{content:"";position:absolute;inset:0;clip-path:inherit;box-shadow:inset 0 0 0 1px var(--line);pointer-events:none}
-.sw-page[data-theme=terminal] .sw-focus{background:var(--bg);border:1px solid var(--line);padding:8px 12px}
+.sw-page[data-theme=terminal] .sw-focus{background:var(--bg);border:1px solid var(--line);padding:10px 12px 12px}
 .sw-page[data-theme=terminal] .sw-focus[data-st=failed]{border-color:var(--tm-badline)}
 .sw-ph{display:flex;align-items:center;gap:10px}
 .sw-ph::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,color-mix(in srgb,var(--a) 50%,transparent),transparent)}
-.sw-head{margin:8px 0 2px;font-size:16px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
-.sw-head code{font-family:var(--mono);text-shadow:0 0 10px var(--c,var(--run))}
+/* focus: hero */
+.sw-hero{display:grid;grid-template-columns:96px minmax(0,1fr);gap:16px;align-items:center;margin-top:12px}
+.sw-herot{min-width:0}
+.sw-por{position:relative;width:96px;height:104px;display:grid;place-items:center}
+.sw-pring{position:absolute;inset:-2px;border-radius:50%;background:repeating-conic-gradient(var(--c) 0 7deg,transparent 7deg 12deg);filter:drop-shadow(0 0 6px var(--c));
+ -webkit-mask:radial-gradient(circle,transparent 49px,var(--a) 50px 53px,transparent 54px);mask:radial-gradient(circle,transparent 49px,var(--a) 50px 53px,transparent 54px)}
+.sw-page .sw-por[data-st=running] .sw-pring{animation:sw-rot 9s linear infinite}
+.sw-por[data-st=completed] .sw-pring,.sw-por[data-st=failed] .sw-pring{background:var(--c)}
+.sw-por[data-st=queued] .sw-pring,.sw-por[data-st=idle] .sw-pring,.sw-por[data-st=stopped] .sw-pring{opacity:.45}
+.sw-phx{position:absolute;inset:8px 10px;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:linear-gradient(160deg,color-mix(in srgb,var(--c) 55%,var(--bg)),var(--bg) 80%)}
+.sw-phx::after{content:"";position:absolute;inset:2px;clip-path:inherit;background:radial-gradient(circle at 50% 40%,color-mix(in srgb,var(--c) 22%,var(--bg)),var(--bg) 70%)}
+.sw-por .sw-ic{width:34px;height:34px;filter:drop-shadow(0 0 8px var(--c))}
+.sw-ptag{position:absolute;bottom:-6px;left:50%;z-index:2;transform:translateX(-50%);padding:1px 7px;font:700 11.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;white-space:nowrap;color:var(--ink);background:color-mix(in srgb,var(--c) 25%,var(--bg));box-shadow:inset 0 0 0 1px var(--c)}
+.sw-verb{font:12px var(--mono);letter-spacing:.18em;color:color-mix(in srgb,var(--c) 70%,var(--ink));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-page .sw-verb{animation:sw-type .6s steps(12,end)}
+.sw-head{margin:2px 0 4px;font-size:18px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.sw-head.is-file{font:700 22px/1.2 var(--mono);text-shadow:0 0 16px color-mix(in srgb,var(--c,var(--run)) 60%,transparent)}
+.sw-head code{font-family:var(--mono)}
 .sw-nowf{display:inline-block;animation:sw-slide .45s ease-out}
-.sw-page[data-theme=terminal] .sw-head{font-size:12.5px;color:var(--tm-hi)}
-.sw-page[data-theme=terminal] .sw-head::before{content:"> ";color:var(--dim)}
 .sw-meta{font-size:12.5px;color:var(--dim);overflow-wrap:anywhere}
-.sw-model{display:inline-block;max-width:100%;margin-top:4px;font:11.5px var(--mono);padding:1px 6px;box-shadow:inset 0 0 0 1px var(--line);color:var(--dim);white-space:nowrap}
-.sw-task{margin:10px 0 0;font-size:13px;line-height:1.45;color:var(--dim);overflow-wrap:anywhere;white-space:pre-line}
-.sw-task b{color:var(--ink)}
-.sw-ans{margin-top:12px;padding:10px 12px;background:color-mix(in srgb,var(--c) 8%,var(--bg));border-left:3px solid var(--c);font-size:13px;line-height:1.5}
+.sw-model{display:inline-block;max-width:100%;vertical-align:1px;font:11.5px var(--mono);padding:1px 7px;box-shadow:inset 0 0 0 1px var(--line);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-page[data-theme=terminal] .sw-hero{grid-template-columns:64px minmax(0,1fr);gap:14px;margin-top:8px}
+.sw-page[data-theme=terminal] .sw-por{width:58px;height:auto;display:flex;flex-direction:column;align-items:center;gap:2px}
+.sw-pg{display:grid;place-items:center;width:58px;height:52px;font:22px/1 var(--mono);color:var(--c);border:1px solid currentColor;box-shadow:inset 0 0 12px color-mix(in srgb,var(--c) 45%,transparent)}
+.sw-page[data-theme=terminal] .sw-ptag{position:static;transform:none;padding:0;background:none;box-shadow:none;font-weight:400;letter-spacing:0;color:var(--c)}
+.sw-page[data-theme=terminal] .sw-verb{letter-spacing:.04em;color:var(--c)}
+.sw-page[data-theme=terminal] .sw-head{font:600 15px/1.35 var(--mono);color:var(--tm-hi);text-shadow:0 0 8px var(--tm-glow)}
+.sw-page[data-theme=terminal] .sw-head.is-file{font-size:16px}
+/* focus: stat tiles */
+@property --sw-n{syntax:"<integer>";inherits:false;initial-value:0}
+.sw-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:16px 0 4px}
+.sw-tile{--tc:var(--a);position:relative;min-width:0;padding:8px 10px 7px;background:color-mix(in srgb,var(--a) 6%,transparent)}
+.sw-page[data-theme=cockpit] .sw-tile{clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%)}
+.sw-tile::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--tc);box-shadow:0 0 8px var(--tc)}
+.sw-tile[data-tone=run]{--tc:var(--run)}
+.sw-tile[data-tone=bad]{--tc:var(--bad)}
+.sw-tile[data-tone=idle]{--tc:var(--idle)}
+.sw-tn{position:relative;display:block;overflow:hidden;font:700 19px/1.15 var(--mono);white-space:nowrap;text-overflow:ellipsis}
+.sw-tn>span{display:inline-block}
+.sw-page .sw-tn:not([data-count])>span{animation:sw-up .5s ease-out}
+.sw-tn[data-count]{counter-reset:sw-n var(--sw-n)}
+.sw-tn[data-count]::before{content:counter(sw-n) / ""}
+.sw-tn[data-count]>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.sw-page .sw-tn[data-count]{animation:sw-count .9s ease-out}
+.sw-tl{display:block;font:11.5px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-page[data-theme=terminal] .sw-tiles{display:flex;flex-wrap:wrap;gap:4px 20px;margin:12px 0 2px}
+.sw-page[data-theme=terminal] .sw-tile{display:flex;flex-direction:row-reverse;align-items:baseline;gap:6px;padding:0;background:none}
+.sw-page[data-theme=terminal] .sw-tile::before{display:none}
+.sw-page[data-theme=terminal] .sw-tn{font:600 12.5px/1.6 var(--mono);color:var(--tm-hi)}
+.sw-page[data-theme=terminal] .sw-tl{font-size:12.5px;letter-spacing:0;text-transform:lowercase}
+/* focus: task, answer */
+.sw-task{margin:12px 0 0;padding:8px 12px;font-size:13px;line-height:1.45;color:var(--dim);border-left:2px solid color-mix(in srgb,var(--a) 50%,transparent);overflow-wrap:anywhere;white-space:pre-line}
+.sw-task b{color:var(--ink);font-weight:600}
+.sw-page[data-theme=terminal] .sw-task{margin-top:8px;padding:0;border-left:0;font-size:12.5px}
+.sw-page[data-theme=terminal] .sw-task b{font-weight:400;color:var(--dim);text-transform:lowercase}
+.sw-ans{position:relative;margin-top:14px;padding:12px 14px 12px 16px;font-size:13.5px;line-height:1.55;
+ background:linear-gradient(90deg,color-mix(in srgb,var(--c) 14%,var(--bg)),color-mix(in srgb,var(--c) 3%,var(--bg)))}
+.sw-ans::before,.sw-ans::after{content:"";position:absolute;width:12px;height:12px;border:2px solid var(--c)}
+.sw-ans::before{left:0;top:0;border-right:0;border-bottom:0}
+.sw-ans::after{right:0;bottom:0;border-left:0;border-top:0}
+.sw-page .sw-ans{animation:sw-reveal .7s ease-out}
+.sw-ansh{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.sw-page[data-theme=cockpit] .sw-ansh{color:color-mix(in srgb,var(--c) 70%,var(--ink))}
+.sw-sig{display:inline-flex;gap:2px;align-items:flex-end;height:12px}
+.sw-sig i{width:3px;height:4px;background:var(--c)}
+.sw-sig i:nth-child(2){height:7px}
+.sw-sig i:nth-child(3){height:10px}
+.sw-sig i:nth-child(4){height:12px}
 .sw-anst{white-space:pre-line;overflow-wrap:anywhere}
-.sw-page[data-theme=terminal] .sw-ans{background:none;border-left:0;padding:4px 0;font-size:12.5px}
-.sw-fsec{margin-top:14px}
-.sw-fsec>.sw-k{margin-bottom:4px}
-.sw-fr{display:grid!important;grid-template-columns:4px minmax(0,1fr) 100px 76px;gap:10px;align-items:center;width:100%;min-height:28px;font:12.5px var(--mono)!important;--c:var(--a)}
-.sw-fr[data-op=active]{--c:var(--run)}
-.sw-fr[data-op=failed]{--c:var(--bad)}
-.sw-fr[data-op=delete]{--c:var(--idle)}
-.sw-fr[data-op=read]{--c:color-mix(in srgb,var(--a) 45%,var(--idle))}
-.sw-fr:hover{background:color-mix(in srgb,var(--a) 10%,transparent)!important}
-.sw-fr.is-now{background:linear-gradient(90deg,color-mix(in srgb,var(--run) 18%,transparent),transparent)!important}
-.sw-fr.is-now .sw-fn{animation:sw-slide .45s ease-out}
-.sw-tick{height:16px;background:var(--c)}
-.sw-fnw{display:flex;align-items:baseline;gap:8px;min-width:0;overflow:hidden;white-space:nowrap}
-.sw-fn{flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis}
-.sw-fr[data-op=delete] .sw-fn{text-decoration:line-through}
-.sw-fd{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--dim)}
-.sw-fbar{height:5px;background:color-mix(in srgb,var(--a) 14%,transparent)}
-.sw-fbar i{display:block;height:100%;background:var(--c);box-shadow:0 0 8px var(--c)}
-.sw-fl{text-align:right;color:var(--dim);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sw-page[data-theme=terminal] .sw-fr{grid-template-columns:minmax(0,1fr) 72px;gap:8px;min-height:20px;padding-left:12px!important}
-.sw-page[data-theme=terminal] .sw-tick,.sw-page[data-theme=terminal] .sw-fbar{display:none}
-.sw-page[data-theme=terminal] .sw-fl{text-transform:lowercase;letter-spacing:0}
-.sw-page[data-theme=terminal] .sw-fr[data-op=failed] .sw-fl{color:var(--bad)}
-.sw-page[data-theme=terminal] .sw-fr.is-now{color:var(--run);background:none!important}
+.sw-page[data-theme=terminal] .sw-ans{margin-top:18px;padding:12px 12px 8px;font-size:12.5px;background:color-mix(in srgb,var(--c) 10%,var(--bg));border:1px solid var(--c)}
+.sw-page[data-theme=terminal] .sw-ans::before,.sw-page[data-theme=terminal] .sw-ans::after,.sw-page[data-theme=terminal] .sw-sig{display:none}
+.sw-page[data-theme=terminal] .sw-ansh{position:absolute;top:-11px;left:10px;margin:0;padding:0 6px;background:var(--bg);color:color-mix(in srgb,var(--c) 70%,var(--ink))}
+.sw-page[data-theme=terminal] .sw-ansh::before{content:">> "}
+/* focus: files */
+.sw-fsec{margin-top:16px}
+.sw-fsec>.sw-k{margin-bottom:8px}
+.sw-fh{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+.sw-leg{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--dim);white-space:nowrap}
+.sw-leg::before{content:"";width:9px;height:9px;background:var(--a);transform:skewX(-20deg)}
+.sw-fgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:6px}
+.sw-ft{--fc:var(--a);position:relative;display:flex;flex-direction:column;min-width:0;overflow:hidden;padding:8px 10px;font:12.5px var(--mono);
+ background:linear-gradient(180deg,color-mix(in srgb,var(--fc) 16%,var(--bg)),color-mix(in srgb,var(--fc) 4%,var(--bg)));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--fc) 45%,transparent)}
+.sw-page[data-theme=cockpit] .sw-ft{clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,0 100%)}
+.sw-page .sw-ft{animation:sw-in .35s ease-out both;animation-delay:calc(min(var(--i,0),12) * 55ms)}
+.sw-ft:hover{box-shadow:inset 0 0 0 1px var(--fc)}
+.sw-ft[data-op=failed]{--fc:var(--bad)}
+.sw-ft[data-op=delete]{--fc:var(--idle)}
+.sw-ft.is-now{--fc:var(--run);box-shadow:inset 0 0 0 1px var(--run),0 0 14px color-mix(in srgb,var(--run) 40%,transparent)}
+.sw-ft.is-now::after{content:"";position:absolute;top:0;bottom:0;left:-40%;width:40%;pointer-events:none;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--run) 28%,transparent),transparent)}
+.sw-page .sw-ft.is-now::after{animation:sw-sweep 1.4s ease-in-out .3s both}
+.sw-nowb{position:absolute;top:6px;right:8px;font:700 11.5px var(--mono);letter-spacing:.12em;color:color-mix(in srgb,var(--run) 75%,var(--ink))}
+.sw-fn{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.sw-ft.is-now .sw-fn{padding-right:36px}
+.sw-ft .sw-fn{animation:none}
+.sw-page .sw-ft.is-now .sw-fn{animation:sw-slide .45s ease-out}
+.sw-ft[data-op=delete] .sw-fn{text-decoration:line-through;color:var(--dim)}
+.sw-fd{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11.5px var(--mono);color:var(--dim)}
+.sw-pipr{display:flex;align-items:center;gap:8px;min-width:0;margin-top:6px}
+.sw-pips{display:flex;flex:none;gap:3px}
+.sw-pips i{width:8px;height:8px;background:color-mix(in srgb,var(--fc) 18%,transparent);transform:skewX(-20deg)}
+.sw-pips i.on{background:var(--fc);box-shadow:0 0 6px var(--fc)}
+.sw-fl{min-width:0;margin-left:auto;text-align:right;font:11.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-ft[data-op=failed] .sw-fl{color:color-mix(in srgb,var(--bad) 55%,var(--ink))}
+.sw-chips{display:flex;flex-wrap:wrap;gap:6px}
+.sw-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:3px 9px;font:12px var(--mono);color:var(--dim);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 22%,transparent)}
+.sw-chip:hover{color:var(--ink);background:color-mix(in srgb,var(--a) 10%,transparent)}
+.sw-chip .sw-fn{font-weight:500;color:var(--ink)}
+.sw-ci{display:inline-flex;flex:none;width:12px;height:12px}
+.sw-ci svg{width:100%;height:100%}
+.sw-fx{flex:none}
+.sw-page .sw-chipm{display:inline-flex;align-items:center;margin:0;padding:3px 9px;text-decoration:none}
+.sw-page[data-theme=terminal] .sw-fsec{position:relative;margin-top:18px;padding:12px 10px 8px;border:1px solid var(--line)}
+.sw-page[data-theme=terminal] .sw-fsec>.sw-k,.sw-page[data-theme=terminal] .sw-fh{position:absolute;top:-11px;left:10px;margin:0;padding:0 6px;background:var(--bg)}
+.sw-page[data-theme=terminal] .sw-fsec[data-sec=none]>.sw-k{position:static;padding:0}
+.sw-page[data-theme=terminal] .sw-fsec[data-sec=none]{border:0;padding:0}
+.sw-page[data-theme=terminal] .sw-fh{gap:0}
+.sw-page[data-theme=terminal] .sw-fh .sw-k::after{content:"·";margin:0 .7ch}
+.sw-page[data-theme=terminal] .sw-leg{margin:0;font-size:12.5px}
+.sw-page[data-theme=terminal] .sw-leg::before{display:none}
+.sw-page[data-theme=terminal] .sw-fgrid{display:block}
+.sw-page[data-theme=terminal] .sw-ft{display:grid;grid-template-columns:14px minmax(0,1.3fr) minmax(0,1fr) 64px 76px 30px;gap:8px;align-items:center;min-height:20px;padding:0 4px;background:none;box-shadow:none}
+.sw-page[data-theme=terminal] .sw-ft:hover{background:color-mix(in srgb,var(--a) 10%,transparent)}
+.sw-page[data-theme=terminal] .sw-ft::before{content:"";grid-column:1;grid-row:1}
+.sw-page[data-theme=terminal] .sw-ft.is-now{background:color-mix(in srgb,var(--run) 12%,transparent);box-shadow:none}
+.sw-page[data-theme=terminal] .sw-ft.is-now::before{content:"▶";color:var(--run)}
+.sw-page[data-theme=terminal] .sw-pipr{display:contents}
+.sw-page[data-theme=terminal] .sw-fn{grid-column:2;grid-row:1;padding:0;font-weight:400}
+.sw-page[data-theme=terminal] .sw-fd{grid-column:3;grid-row:1}
+.sw-page[data-theme=terminal] .sw-pips{grid-column:4;grid-row:1;gap:1px}
+.sw-page[data-theme=terminal] .sw-pips i{width:7px;height:12px;transform:none;background:color-mix(in srgb,var(--fc) 22%,transparent)}
+.sw-page[data-theme=terminal] .sw-pips i.on{background:var(--fc);box-shadow:none}
+.sw-page[data-theme=terminal] .sw-fl{grid-column:5;grid-row:1;letter-spacing:0;text-transform:lowercase;font-size:12px}
+.sw-page[data-theme=terminal] .sw-nowb{grid-column:6;grid-row:1;position:static;letter-spacing:0;font-weight:600}
+.sw-page[data-theme=terminal] .sw-chip{padding:0 8px 0 0;box-shadow:none}
+.sw-page[data-theme=terminal] .sw-chip::before{content:"◉";color:var(--dim)}
+.sw-page[data-theme=terminal] .sw-ci{display:none}
+.sw-page[data-theme=terminal] .sw-chip .sw-fn{font-weight:400}
+.sw-page[data-theme=terminal] .sw-chipm{padding:0}
+.sw-page[data-theme=terminal] .sw-chipm::before{content:"["}
+.sw-page[data-theme=terminal] .sw-chipm::after{content:"]"}
 .sw-fnote{margin:6px 0 0;font-size:12px;color:var(--dim)}
 .sw-note{margin:12px 0 0;font-size:12px;line-height:1.45;color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-note::before{content:"# "}
-.sw-btns{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
-.sw-stats{margin-left:auto;font:11.5px var(--mono);color:var(--dim)}
+.sw-btns{display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap}
 /* commands */
 .sw-why{margin:0 0 12px;color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-why::before{content:"# "}
@@ -2359,19 +2703,61 @@ const CSS = `${TM_PALETTE}
 .sw-chev{display:inline-flex;width:12px;height:12px;flex:none;color:var(--dim)}
 .sw-chev svg{width:100%;height:100%}
 .sw-page .sw-spin{display:inline-block;width:11px;height:11px;flex:none;border-radius:50%;border:2px solid var(--run);border-right-color:transparent;animation:sw-rot 1s linear infinite;vertical-align:-1px;margin-right:6px}
-.sw-cmo{padding:10px 12px 12px 15px;border-left:3px solid var(--c);background:color-mix(in srgb,var(--c) 3%,var(--bg))}
-.sw-cmeta{font:11.5px var(--mono);letter-spacing:.06em;color:var(--dim);overflow-wrap:anywhere}
-.sw-cmnote{margin:6px 0 0;color:var(--dim)}
-.sw-cmerr{margin-top:6px;padding:8px 10px;background:color-mix(in srgb,var(--bad) 10%,var(--bg));border-left:3px solid var(--bad)}
-.sw-cmerr p{margin:0 0 6px}
-.sw-outl{margin-top:8px}
-.sw-out,.sw-pc{margin:6px 0 0;padding:8px 10px;max-height:240px;overflow:auto;background:var(--bg);font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:inset 0 0 0 1px var(--line)}
+.sw-cmo{padding:12px 12px 12px 15px;border-left:3px solid var(--c);background:color-mix(in srgb,var(--c) 4%,var(--bg))}
+.sw-cbody{display:grid;grid-template-columns:78px minmax(0,1fr);gap:12px;align-items:start}
+.sw-cmain{min-width:0}
+.sw-exit{display:grid;place-items:center;align-content:center;gap:2px;width:72px;height:80px;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:linear-gradient(160deg,color-mix(in srgb,var(--c) 50%,var(--bg)),var(--bg))}
+.sw-exit b{font:700 24px/1 var(--mono);color:var(--ink);text-shadow:0 0 12px var(--c)}
+.sw-exit span{font:11.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink)}
+.sw-radar{display:block;width:46px;height:46px;margin:4px auto 0;border-radius:50%;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--run) 50%,transparent);
+ background:conic-gradient(from 40deg,color-mix(in srgb,var(--run) 60%,transparent),transparent 25%),radial-gradient(circle,transparent 60%,color-mix(in srgb,var(--run) 40%,transparent) 61% 63%,transparent 64%)}
+.sw-page .sw-radar{animation:sw-rot 2.4s linear infinite}
+.sw-cmeta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font:12px var(--mono);color:var(--dim)}
+.sw-cchip{display:inline-flex;gap:6px;align-items:baseline;min-width:0;max-width:100%;padding:2px 8px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 30%,transparent)}
+.sw-cchip>span{flex:none;letter-spacing:.1em;text-transform:uppercase}
+.sw-cchip b{min-width:0;font-weight:500;color:var(--ink);overflow-wrap:anywhere}
+.sw-cmcut{flex-basis:100%;font-family:inherit}
+.sw-cmnote{margin:8px 0 0;color:var(--dim)}
+.sw-crt{position:relative;margin-top:8px;overflow:hidden;font:12px/1.6 var(--mono);background:color-mix(in srgb,var(--a) 3%,var(--bg));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 25%,transparent)}
+.sw-crt::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,color-mix(in srgb,var(--bg) 45%,transparent) 0 1px,transparent 1px 3px)}
+.sw-crth{display:flex;justify-content:space-between;gap:10px;padding:4px 10px;font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);border-bottom:1px solid color-mix(in srgb,var(--a) 18%,transparent)}
+.sw-out{margin:0;padding:4px 0;max-height:260px;overflow:auto;font:12px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.sw-ol{display:grid;grid-template-columns:34px minmax(0,1fr);padding-right:10px}
+.sw-ol::before{content:attr(data-n);padding-right:10px;text-align:right;color:var(--dim)}
+.sw-ol.is-bad{color:color-mix(in srgb,var(--bad) 25%,var(--ink));background:color-mix(in srgb,var(--bad) 18%,var(--bg))}
+.sw-scan{height:46px;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--a) 25%,transparent) 50%,transparent) 0 0/40% 100% no-repeat,repeating-linear-gradient(0deg,color-mix(in srgb,var(--a) 8%,transparent) 0 2px,transparent 2px 8px)}
+.sw-page .sw-scan{animation:sw-scan 1.6s linear infinite}
+.sw-crt[data-state=lost]{display:flex;align-items:center;gap:12px;padding:12px}
+.sw-crt[data-state=lost] p{margin:0;color:var(--ink);overflow-wrap:anywhere}
+.sw-nosig{flex:none;font:700 12px var(--mono);letter-spacing:.2em;color:color-mix(in srgb,var(--bad) 65%,var(--ink))}
+.sw-page .sw-nosig{animation:sw-pulse 1.6s ease-in-out infinite}
+.sw-cmerr .sw-btns{margin-top:10px}
+.sw-quiet{margin:0;padding:14px;text-align:center;font:12px var(--mono);letter-spacing:.2em;color:var(--dim)}
+.sw-pc{margin:8px 0 0;padding:8px 10px;max-height:240px;overflow:auto;background:var(--bg);font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:inset 0 0 0 1px var(--line)}
 .sw-pu{margin:8px 0 0;color:var(--dim)}
 .sw-pu::before{content:"⚠ ";color:var(--run)}
 .sw-page[data-theme=terminal] .sw-cmr{background:none!important;border-left:0!important;padding:2px 0!important}
 .sw-page[data-theme=terminal] .sw-cmx{letter-spacing:0;text-transform:lowercase}
-.sw-page[data-theme=terminal] .sw-cmo{border:1px solid var(--line);background:none;margin:4px 0 6px}
-.sw-page[data-theme=terminal] .sw-cmo[data-st=failed]{border-color:var(--tm-badline)}
+.sw-page[data-theme=terminal] .sw-cmo{margin:4px 0 10px 14px;padding:6px 0 0;border:0;background:none}
+.sw-page[data-theme=terminal] .sw-cbody{grid-template-columns:auto minmax(0,1fr);align-items:center}
+.sw-page[data-theme=terminal] .sw-exit{width:auto;height:auto;padding:4px 12px;clip-path:none;background:none;border:1px solid currentColor;color:color-mix(in srgb,var(--c) 80%,var(--ink));line-height:1.1}
+.sw-page[data-theme=terminal] .sw-exit b{font-size:18px;color:inherit;text-shadow:0 0 8px var(--c)}
+.sw-page[data-theme=terminal] .sw-exit span{color:inherit;letter-spacing:0}
+.sw-page[data-theme=terminal] .sw-radar{width:auto;height:auto;margin:0;border-radius:0;background:none;box-shadow:none;font:20px/1 var(--mono);color:var(--run)}
+.sw-page[data-theme=terminal] .sw-radar::before{content:"◜"}
+.sw-page[data-theme=terminal] .sw-cmeta{flex-direction:column;align-items:flex-start;gap:0}
+.sw-page[data-theme=terminal] .sw-cchip{padding:0;box-shadow:none}
+.sw-page[data-theme=terminal] .sw-cchip>span{letter-spacing:0;text-transform:lowercase}
+.sw-page[data-theme=terminal] .sw-crt{grid-column:1/-1;margin-top:16px;overflow:visible;background:none;box-shadow:none;border:1px solid var(--line)}
+.sw-page[data-theme=terminal] .sw-cmo[data-st=failed] .sw-crt{border-color:var(--tm-badline)}
+.sw-page[data-theme=terminal] .sw-crt::after{display:none}
+.sw-page[data-theme=terminal] .sw-crth{position:absolute;top:-11px;left:10px;padding:0 6px;border:0;background:var(--bg);letter-spacing:0;text-transform:lowercase}
+.sw-page[data-theme=terminal] .sw-crt[data-state=output]{padding-top:6px}
+.sw-page[data-theme=terminal] .sw-ol::before{text-align:left;padding-left:8px}
+.sw-page[data-theme=terminal] .sw-scan{height:8px;margin:14px 10px 10px;background:linear-gradient(90deg,var(--a),var(--a)) 0 0/14% 100% no-repeat,repeating-linear-gradient(90deg,var(--line) 0 6px,transparent 6px 8px)}
+.sw-page[data-theme=terminal] .sw-crt[data-state=lost]{padding:8px 10px}
+.sw-page[data-theme=terminal] .sw-nosig{letter-spacing:.04em}
+.sw-page[data-theme=terminal] .sw-quiet{padding:8px;letter-spacing:.04em}
 /* toast */
 .sw-live{position:absolute;right:20px;top:92px;z-index:10;pointer-events:none}
 .sw-toast{padding:8px 10px;font-size:12.5px;background:var(--raised);color:var(--ink);box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--a)}
@@ -2380,13 +2766,20 @@ const CSS = `${TM_PALETTE}
 @container (max-width:460px){
  .sw-panel .sw-units{justify-content:flex-start;column-gap:2px}
  .sw-panel .sw-unit{width:84px}
- .sw-panel .sw-fr{grid-template-columns:4px minmax(0,1fr) 48px 64px;gap:8px}
- .sw-panel .sw-fd{display:none}
+ .sw-panel .sw-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .sw-panel .sw-hero{grid-template-columns:76px minmax(0,1fr);gap:12px}
+ .sw-panel .sw-por{transform:scale(.8);transform-origin:0 50%}
+ .sw-panel .sw-head.is-file{font-size:18px}
+ .sw-panel .sw-cbody{grid-template-columns:60px minmax(0,1fr);gap:10px}
+ .sw-panel .sw-exit{width:56px;height:64px}
  .sw-panel .sw-big{font-size:30px}
  .sw-panel .sw-tabs{gap:14px}
  .sw-panel .sw-hd{flex-wrap:wrap;row-gap:6px}
 }
-@container (max-width:460px){.sw-page[data-theme=terminal] .sw-panel .sw-fr{grid-template-columns:minmax(0,1fr) 64px}}
+@container (max-width:460px){.sw-page[data-theme=terminal] .sw-panel .sw-ft{grid-template-columns:14px minmax(0,1fr) 0 64px 64px 30px}
+ .sw-page[data-theme=terminal] .sw-panel .sw-fd{display:none}
+ .sw-page[data-theme=terminal] .sw-panel .sw-por{transform:none}
+ .sw-page[data-theme=terminal] .sw-panel .sw-hero{grid-template-columns:64px minmax(0,1fr)}}
 /* calm: an earlier run is history, not live — no glow, nothing moves */
 .sw-panel[data-calm] *,.sw-panel[data-calm] *::before,.sw-panel[data-calm] *::after{animation:none!important}
 .sw-panel[data-calm] .sw-ic{filter:none}
@@ -2402,6 +2795,11 @@ const CSS = `${TM_PALETTE}
 @keyframes sw-blink{50%{opacity:0}}
 @keyframes sw-pulse{50%{opacity:.45}}
 @keyframes sw-skp{50%{opacity:.5}}
+@keyframes sw-count{from{--sw-n:0}}
+@keyframes sw-in{from{opacity:0;transform:translateY(6px)}}
+@keyframes sw-sweep{from{left:-40%}to{left:100%}}
+@keyframes sw-reveal{from{clip-path:inset(0 0 100% 0)}}
+@keyframes sw-scan{from{background-position:-70% 0,0 0}to{background-position:170% 0,0 0}}
 @media (prefers-reduced-motion:reduce){.sw-page *,.sw-page *::before,.sw-page *::after{animation:none!important;transition:none!important}}
 `
 
