@@ -280,6 +280,18 @@ This edit failed` : path),
         log: n => `Log · ${n} edit${n === 1 ? '' : 's'}`,
         word: { edit: 'EDIT', whole: 'WRITE', delete: 'DELETE', move: 'MOVE', failed: 'FAILED' }
       },
+      hudCommands: {
+        console: cmd => `Console · ${cmd}`,
+        list: n => `Commands · ${n}`,
+        process: 'Process',
+        command: 'command',
+        lines: 'lines',
+        finished: 'Finished',
+        running: 'Running',
+        stopped: 'Stopped',
+        firstError: 'First error',
+        line: n => `Line ${n}`
+      },
       file: {
         op: {
           active: 'now', write: n => `${n} edit${n === 1 ? '' : 's'}`, delete: 'deleted', failed: 'failed', read: n => `read ×${n}`
@@ -1660,7 +1672,7 @@ export function outputLines(text) {
   return String(text || '').replace(/\r?\n$/, '').split(/\r?\n/).map((line, i) => ({ n: i + 1, line, bad: ERROR_LINE.test(line) }))
 }
 
-/** The big mark beside an opened command: its exit code in a status hex (Terminal: a bordered EXIT box), a radar while it runs. */
+/** The exit mark in the PROCESS card: the exit code beside a status square (killed says so), a radar while it runs. */
 function ExitMark({ t, p }) {
   if (p.status === 'running') return jsx('span', { className: 'sw-radar', role: 'img', 'aria-label': t('sw.proc.status.running') })
   const known = p.exit_code !== null && p.exit_code !== undefined
@@ -1672,143 +1684,174 @@ function ExitMark({ t, p }) {
   })
 }
 
-function ProcDetail({ t, p, now, storedId, onToast }) {
+/** The selected command's output: read once per command (and per Try again), never while it runs. */
+function useProcOutput(p, storedId) {
   // Only a finished command's receipt has output; a checkpoint-only row (the app closed under it)
   // has none, and asking for it was a guaranteed 404 shown as a read failure.
   const fetches = p.status !== 'running' && p.has_output !== false
-  const [out, setOut] = useState({ loading: fetches, data: null, error: null })
+  const [out, setOut] = useState({ id: null, loading: false, data: null, error: null })
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     if (!fetches) return undefined
     let alive = true
-    setOut({ loading: true, data: null, error: null })
+    setOut({ id: p.id, loading: true, data: null, error: null })
     ctxRef.rest(`/process_output?session_id=${encodeURIComponent(storedId)}&process_id=${encodeURIComponent(p.id)}`).then(
-      data => alive && setOut({ loading: false, data, error: null }),
-      err => alive && setOut({ loading: false, data: null, error: String(err?.message || err) })
+      data => alive && setOut({ id: p.id, loading: false, data, error: null }),
+      err => alive && setOut({ id: p.id, loading: false, data: null, error: String(err?.message || err) })
     )
     return () => { alive = false }
   }, [p.id, p.status, storedId, fetches, attempt])
+  // A pick of another command shows its own reading state until its answer lands, never the last one's output.
+  const got = !fetches ? { loading: false, data: null, error: null } : out.id === p.id ? out : { loading: true, data: null, error: null }
+  return { fetches, got, retry: () => setAttempt(n => n + 1) }
+}
+
+function ProcRow({ t, p, now, selected, onPick }) {
+  const time = p.status === 'running'
+    ? fmtDuration(p.started_at ? now - p.started_at : null, t)
+    : p.status === 'stopped' ? '—' : fmtDuration(p.duration_s, t)
+  const exit = p.status === 'failed' && p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : ''
+  return jsxs('button', {
+    type: 'button', className: 'sw-cmrow', 'data-st': p.status, 'aria-pressed': selected, onClick: onPick,
+    'aria-label': `${commandLine(p.command)}: ${t(`sw.proc.status.${p.status}`)}`,
+    children: [
+      jsx('span', { className: 'sw-cmlt', children: fmtWhen(p.started_at, now, t) || '—' }, 'w'),
+      jsx('span', { className: 'sw-cmls', 'aria-hidden': 'true', children: jsx('span', { children: t(`sw.proc.short.${p.status}`) }) }, 's'),
+      jsx(Tip, { label: tipText(p.command), children: jsx('code', { className: 'sw-cmc', children: commandLine(p.command) }) }, 'c'),
+      jsxs('span', { className: 'sw-cmx', children: [exit ? jsx('span', { className: 'sw-cmxe', children: `${exit} · ` }, 'e') : null, time] }, 'x')
+    ]
+  })
+}
+
+// The Commands tab is a HUD like Replay: the selected command's CONSOLE on top (its output on the grid,
+// a gauge and a FIRST ERROR callout tied to its line), the COMMANDS list and the PROCESS card below.
+function ProcView({ t, p, rows, now, storedId, onToast, onPick }) {
+  const { fetches, got, retry } = useProcOutput(p, storedId)
+  const hero = useRef(null)
+  const wires = useWires(hero, [p.id, got.data, got.loading, got.error], '.sw-out', 'data-o')
   // The receipt holds the whole command; the list row carries at most COMMAND_CHARS of it.
-  const command = out.data?.command || p.command || ''
-  const cut = !out.data?.command && p.command_truncated
-  const ran = p.status === 'running' ? fmtDuration(p.started_at ? now - p.started_at : null, t) : fmtDuration(p.duration_s, t)
-  const chips = [
-    p.cwd ? [t('sw.proc.dirK'), p.cwd] : null,
-    ran ? [t(p.status === 'running' ? 'sw.proc.runningK' : 'sw.proc.ranK'), ran] : null
-  ].filter(Boolean)
-  // The row already reads a short one-line command in full; the block is for what it cannot show.
-  const showCommand = command !== commandLine(p.command) || command.length > ROW_COMMAND_CHARS || cut
+  const command = got.data?.command || p.command || ''
+  const cut = !got.data?.command && p.command_truncated
+  const running = p.status === 'running'
+  const finished = p.status === 'completed' || p.status === 'failed'
+  const ran = running ? fmtDuration(p.started_at ? now - p.started_at : null, t) : fmtDuration(p.duration_s, t)
+  const lines = got.data?.output ? outputLines(got.data.output) : []
+  const bad = lines.find(l => l.bad)
+  const known = p.exit_code !== null && p.exit_code !== undefined
+  const word = running ? t('sw.proc.short.running') : p.status === 'stopped' ? t('sw.proc.killed') : t('sw.proc.exit', known ? p.exit_code : '?')
   let body
-  if (p.status === 'running') body = jsx('p', { className: 'sw-cmnote', children: t('sw.proc.whileRunning') })
-  else if (!fetches) body = jsx('div', { className: 'sw-crt', 'data-state': 'none', children: jsx('p', { className: 'sw-cmnote sw-quiet', children: t('sw.proc.noOutput') }) })
-  else if (out.loading) {
+  if (running) body = jsx('p', { className: 'sw-cmnote', children: t('sw.proc.whileRunning') }, 'b')
+  else if (!fetches) body = jsx('div', { className: 'sw-crt', 'data-state': 'none', children: jsx('p', { className: 'sw-cmnote sw-quiet', children: t('sw.proc.noOutput') }) }, 'b')
+  else if (got.loading) {
     body = jsxs('div', {
       className: 'sw-crt', 'data-state': 'reading', role: 'status',
       children: [jsx('div', { className: 'sw-crth', children: jsx('span', { children: t('sw.proc.reading') }) }, 'h'), jsx('div', { className: 'sw-scan', 'aria-hidden': 'true' }, 's')]
-    })
-  } else if (out.error) {
+    }, 'b')
+  } else if (got.error) {
     body = jsxs('div', {
       className: 'sw-cmerr', role: 'alert',
       children: [
         jsxs('div', {
           className: 'sw-crt', 'data-state': 'lost',
-          children: [jsx('span', { className: 'sw-nosig', children: t('sw.proc.noSignal') }, 'g'), jsx('p', { children: t('sw.err.withDetail', t('sw.err.procOutput'), out.error) }, 'm')]
+          children: [jsx('span', { className: 'sw-nosig', children: t('sw.proc.noSignal') }, 'g'), jsx('p', { children: t('sw.err.withDetail', t('sw.err.procOutput'), got.error) }, 'm')]
         }, 'c'),
-        jsx('div', { className: 'sw-btns', children: jsx(IconButton, { label: t('sw.retry'), icon: ICON.refresh, onClick: () => setAttempt(n => n + 1), text: true }) }, 'r')
+        jsx('div', { className: 'sw-btns', children: jsx(IconButton, { label: t('sw.retry'), icon: ICON.refresh, onClick: retry, text: true }) }, 'r')
       ]
-    })
-  } else if (!out.data?.output) body = jsx('div', { className: 'sw-crt', 'data-state': 'quiet', children: jsx('p', { className: 'sw-cmnote sw-quiet', children: t('sw.proc.printedNothing') }) })
+    }, 'b')
+  } else if (!got.data?.output) body = jsx('div', { className: 'sw-crt', 'data-state': 'quiet', children: jsx('p', { className: 'sw-cmnote sw-quiet', children: t('sw.proc.printedNothing') }) }, 'b')
   else {
-    const lines = outputLines(out.data.output)
     body = jsxs('div', {
       className: 'sw-crt', 'data-state': 'output',
       children: [
         jsxs('div', {
           className: 'sw-crth',
           children: [
-            jsx('span', { className: 'sw-outl', children: [t('sw.proc.output'), out.data.output_truncated ? ` · ${t('sw.proc.outputCut', out.data.output.length)}` : ''].join('') }, 'l'),
+            jsx('span', { className: 'sw-outl', children: [t('sw.proc.output'), got.data.output_truncated ? ` · ${t('sw.proc.outputCut', got.data.output.length)}` : ''].join('') }, 'l'),
             jsx('span', { children: t('sw.proc.lines', lines.length) }, 'n')
           ]
         }, 'h'),
         // Line numbers are drawn by CSS, so a selection copies the output alone.
-        jsx('pre', { className: 'sw-out', children: lines.map(l => jsx('span', { className: `sw-ol${l.bad ? ' is-bad' : ''}`, 'data-n': l.n, children: l.line || ' ' }, l.n)) }, 'o')
+        jsx('pre', { className: 'sw-out', tabIndex: 0, children: lines.map(l => jsx('span', { className: `sw-ol${l.bad ? ' is-bad' : ''}`, 'data-n': l.n, 'data-o': l.n, children: l.line || ' ' }, l.n)) }, 'o')
       ]
-    })
+    }, 'b')
   }
+  const bars = on => Array.from({ length: 10 }, (_, k) => jsx('i', { className: k < on ? 'on' : undefined }, k))
+  const gauge = finished ? 'sw.hudCommands.finished' : running ? 'sw.hudCommands.running' : 'sw.hudCommands.stopped'
   return jsxs('div', {
-    className: 'sw-cmo', 'data-st': p.status,
+    className: 'sw-cmgrid',
     children: [
-      jsxs('div', {
-        className: 'sw-cbody',
+      jsx(HudPanel, {
+        title: t('sw.hudCommands.console', commandLine(p.command)), span: 6, className: 'sw-hpx sw-cmcon', chip: hudChip(p.status, word),
         children: [
-          jsx(ExitMark, { t, p }, 'x'),
           jsxs('div', {
-            className: 'sw-cmain',
+            className: 'sw-hgrid', 'data-st': p.status, ref: hero,
             children: [
-              chips.length || cut ? jsxs('div', {
-                className: 'sw-cmeta',
-                children: [
-                  ...chips.map(([k, v]) => jsxs('span', { className: 'sw-cchip', children: [jsx('span', { children: k }, 'k'), jsx(OneLine, { text: v, className: 'sw-cchipv' }, 'v')] }, k)),
-                  cut ? jsx('span', { className: 'sw-cmcut', children: t('sw.proc.commandCut', command.length) }, 'cut') : null
-                ]
-              }, 'm') : null,
-              showCommand ? jsx('pre', { className: 'sw-pc', children: command }, 'c') : null,
+              jsx('svg', { className: 'sw-wires', 'aria-hidden': 'true', children: wires.map(([ax, ay, kx, bx, y], k) => jsxs('g', { children: [jsx('path', { d: `M${ax},${ay} H${kx} L${bx},${y}` }, 'p'), jsx('circle', { cx: bx, cy: y, r: 2.5 }, 'c')] }, k)) }, 'w'),
               body,
               jsxs('div', {
-                className: 'sw-btns',
+                className: 'sw-cos', 'aria-hidden': 'true',
                 children: [
-                  out.data?.output ? jsx(IconButton, { label: t('sw.proc.copyOutput'), icon: ICON.copy, onClick: () => writeClip(out.data.output, t, onToast), text: true, primary: true }, 'o') : null,
-                  jsx(IconButton, { label: t('sw.proc.copyCommand'), icon: ICON.copy, onClick: () => writeClip(command, t, onToast), text: true }, 'c')
+                  jsxs('div', {
+                    className: 'sw-co sw-cmgauge', 'data-st': p.status,
+                    children: [
+                      jsx('span', { className: 'sw-col', children: hudCaps(t(gauge)) }, 'l'),
+                      jsxs('span', { className: `sw-cop${running ? ' is-run' : ''}`, children: [jsx('span', { className: 'sw-copn', children: finished ? '100%' : running ? ran || '…' : '—' }, 'n'), jsx('span', { className: 'sw-copb', children: bars(finished ? 10 : running ? 3 : 0) }, 'b')] }, 'p')
+                    ]
+                  }, 'g'),
+                  bad ? jsxs('div', {
+                    className: 'sw-co sw-cmfirst', 'data-to': bad.n,
+                    children: [jsx('span', { className: 'sw-col', children: hudCaps(t('sw.hudCommands.firstError')) }, 'l'), jsx('span', { className: 'sw-cov', 'data-st': 'failed', children: hudCaps(t('sw.hudCommands.line', bad.n)) }, 'v')]
+                  }, 'e') : null
                 ]
-              }, 'b')
+              }, 'co')
             ]
-          }, 'main')
+          }, 'hero')
         ]
-      }, 'body')
-    ]
-  })
-}
-
-function ProcRow({ t, theme, p, now, open, onToggle, storedId, onToast }) {
-  const time = p.status === 'running'
-    ? fmtDuration(p.started_at ? now - p.started_at : null, t)
-    : p.status === 'stopped' ? '—' : fmtDuration(p.duration_s, t)
-  const exit = p.status === 'failed' && p.exit_code !== null && p.exit_code !== undefined ? t('sw.proc.exit', p.exit_code) : ''
-  const state = t(`sw.proc.short.${p.status}`)
-  return jsxs('div', {
-    className: 'sw-cm', 'data-st': p.status,
-    children: [
-      jsxs('button', {
-        type: 'button', className: 'sw-cmr sw-acc', 'data-st': p.status, 'aria-expanded': open, onClick: onToggle,
-        'aria-label': `${commandLine(p.command)}: ${t(`sw.proc.status.${p.status}`)}`,
+      }, 'console'),
+      jsx(HudPanel, {
+        title: t('sw.hudCommands.list', rows.length), span: 4, className: 'sw-cmlp',
+        children: [jsx('div', { className: 'sw-cml', children: rows.map(x => jsx(ProcRow, { t, p: x, now, selected: x.id === p.id, onPick: () => onPick(x.id) }, x.id)) }, 'l')]
+      }, 'list'),
+      jsx(HudPanel, {
+        title: t('sw.hudCommands.process'), span: 2, className: 'sw-cmcard',
         children: [
-          theme === 'terminal'
-            ? jsx('span', { className: 'sw-cmt', 'aria-hidden': 'true', children: t(`sw.tag.${p.status === 'running' ? 'run' : p.status}`) }, 't')
-            : jsx('span', { className: p.status === 'running' ? 'sw-spin' : 'sw-cmd', 'aria-hidden': 'true' }, 't'),
-          jsx(Tip, { label: p.command, children: jsx('code', { className: 'sw-cmc', children: commandLine(p.command) }) }, 'c'),
-          jsx('span', { className: 'sw-cmx', children: [state, exit, time].filter(Boolean).join(' · ') }, 'x'),
-          jsx('span', { className: 'sw-chev', 'aria-hidden': 'true', children: ICON.chev(open) }, 'v')
+          jsx(HudKV, {
+            rows: [
+              [t('sw.hudCommands.command'), jsx(OneLine, { text: command, className: 'sw-cmkv' })],
+              [t('sw.proc.dirK'), p.cwd ? jsx(OneLine, { text: p.cwd, className: 'sw-cmkv' }) : '—'],
+              [t(running ? 'sw.proc.runningK' : 'sw.proc.ranK'), ran || '—'],
+              [t('sw.proc.exitTag'), jsx(ExitMark, { t, p })],
+              [t('sw.hudCommands.lines'), lines.length ? String(lines.length) : '—']
+            ]
+          }, 'kv'),
+          cut ? jsx('p', { className: 'sw-cmcut', children: t('sw.proc.commandCut', command.length) }, 'cut') : null,
+          jsxs('div', {
+            className: 'sw-btns sw-cmfoot',
+            children: [
+              got.data?.output ? jsx(IconButton, { label: t('sw.proc.copyOutput'), icon: ICON.copy, onClick: () => writeClip(got.data.output, t, onToast), text: true }, 'o') : null,
+              jsx(IconButton, { label: t('sw.proc.copyCommand'), icon: ICON.copy, onClick: () => writeClip(command, t, onToast), text: true }, 'c')
+            ]
+          }, 'b')
         ]
-      }, 'h'),
-      open ? jsx(ProcDetail, { t, p, now, storedId, onToast }, `d-${p.status}`) : null
+      }, 'card')
     ]
   })
 }
 
-function Commands({ t, theme, procs, now, storedId, openProc, toggleProc, onToast }) {
+function Commands({ t, procs, now, storedId, onToast }) {
   const unreadable = procs.data?.unreadable || 0
   const rows = [...(procs.data?.processes || [])].reverse()
+  // The picked command; with none picked (or it left the list) the newest one is shown.
+  const [pick, setPick] = useState(null)
+  const sel = rows.find(p => p.id === pick) || rows[0]
   return jsxs('div', {
     className: 'sw-cmds', role: 'tabpanel', id: 'sw-tab-commands', 'aria-labelledby': 'sw-tabb-commands',
     children: [
       jsx('p', { className: 'sw-why', children: t('sw.proc.why') }, 'why'),
       procs.loading
         ? jsxs('p', { className: 'sw-cmnote sw-cmwait', children: [jsx('span', { className: 'sw-spin', 'aria-hidden': 'true' }, 's'), t('sw.loading')] }, 'w')
-        : rows.length
-          ? jsx('div', {
-            className: 'sw-plist',
-            children: rows.map(p => jsx(ProcRow, { t, theme, p, now, storedId, onToast, open: openProc.has(p.id), onToggle: () => toggleProc(p.id) }, p.id))
-          }, 'l')
+        : sel
+          ? jsx(ProcView, { t, p: sel, rows, now, storedId, onToast, onPick: setPick }, 'view')
           : procs.error ? null : jsx('p', { className: 'sw-empty', children: t('sw.proc.none') }, 'none'),
       unreadable ? jsx('p', { className: 'sw-pu', children: t('sw.proc.unreadable', unreadable) }, 'u') : null
     ]
@@ -2280,19 +2323,6 @@ export function fileGroups(files, touching) {
 
 // ── page ─────────────────────────────────────────────────────────────────────
 
-/** A set of open card keys: toggle(key) flips one card, clear() folds them all (on chat change), add(keys) opens some. */
-function useOpenSet() {
-  const [open, setOpen] = useState(() => new Set())
-  const toggle = key => setOpen(prev => {
-    const next = new Set(prev)
-    if (next.has(key)) next.delete(key)
-    else next.add(key)
-    return next
-  })
-  const add = keys => setOpen(prev => new Set([...prev, ...keys]))
-  return [open, toggle, () => setOpen(new Set()), add]
-}
-
 // Zones whose click makes the app name its MAIN chat as focused although no chat was picked: this
 // page's own route tile, other plugin pages and previews. A click in them keeps the watched chat.
 const HOLD_PANES = ['route-tile:', 'preview-tile:']
@@ -2361,7 +2391,6 @@ export function Page() {
   selectedRef.current = selected
   const [runKey, setRunKey] = useState(null)
   const [refocus, setRefocus] = useState(false)
-  const [openProc, toggleProc, clearProcs] = useOpenSet()
   // A finished batch leaves the live run for its stored copy (the last run): a selected worker stays
   // selected (live keys it by subagent id, stored by session id) and keyboard focus moves along.
   const onBatchEnded = ({ sessions, focused }) => Promise.resolve(history.reload()).then(() => {
@@ -2380,7 +2409,6 @@ export function Page() {
   const now = useNow(live.batches.length > 0 || procsRunning > 0)
 
   useEffect(() => {
-    clearProcs()
     setSelected(MAIN)
     setRunKey(null)
     setRefocus(false)
@@ -2506,7 +2534,7 @@ export function Page() {
       children: [jsxs('div', { className: 'sw-sks', 'aria-hidden': 'true', children: [0, 1, 2].map(i => jsx('span', { className: 'sw-sk' }, i)) }, 's'), jsx('div', { className: 'sw-k', children: t('sw.loading') }, 'k')]
     })
   } else if (tab === 'commands') {
-    body = jsx(Commands, { t, theme, procs, now, storedId, openProc, toggleProc, onToast })
+    body = jsx(Commands, { t, procs, now, storedId, onToast })
   } else if (tab === 'replay') {
     const names = new Map(stored.flatMap(b => b.workers.map(w => [w.session_id, workerName(w.goal)])))
     // Keyed by chat: another chat starts on its newest request, even when a live run keeps the page drawn.
@@ -3169,29 +3197,15 @@ const CSS = `${TM_PALETTE}
 /* commands */
 .sw-why{margin:0 0 12px;color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-why::before{content:"# "}
-.sw-cm{margin-bottom:6px}
-.sw-cmr{display:flex!important;align-items:center;gap:10px;width:100%;padding:9px 12px!important;font:12.5px var(--mono)!important;background:color-mix(in srgb,var(--c) 5%,transparent)!important;border-left:3px solid var(--c)!important}
 .sw-cmc{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit}
 .sw-cmx{flex:none;font-size:11.5px;letter-spacing:.06em;color:var(--dim);white-space:nowrap}
-.sw-cmd{width:8px;height:8px;flex:none;background:var(--c);transform:rotate(45deg)}
-.sw-cmt{flex:none;color:var(--c)}
-.sw-chev{display:inline-flex;width:12px;height:12px;flex:none;color:var(--dim)}
-.sw-chev svg{width:100%;height:100%}
 .sw-page .sw-spin{display:inline-block;width:11px;height:11px;flex:none;border-radius:50%;border:2px solid var(--run);border-right-color:transparent;animation:sw-rot 1s linear infinite;vertical-align:-1px;margin-right:6px}
-.sw-cmo{padding:12px 12px 12px 15px;border-left:3px solid var(--c);background:color-mix(in srgb,var(--c) 4%,var(--bg))}
-.sw-cbody{display:grid;grid-template-columns:78px minmax(0,1fr);gap:12px;align-items:start}
-.sw-cmain{min-width:0}
 .sw-exit{display:grid;place-items:center;align-content:center;gap:2px;width:72px;height:80px;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:linear-gradient(160deg,color-mix(in srgb,var(--c) 50%,var(--bg)),var(--bg))}
 .sw-exit b{font:700 24px/1 var(--mono);color:var(--ink);text-shadow:0 0 12px var(--c)}
 .sw-exit span{font:11.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink)}
 .sw-radar{display:block;width:46px;height:46px;margin:4px auto 0;border-radius:50%;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--run) 50%,transparent);
  background:conic-gradient(from 40deg,color-mix(in srgb,var(--run) 60%,transparent),transparent 25%),radial-gradient(circle,transparent 60%,color-mix(in srgb,var(--run) 40%,transparent) 61% 63%,transparent 64%)}
 .sw-page .sw-radar{animation:sw-rot 2.4s linear infinite}
-.sw-cmeta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font:12px var(--mono);color:var(--dim)}
-.sw-cchip{display:inline-flex;gap:6px;align-items:baseline;min-width:0;max-width:100%;padding:2px 8px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 30%,transparent)}
-.sw-cchip>span{flex:none;letter-spacing:.1em;text-transform:uppercase}
-.sw-cchipv{font-weight:500;color:var(--ink)}
-.sw-cmcut{flex-basis:100%;font-family:inherit}
 .sw-cmnote{margin:8px 0 0;color:var(--dim)}
 .sw-crt{position:relative;margin-top:8px;overflow:hidden;font:12px/1.6 var(--mono);background:color-mix(in srgb,var(--a) 3%,var(--bg));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 25%,transparent)}
 .sw-crt::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,color-mix(in srgb,var(--bg) 45%,transparent) 0 1px,transparent 1px 3px)}
@@ -3208,23 +3222,14 @@ const CSS = `${TM_PALETTE}
 .sw-page .sw-nosig{animation:sw-pulse 1.6s ease-in-out infinite}
 .sw-cmerr .sw-btns{margin-top:10px}
 .sw-quiet{margin:0;padding:14px;text-align:center;font:12px var(--mono);letter-spacing:.2em;color:var(--dim)}
-.sw-pc{margin:8px 0 0;padding:8px 10px;max-height:240px;overflow:auto;background:var(--bg);font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:inset 0 0 0 1px var(--line)}
 .sw-pu{margin:8px 0 0;color:var(--dim)}
 .sw-pu::before{content:"⚠ ";color:var(--run)}
-.sw-page[data-theme=terminal] .sw-cmr{background:none!important;border-left:0!important;padding:2px 0!important}
-.sw-page[data-theme=terminal] .sw-cmx{font-size:11.5px}
-.sw-page[data-theme=terminal] .sw-cmo{margin:4px 0 10px 14px;padding:6px 0 0;border:0;background:none}
-.sw-page[data-theme=terminal] .sw-cbody{grid-template-columns:auto minmax(0,1fr);align-items:center}
 .sw-page[data-theme=terminal] .sw-exit{width:auto;height:auto;padding:4px 12px;clip-path:none;background:none;border:1px solid currentColor;color:color-mix(in srgb,var(--c) 80%,var(--ink));line-height:1.1}
 .sw-page[data-theme=terminal] .sw-exit b{font-size:18px;color:inherit;text-shadow:0 0 8px var(--c)}
 .sw-page[data-theme=terminal] .sw-exit span{color:inherit;letter-spacing:0}
 .sw-page[data-theme=terminal] .sw-radar{width:auto;height:auto;margin:0;border-radius:0;background:none;box-shadow:none;font:20px/1 var(--mono);color:var(--run)}
 .sw-page[data-theme=terminal] .sw-radar::before{content:"◜"}
-.sw-page[data-theme=terminal] .sw-cmeta{flex-direction:column;align-items:flex-start;gap:0}
-.sw-page[data-theme=terminal] .sw-cchip{padding:0;box-shadow:none}
-.sw-page[data-theme=terminal] .sw-cchip>span{font-size:11.5px}
 .sw-page[data-theme=terminal] .sw-crt{grid-column:1/-1;margin-top:16px;overflow:visible;background:none;box-shadow:none;border:1px solid var(--line)}
-.sw-page[data-theme=terminal] .sw-cmo[data-st=failed] .sw-crt{border-color:var(--tm-badline)}
 .sw-page[data-theme=terminal] .sw-crt::after{display:none}
 .sw-page[data-theme=terminal] .sw-crth{position:absolute;top:-11px;left:10px;padding:0 6px;border:0;background:var(--bg);font-size:11.5px}
 .sw-page[data-theme=terminal] .sw-crt[data-state=output]{padding-top:6px}
@@ -3233,6 +3238,51 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-crt[data-state=lost]{padding:8px 10px}
 .sw-page[data-theme=terminal] .sw-nosig{letter-spacing:.04em}
 .sw-page[data-theme=terminal] .sw-quiet{padding:8px;letter-spacing:.04em}
+/* commands: HUD */
+.sw-cmds{display:flex;flex-direction:column;gap:12px;min-width:0}
+.sw-cmds .sw-why,.sw-cmds>.sw-pu,.sw-cmds>.sw-cmnote,.sw-cmds>.sw-empty{margin:0}
+.sw-cmgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;min-width:0}
+.sw-hp[data-span="4"]{grid-column:span 4}
+.sw-cmcon .sw-hgrid{min-height:150px}
+.sw-cmcon .sw-hgrid>.sw-crt,.sw-cmcon .sw-hgrid>.sw-cmerr,.sw-cmcon .sw-hgrid>.sw-cmnote{position:relative;z-index:1;margin:0 196px 0 0}
+.sw-page[data-theme=terminal] .sw-cmcon .sw-crt{margin-top:0;padding:8px 0;border:0;background:none}
+.sw-page[data-theme=terminal] .sw-cmcon .sw-crt[data-state=lost]{padding:10px 8px}
+.sw-page[data-theme=terminal] .sw-cmcon .sw-crth{position:static;padding:0 8px 6px;border:0;background:none}
+.sw-cmcon .sw-hgrid>.sw-cmnote{padding:10px 8px}
+.sw-cmcon .sw-cmerr .sw-btns{margin:0 0 10px 8px}
+.sw-cmcon .sw-out{max-height:260px;scrollbar-width:thin;scrollbar-color:var(--hud-line2,var(--line)) transparent}
+.sw-cmcon .sw-ol{color:var(--ink)}
+.sw-cmcon .sw-ol.is-bad{color:var(--tm-hi,var(--ink));background:color-mix(in srgb,var(--bad) 7%,transparent);box-shadow:inset 2px 0 0 var(--bad)}
+.sw-page .sw-cop.is-run .sw-copb i.on{animation:sw-pulse 1.6s ease-in-out infinite}
+.sw-cml{display:grid;grid-template-columns:max-content max-content minmax(0,1fr) max-content;align-content:start;max-height:176px;overflow:hidden auto;scrollbar-width:thin;scrollbar-color:var(--hud-line2,var(--line)) transparent}
+.sw-cmrow{display:grid;grid-column:1/-1;grid-template-columns:subgrid;column-gap:14px;align-items:center;padding:2px 6px;white-space:nowrap}
+.sw-cmrow>*{grid-row:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.sw-cmlt{color:var(--dim)}
+.sw-cmls{display:inline-flex;align-items:center;gap:7px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink)}
+.sw-cmls::before{content:"";flex:none;width:6px;height:6px;background:var(--c)}
+.sw-cmrow .sw-cmc{color:var(--ink)}
+.sw-cmrow .sw-cmx{font-size:inherit;letter-spacing:0;text-align:right}
+.sw-cmrow:hover{background:color-mix(in srgb,var(--a) 6%,transparent)}
+.sw-cmrow[aria-pressed=true]{background:var(--hud-teal-d,var(--raised));box-shadow:inset 2px 0 0 var(--c,var(--a))}
+.sw-cmrow[aria-pressed=true]>*{color:var(--tm-hi,var(--ink))}
+.sw-cmcard .sw-kv>dd{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.sw-cmkv{color:var(--ink)}
+.sw-page[data-theme=terminal] .sw-cmcard .sw-exit{display:inline-flex;align-items:center;gap:7px;padding:0;border:0;color:var(--ink);line-height:inherit}
+.sw-page[data-theme=terminal] .sw-cmcard .sw-exit::before{content:"";flex:none;width:6px;height:6px;background:var(--c)}
+.sw-page[data-theme=terminal] .sw-cmcard .sw-exit b{font:inherit;color:var(--tm-hi,var(--ink));text-shadow:none}
+.sw-page[data-theme=terminal] .sw-cmcard .sw-exit span{font-size:11.5px;color:var(--dim)}
+.sw-cmcard .sw-exit:not([data-st=stopped]) span{display:none}
+.sw-page[data-theme=terminal] .sw-cmcard .sw-radar{display:inline-block;width:11px;height:11px;border:1.5px solid color-mix(in srgb,var(--run) 30%,transparent);border-top-color:var(--run);border-radius:50%;vertical-align:-1px}
+.sw-page[data-theme=terminal] .sw-cmcard .sw-radar::before{content:none}
+.sw-cmcut{margin:8px 0 0;font-size:11.5px;color:var(--dim)}
+.sw-cmfoot{gap:6px 16px;margin-top:12px}
+.sw-page[data-theme=terminal] .sw-cmfoot .sw-ib.is-text{padding:2px 0;gap:6px;color:var(--dim);background:none;box-shadow:none}
+.sw-page[data-theme=terminal] .sw-cmfoot .sw-ib.is-text .sw-ibi{display:inline-flex;width:12px;height:12px;color:var(--a)}
+.sw-page[data-theme=terminal] .sw-cmfoot .sw-ib.is-text:hover{color:var(--tm-hi,var(--ink))}
+@container (max-width:540px){
+ .sw-cmcon .sw-hgrid>.sw-crt,.sw-cmcon .sw-hgrid>.sw-cmerr,.sw-cmcon .sw-hgrid>.sw-cmnote{margin-right:0}
+ .sw-cmls>span,.sw-cmxe{display:none}
+}
 /* toast */
 .sw-live{position:absolute;right:20px;top:92px;z-index:10;pointer-events:none}
 .sw-toast{width:max-content;max-width:min(360px,calc(100cqw - 40px));display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;overflow-wrap:anywhere;padding:8px 10px;font-size:12.5px;background:var(--raised);color:var(--ink);box-shadow:0 8px 24px color-mix(in srgb,var(--bg) 60%,transparent),inset 0 0 0 1px var(--a)}

@@ -19,6 +19,11 @@ still takes the theme's colours. Red marks only a failure, amber only something 
   PLAYBACK (one cell per edit, Previous / Play / Next); FILE (name, folder, what changed, the request);
   LOG (every edit with its time, EDIT / WRITE / DELETE / MOVE / FAILED and its +/−; a row opens it).
   Below 540 px the panels stack and the callouts give way.
+- **Commands is a HUD.** CONSOLE across the grid: the picked command's output on the faint grid with
+  line numbers, failing lines marked red, a FINISHED / RUNNING gauge and a FIRST ERROR callout tied by a
+  leader line to that line; below it COMMANDS (one row per command: start time, a status square and
+  word, the command on one line, its exit and duration; a row picks it, the newest by default) and
+  PROCESS (command, folder, ran, exit, lines, Copy output / Copy command). Rows no longer fold open.
 - **Agents and Commands take the same look:** caps titles and tabs ("01 AGENTS"), square hairline
   panels, no scanlines, quiet outlined buttons.
 - A failed request's count keeps its text in the reading colour and carries a red mark.

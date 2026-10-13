@@ -564,12 +564,16 @@ await act(async () => { unitNamed('long-task').click() })
 extraBatches = []
 await refresh()
 
-// 9. Commands tab
+// 9. Commands tab: a HUD — the picked command's CONSOLE, the COMMANDS list, the PROCESS card
 await toTab('commands')
 check(tab('commands')?.getAttribute('aria-selected') === 'true' && q('.sw-why')?.textContent.includes('not subagents'), 'the Commands tab says these are not subagents')
 check(rest.includes('/processes?session_id=st-1'), 'background commands read for the stored chat id')
-const prs = () => qa('.sw-cmr')
+const prs = () => qa('.sw-cmrow')
+const pressed = () => prs().filter(r => r.getAttribute('aria-pressed') === 'true')
+const conTitle = () => q('.sw-cmcon .sw-hpt .sw-sr')?.textContent
 check(prs().length === 4 && prs().map(p => p.dataset.st).join() === 'running,stopped,failed,completed', `newest command first, each with its status (${prs().map(p => p.dataset.st)})`)
+check(prs().map(p => p.querySelector('.sw-cmls')?.textContent).join() === 'Running,Stopped,Failed,Finished' && prs().every(p => /\d\d:\d\d$/.test(p.querySelector('.sw-cmlt')?.textContent || '')),
+  `every row: its start time and its status word (${prs().map(p => p.querySelector('.sw-cmls')?.textContent)})`)
 check(prs()[3].querySelector('.sw-cmc')?.textContent === 'npm test' && prs()[3].querySelector('.sw-cmc')?.dataset.tip === 'npm test\n--watch=false',
   'row shows the first line, tooltip the whole command')
 check(/exit 1/.test(prs()[2].querySelector('.sw-cmx')?.textContent || '') && !/exit/.test(prs()[3].querySelector('.sw-cmx')?.textContent || ''),
@@ -578,24 +582,43 @@ check(prs()[1].querySelector('.sw-cmx')?.textContent.endsWith('—') && !/\d+s$/
 check(/1m 0[5-9]s$/.test(prs()[0].querySelector('.sw-cmx')?.textContent || ''), `running command counts its elapsed time (${prs()[0].querySelector('.sw-cmx')?.textContent})`)
 check(prs()[3].querySelector('.sw-cmx')?.textContent.endsWith('42s'), 'finished command shows its duration')
 check(q('.sw-pu')?.textContent === '1 record could not be read and is not listed', 'unreadable records are reported, not hidden')
+check(q('.sw-cmcon')?.dataset.span === '6' && q('.sw-cmlp')?.dataset.span === '4' && q('.sw-cmcard')?.dataset.span === '2'
+  && /\.sw-hp\[data-span="4"\]\{grid-column:span 4\}/.test([...document.querySelectorAll('style')].map(s => s.textContent).join(''))
+  && q('.sw-cmlp .sw-hpt .sw-sr')?.textContent === 'Commands · 4' && q('.sw-cmcard .sw-hpt .sw-sr')?.textContent === 'Process',
+  'the tab is a HUD: CONSOLE across the grid, COMMANDS (4 of 6 columns, counted) and PROCESS (2) below')
+check(pressed().length === 1 && pressed()[0] === prs()[0] && conTitle() === 'Console · npm run dev',
+  `with none picked, the console shows the newest command (${conTitle()})`)
+check(q('.sw-cmcon .sw-cmnote')?.textContent === 'Still running — its output appears here when it finishes.' && !rest.some(p => p.startsWith('/process_output'))
+  && q('.sw-cmcard .sw-radar') && !q('.sw-cmcard .sw-exit') && q('.sw-cmcon .sw-hchip')?.textContent === 'Running'
+  && q('.sw-cmgauge .sw-col')?.textContent === 'RUNNING' && /^1m 0[5-9]s$/.test(q('.sw-cmgauge .sw-copn')?.textContent || '') && q('.sw-cmgauge .sw-cop.is-run'),
+  `a running command: a radar, no output asked for yet and when it is shown, a RUNNING gauge with its time (${q('.sw-cmgauge')?.textContent})`)
 {
   const bad = prs()[2]
   bad.focus()
   await act(async () => { bad.click() })
   await tick(5)
-  check(bad.isConnected && document.activeElement === bad && bad.getAttribute('aria-expanded') === 'true', 'opening a command keeps focus on its row')
+  check(bad.isConnected && document.activeElement === bad && pressed().length === 1 && pressed()[0] === bad, 'picking a command keeps focus on its row and marks only that row')
   await act(async () => { document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true })) }) // focus inside the page holds its chat; let it go
 }
-check(rest.includes('/process_output?session_id=st-1&process_id=proc_bad'), 'opening a command reads its output for THIS chat')
-check(q('.sw-cmo .sw-out')?.textContent === 'tail of proc_bad in st-1' && q('.sw-cmo .sw-pc')?.textContent === 'FULL proc_bad'
-  && q('.sw-cmo .sw-exit')?.dataset.st === 'failed' && q('.sw-cmo .sw-exit b')?.textContent === '1' && q('.sw-cmo .sw-exit')?.getAttribute('aria-label') === 'exit 1'
-  && qa('.sw-cmo .sw-cchip').map(c => c.textContent).join('|') === 'dir/w|ran5s'
-  && qa('.sw-cmo .sw-cchip').every(c => c.querySelector('.sw-cchipv.sw-1l')?.dataset.tip),
-  `an opened row: its exit code on a big status hex, dir and ran chips, the full command, the output tail (${qa('.sw-cmo .sw-cchip').map(c => c.textContent)})`)
-check(q('.sw-cmo .sw-crt[data-state=output] .sw-ol')?.dataset.n === '1' && /1 line$/.test(q('.sw-cmo .sw-crth')?.textContent || ''), 'the output sits in a CRT box with numbered lines')
-check(/last/.test(q('.sw-cmo .sw-outl')?.textContent || ''), 'a cut output says it is the end only')
+check(rest.includes('/process_output?session_id=st-1&process_id=proc_bad'), 'picking a command reads its output for THIS chat')
+check(q('.sw-cmcon .sw-out')?.textContent === 'tail of proc_bad in st-1' && conTitle() === 'Console · python build.py'
+  && q('.sw-cmcon .sw-hchip')?.dataset.st === 'failed' && q('.sw-cmcon .sw-hchip')?.textContent === 'exit 1',
+  `the console shows the picked command: its output, its command in the title, its exit code on a status chip (${conTitle()})`)
 {
-  const btn = label => qa('.sw-cmo .sw-btns .sw-ib').find(b => b.textContent === label)
+  const dd = qa('.sw-cmcard .sw-kv dd')
+  check(qa('.sw-cmcard .sw-kv dt').map(d => d.textContent).join('|') === 'CØMMAND|DIR|RAN|EXIT|LINES'
+    && dd[0]?.querySelector('.sw-1l')?.textContent === 'FULL proc_bad' && dd[0]?.querySelector('.sw-1l')?.dataset.tip === 'FULL proc_bad'
+    && dd[1]?.querySelector('.sw-1l')?.textContent === '/w' && dd[1]?.querySelector('.sw-1l')?.dataset.tip === '/w'
+    && dd[2]?.textContent === '5s' && dd[4]?.textContent === '1'
+    && q('.sw-cmcard .sw-exit')?.dataset.st === 'failed' && q('.sw-cmcard .sw-exit b')?.textContent === '1' && q('.sw-cmcard .sw-exit')?.getAttribute('aria-label') === 'exit 1',
+    `the PROCESS card: the whole command and its folder on one line (full text in the tooltip), ran, the exit code on a status mark, lines (${dd.map(d => d.textContent).join(' | ')})`)
+}
+check(q('.sw-cmcon .sw-crt[data-state=output] .sw-ol')?.dataset.n === '1' && /1 line$/.test(q('.sw-cmcon .sw-crth')?.textContent || ''), 'the output: numbered lines under a header that counts them')
+check(/last/.test(q('.sw-cmcon .sw-outl')?.textContent || ''), 'a cut output says it is the end only')
+check(q('.sw-cmgauge .sw-col')?.textContent === 'FINISHED' && q('.sw-cmgauge .sw-copn')?.textContent === '100%' && qa('.sw-cmgauge .sw-copb i.on').length === 10 && !q('.sw-cmfirst'),
+  'a finished command: the FINISHED gauge at 100%, no FIRST ERROR callout without an error line')
+{
+  const btn = label => qa('.sw-cmcard .sw-cmfoot .sw-ib').find(b => b.textContent === label)
   await act(async () => { btn('Copy output').click() })
   await tick(5)
   check(clip.at(-1) === 'tail of proc_bad in st-1', 'Copy output copies the output')
@@ -609,40 +632,42 @@ check(/last/.test(q('.sw-cmo .sw-outl')?.textContent || ''), 'a cut output says 
   clipRejects = false
 }
 process.off('unhandledRejection', onUnhandled)
-await act(async () => { prs()[2].click() })
+await act(async () => { prs()[3].click() })
+await tick(5)
 procOutputFails = true
 await quiet(async () => { await act(async () => { prs()[2].click() }); await tick(5) })
-check(/Could not read its output: output 503/.test(q('.sw-cmerr[role=alert]')?.textContent || '') && q('.sw-cmerr .sw-ib')?.textContent === 'Try again'
-  && q('.sw-cmerr .sw-crt[data-state=lost] .sw-nosig')?.textContent === 'NO SIGNAL',
-  'an unreadable output is an alert: NO SIGNAL, the message, Try again')
+check(/Could not read its output: output 503/.test(q('.sw-cmcon .sw-cmerr[role=alert]')?.textContent || '') && q('.sw-cmerr .sw-ib')?.textContent === 'Try again'
+  && q('.sw-cmerr .sw-crt[data-state=lost] .sw-nosig')?.textContent === 'NO SIGNAL' && !q('.sw-cmcard .sw-cmfoot .sw-ib[aria-label="Copy output"]'),
+  'an unreadable output is an alert in the console: NO SIGNAL, the message, Try again; nothing to copy')
 procOutputFails = false
 await act(async () => { q('.sw-cmerr .sw-ib').click() })
 await tick(5)
-check(q('.sw-cmo .sw-out')?.textContent === 'tail of proc_bad in st-1' && !q('.sw-cmerr'), 'Try again reads the output again')
+check(q('.sw-cmcon .sw-out')?.textContent === 'tail of proc_bad in st-1' && !q('.sw-cmerr'), 'Try again reads the output again')
 {
   const outReads = rest.filter(p => p.startsWith('/process_output')).length
   await act(async () => { prs()[0].click() })
   await tick(5)
-  check(q('.sw-cmo[data-st=running] .sw-cmnote')?.textContent === 'Still running — its output appears here when it finishes.' && rest.filter(p => p.startsWith('/process_output')).length === outReads
-    && q('.sw-cmo[data-st=running] .sw-radar') && !q('.sw-cmo[data-st=running] .sw-exit'),
-    'a running command: a radar, no output asked for yet, and when it is shown')
-  check(qa('.sw-cmo').length === 2, `opening one command keeps the others open (${qa('.sw-cmo').length} open)`)
+  check(q('.sw-cmcon .sw-hgrid[data-st=running] .sw-cmnote') && rest.filter(p => p.startsWith('/process_output')).length === outReads && qa('.sw-cmcon').length === 1 && pressed()[0] === prs()[0],
+    'picking the running command again: one console, no output asked for')
 }
 {
   const release = hold('procout')
   await act(async () => { prs()[1].click() })
   await tick(5)
-  const killed = () => qa('.sw-cmo').find(c => c.dataset.st === 'stopped')
-  check(killed()?.querySelector('.sw-crt[data-state=reading][role=status] .sw-scan') && killed()?.querySelector('.sw-crth')?.textContent === 'Reading its output…',
-    'while its output is read: a scan bar and what is happening')
+  check(q('.sw-cmcon .sw-hgrid[data-st=stopped] .sw-crt[data-state=reading][role=status] .sw-scan') && q('.sw-cmcon .sw-crth')?.textContent === 'Reading its output…' && !q('.sw-cmcon .sw-out'),
+    'while its output is read: a scan bar and what is happening, never the last command\'s output')
   await act(async () => { release() })
   await tick(5)
-  const lines = [...(killed()?.querySelectorAll('.sw-ol') || [])]
-  check(lines.map(l => l.dataset.n).join() === '1,2,3,4' && lines.map(l => l.classList.contains('is-bad')).join() === 'false,true,false,true' && /4 lines$/.test(killed()?.querySelector('.sw-crth')?.textContent || ''),
+  const lines = qa('.sw-cmcon .sw-ol')
+  check(lines.map(l => l.dataset.n).join() === '1,2,3,4' && lines.map(l => l.classList.contains('is-bad')).join() === 'false,true,false,true' && /4 lines$/.test(q('.sw-cmcon .sw-crth')?.textContent || ''),
     `output lines are numbered and the error lines are highlighted (${lines.map(l => l.className).join()})`)
-  check(killed()?.querySelector('.sw-exit b')?.textContent === '-15' && killed()?.querySelector('.sw-exit span')?.textContent === 'killed' && killed()?.querySelector('.sw-exit')?.getAttribute('aria-label') === 'killed',
-    'a killed command says so on its exit mark')
-  await act(async () => { prs()[1].click() })
+  const first = q('.sw-cmcon .sw-cmfirst')
+  const target = first && q(`.sw-cmcon .sw-out [data-o="${first.dataset.to}"]`)
+  check(first?.querySelector('.sw-col')?.textContent === 'FIRST ERRØR' && first?.querySelector('.sw-cov')?.textContent === 'LINE 2' && target === q('.sw-cmcon .sw-ol.is-bad'),
+    `the FIRST ERROR callout names the first failing line and its leader line has that row to point at (${first?.textContent} -> ${target?.textContent})`)
+  check(q('.sw-cmcard .sw-exit b')?.textContent === '-15' && q('.sw-cmcard .sw-exit span')?.textContent === 'killed' && q('.sw-cmcard .sw-exit')?.getAttribute('aria-label') === 'killed'
+    && q('.sw-cmcon .sw-hchip')?.textContent === 'killed' && q('.sw-cmgauge .sw-col')?.textContent === 'STØPPED' && !qa('.sw-cmgauge .sw-copb i.on').length,
+    'a killed command says so on its exit mark, its chip and its gauge')
 }
 check(mod.outputLines('ok\nError: x\nall FAILED\n  Traceback\nException!\nfine\n').map(l => l.bad).join() === 'false,true,true,true,true,false',
   'error / failed / exception / traceback lines are errors, in any case; a final newline adds no line')
@@ -753,20 +778,20 @@ stub.state.list['rt-1'] = ['s1', 's1a', 's3'].map(id => ({ subagent_id: id, dele
 }
 stub.state.list['rt-1'] = []
 
-// 2. switching chats clears live state, folds open rows, selects the main agent
+// 2. switching chats clears live state, shows the newest command again, selects the main agent
 await emit('subagent.start', 'rt-1', { subagent_id: 'z1', delegation_id: 'dz', goal: "Do 'zed'" })
 check(q('.sw-pick')?.textContent === 'Current run', 'live again before the switch')
 await act(async () => { unitNamed('zed').click() })
 await toTab('commands')
 await act(async () => { prs()[1].click() })
-check(q('.sw-cmo'), 'a command row is open before the switch')
+check(pressed()[0] === prs()[1], 'another command is picked before the switch')
 await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
 await tick(10)
 check(rest.includes('/children?session_id=st-2') && rest.includes('/processes?session_id=st-2') && !prs().length && q('.sw-cmds .sw-empty')?.textContent === 'No background commands in this chat.',
   'history and commands re-read for the new chat; none -> it says so')
 await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
 await tick(10)
-check(prs().length === 4 && !q('.sw-cmo'), 'switching chats folds every open row')
+check(prs().length === 4 && pressed().length === 1 && pressed()[0] === prs()[0], 'switching chats shows the newest command again')
 await toTab('agents')
 check(!unitNamed('zed') && q('.sw-focus')?.dataset.kind === 'main', 'switching chats clears the live run and selects the main agent')
 
@@ -826,7 +851,7 @@ check(prs().length === 4, `watching the first chat before the clicks (${prs().le
 let mark = rest.length
 await act(async () => {
   appFocusNext = ['rt-2', 'st-2']
-  pointer(q('.sw-cmr'))
+  pointer(q('.sw-cmrow'))
 })
 await tick(10)
 check(!rest.slice(mark).some(p => p.includes('session_id=st-2')) && prs().length === 4, `a click inside the page keeps the watched chat (${rest.slice(mark).join(' ')})`)
@@ -859,13 +884,18 @@ await tick(10)
 mark = rest.length
 await act(async () => { prs()[1].click() })
 await tick(5)
-check(!rest.slice(mark).some(p => p.startsWith('/process_output')) && q('.sw-cmo .sw-cmnote')?.textContent === 'No output was recorded.',
+check(!rest.slice(mark).some(p => p.startsWith('/process_output')) && q('.sw-cmcon .sw-cmnote')?.textContent === 'No output was recorded.',
   'a command with no receipt asks for no output and says none was recorded')
-check(/first 4000 characters/.test(q('.sw-cmo .sw-cmeta')?.textContent || ''), `a cut command says it is cut (${q('.sw-cmo .sw-cmeta')?.textContent})`)
-await act(async () => { prs()[1].click() })
+check(/first 4000 characters/.test(q('.sw-cmcard .sw-cmcut')?.textContent || ''), `a cut command says it is cut (${q('.sw-cmcard .sw-cmcut')?.textContent})`)
+{
+  const cmd = q('.sw-cmcard .sw-kv dd .sw-1l')
+  const row = prs()[1].querySelector('.sw-cmc')
+  check(cmd?.textContent.length === 4000 && cmd?.dataset.tip.length === 300 && row?.dataset.tip.length === 300 && !q('.sw-cmds pre:not(.sw-out)'),
+    `a long command stays on one line in the row and the card, its tooltip capped (${cmd?.dataset.tip.length} / ${row?.dataset.tip.length})`)
+}
 await act(async () => { prs()[0].click() })
 await tick(5)
-check(q('.sw-cmo .sw-crt[data-state=quiet] .sw-quiet')?.textContent === '— IT PRINTED NOTHING —', 'a command that printed nothing says so')
+check(q('.sw-cmcon .sw-crt[data-state=quiet] .sw-quiet')?.textContent === '— IT PRINTED NOTHING —', 'a command that printed nothing says so')
 await toTab('agents')
 
 // 16c. live races: a queued worker before Hermes lists it, a stale snapshot after a complete, and
