@@ -261,7 +261,24 @@ This edit failed` : path),
         addedSign: 'added',
         rest: n => `Show the rest (${n} more line${n === 1 ? '' : 's'})`,
         notLoaded: n => `${n} more line${n === 1 ? '' : 's'} of this edit not loaded (too long)`,
-        reading: 'Reading this edit…'
+        reading: 'Reading this edit…',
+        diff: name => `Diff · ${name}`,
+        applied: 'Applied',
+        notApplied: 'Not applied',
+        replaying: 'Replaying…',
+        paused: 'Paused',
+        playback: 'Playback',
+        linesChanged: 'Lines changed',
+        thisEdit: 'This edit',
+        lines: n => `${n} line${n === 1 ? '' : 's'}`,
+        max: n => `${n} max`,
+        soFar: 'Lines so far',
+        file: 'File',
+        folder: 'Folder',
+        change: 'Change',
+        request: 'Request',
+        log: n => `Log · ${n} edit${n === 1 ? '' : 's'}`,
+        word: { edit: 'EDIT', whole: 'WRITE', delete: 'DELETE', move: 'MOVE', failed: 'FAILED' }
       },
       file: {
         op: {
@@ -1861,7 +1878,7 @@ function DiffLines({ t, step, got }) {
       jsx('div', {
         className: 'sw-rlines', tabIndex: 0, role: 'group', 'aria-label': stepSummary(step, t),
         children: shown.map(([tag, text], i) => (tag === '@'
-          ? jsx('div', { className: 'sw-rl', 'data-tag': '@', children: jsx('span', { children: `⋯ ${t('sw.replay.from', text)}` }) }, i)
+          ? jsx('div', { className: 'sw-rl', 'data-tag': '@', 'data-h': i, children: jsx('span', { children: t('sw.replay.from', text) }) }, i)
           : jsxs('div', {
             className: 'sw-rl', 'data-tag': tag,
             children: [
@@ -1876,66 +1893,253 @@ function DiffLines({ t, step, got }) {
   }, step.id)
 }
 
+// The Replay tab is laid out as a HUD (the look the user picked from a mission-control reference): a
+// six-column grid of hairline panels with caps titles. Titles swap O for Ø on screen only; a screen
+// reader hears the plain words.
+const hudCaps = text => String(text).toUpperCase().replace(/O/g, 'Ø')
+
+function HudPanel({ title, chip, span, className = '', children }) {
+  return jsxs('section', {
+    className: `sw-hp ${className}`.trim(), 'data-span': span,
+    children: [
+      jsxs('div', {
+        className: 'sw-hph',
+        children: [
+          jsxs('h3', { className: 'sw-hpt', children: [jsx('span', { 'aria-hidden': 'true', children: hudCaps(title) }, 'v'), jsx('span', { className: 'sw-sr', children: title }, 's')] }, 't'),
+          chip || null
+        ]
+      }, 'h'),
+      ...children
+    ]
+  })
+}
+
+const hudChip = (st, word) => jsx('span', { className: 'sw-hchip', 'data-st': st, children: word }, 'chip')
+
+function HudTrack({ label, value, frac, top, st }) {
+  return jsxs('div', {
+    className: 'sw-tk', 'data-st': st,
+    children: [
+      jsxs('div', { className: 'sw-tkh', children: [jsx('span', { 'aria-hidden': 'true', children: hudCaps(label) }, 'l'), jsx('span', { className: 'sw-sr', children: label }, 's'), jsx('b', { children: value }, 'v')] }, 'h'),
+      jsx('div', { className: 'sw-tkb', 'aria-hidden': 'true', children: jsx('i', { style: { width: `${Math.max(1.5, Math.min(100, frac * 100)).toFixed(1)}%` } }) }, 'b'),
+      jsxs('div', { className: 'sw-tks', 'aria-hidden': 'true', children: [jsx('span', { children: '0' }, 'a'), jsx('span', { children: top }, 'b')] }, 's')
+    ]
+  })
+}
+
+/** A smooth area chart through the values (a cubic between each pair), for an svg 300 × 96. */
+export function areaPath(vals, W = 300, H = 96) {
+  const max = Math.max(...vals, 1)
+  const xs = vals.map((_, k) => 6 + (W - 12) * (vals.length > 1 ? k / (vals.length - 1) : 0.5))
+  const ys = vals.map(v => H - 8 - (H - 22) * (v / max))
+  let d = `M${xs[0]},${ys[0]}`
+  for (let k = 1; k < xs.length; k++) {
+    const cx = (xs[k - 1] + xs[k]) / 2
+    d += ` C${cx},${ys[k - 1]} ${cx},${ys[k]} ${xs[k]},${ys[k]}`
+  }
+  return { d, xs, ys }
+}
+
+function HudChart({ vals, at, failed }) {
+  const W = 300, H = 96
+  const { d, xs, ys } = areaPath(vals, W, H)
+  return jsxs('svg', {
+    className: 'sw-ch', viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', 'aria-hidden': 'true',
+    children: [
+      jsx('defs', { children: jsxs('linearGradient', { id: 'sw-chfill', x1: 0, x2: 0, y1: 0, y2: 1, children: [jsx('stop', { offset: 0, className: 'sw-chs0' }, 'a'), jsx('stop', { offset: 1, className: 'sw-chs1' }, 'b')] }) }, 'd'),
+      ...[0.25, 0.5, 0.75].map(f => jsx('line', { className: 'sw-chg', x1: 0, x2: W, y1: H * f, y2: H * f }, `h${f}`)),
+      ...[0.2, 0.4, 0.6, 0.8].map(f => jsx('line', { className: 'sw-chg', y1: 0, y2: H, x1: W * f, x2: W * f }, `v${f}`)),
+      jsx('path', { className: 'sw-cha', d: `${d} L${xs.at(-1)},${H} L${xs[0]},${H} Z` }, 'a'),
+      jsx('path', { className: 'sw-chl', d }, 'l'),
+      ...failed.map(k => jsx('rect', { className: 'sw-chx', x: xs[k] - 1, y: H - 5, width: 2, height: 5 }, `x${k}`)),
+      jsx('line', { className: 'sw-chm', x1: xs[at], x2: xs[at], y1: 0, y2: H }, 'm'),
+      jsx('circle', { className: 'sw-chd', cx: xs[at], cy: ys[at], r: 4 }, 'c')
+    ]
+  })
+}
+
+/** Leader lines from each callout to the diff row it names, measured from the laid-out page. */
+function useWires(heroRef, deps) {
+  const [wires, setWires] = useState('')
+  useEffect(() => {
+    const hero = heroRef.current
+    if (!hero || typeof hero.getBoundingClientRect !== 'function') return undefined
+    const draw = () => {
+      const box = hero.getBoundingClientRect()
+      const list = hero.querySelector('.sw-rlines')
+      const view = list ? list.getBoundingClientRect() : box
+      const out = []
+      for (const co of hero.querySelectorAll('.sw-co[data-to]')) {
+        const row = list?.querySelector(`[data-h="${co.dataset.to}"]`)
+        const tag = co.querySelector('.sw-col')
+        if (!row || !tag || !tag.offsetParent) continue
+        const a = tag.getBoundingClientRect(), b = row.getBoundingClientRect()
+        const by = b.top + b.height / 2
+        if (by < view.top || by > view.bottom) continue
+        const ax = Math.round(a.left - box.left), ay = Math.round(a.top + a.height / 2 - box.top)
+        const bx = Math.round(view.right - box.left - 10), y = Math.round(by - box.top)
+        out.push([ax, ay, ax - 18, bx, y])
+      }
+      const next = JSON.stringify(out)
+      setWires(prev => (prev === next ? prev : next))
+    }
+    draw()
+    const list = hero.querySelector('.sw-rlines')
+    list?.addEventListener('scroll', draw)
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(draw) : null
+    ro?.observe(hero)
+    return () => { list?.removeEventListener('scroll', draw); ro?.disconnect() }
+  }, deps)
+  return wires ? JSON.parse(wires) : []
+}
+
+function stepWord(s, t) {
+  if (s.failed) return t('sw.replay.word.failed')
+  return t(`sw.replay.word.${s.kind === 'whole' || s.kind === 'delete' || s.kind === 'move' ? s.kind : 'edit'}`)
+}
+
 function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, setPlaying, onToast }) {
   const steps = turn.steps
   const i = Math.min(index, steps.length - 1)
   const step = steps[i]
   const got = useReplayStep(storedId, step?.id)
   const marks = useRef(null)
+  const log = useRef(null)
+  const hero = useRef(null)
+  const lines = got.data?.lines || []
+  const hunks = []
+  lines.slice(0, PEEK_LINES).forEach(([tag, text], k) => {
+    if (tag === '@') hunks.push({ k, text, add: 0, rem: 0 })
+    else if (hunks.length && tag === '+') hunks.at(-1).add++
+    else if (hunks.length && tag === '-') hunks.at(-1).rem++
+  })
+  const wires = useWires(hero, [i, turn.id, got.data, got.loading])
   useEffect(() => {
-    const el = marks.current?.querySelector('[aria-current=step]')
-    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    for (const box of [marks.current, log.current]) {
+      const el = box?.querySelector('[aria-current=step]')
+      if (el && box.scrollHeight > box.clientHeight) box.scrollTop = Math.max(0, el.offsetTop - box.offsetTop - box.clientHeight / 2)
+    }
   }, [i, turn.id])
   if (!step) return null
   const { dir, name } = splitPath(step.path)
   const who = step.who ? t('sw.replay.by', names.get(step.who) || step.who) : t('sw.replay.byMain')
+  const st = step.failed ? 'failed' : 'completed'
+  const sizes = steps.map(s => (s.failed ? 0 : (s.added || 0) + (s.removed || 0)))
+  const sums = sizes.map((_, k) => sizes.slice(0, k + 1).reduce((x, y) => x + y, 0))
+  const failed = steps.map((s, k) => (s.failed ? k : -1)).filter(k => k >= 0)
+  const all = sums.at(-1) || 0
+  const pct = Math.round(100 * (i + 1) / steps.length)
+  const maxA = Math.max(1, ...steps.map(s => s.added || 0))
+  const maxR = Math.max(1, ...steps.map(s => s.removed || 0))
+  const maxS = Math.max(1, ...sizes)
+  const go = k => { setPlaying(false); setIndex(k) }
+  const bars = n => Array.from({ length: n }, (_, k) => jsx('i', { className: k < Math.round(pct / 100 * n) ? 'on' : undefined }, k))
   return jsxs('div', {
     className: 'sw-rplay',
     children: [
-      jsxs('div', {
-        className: 'sw-rbar',
+      jsx(HudPanel, {
+        title: t('sw.replay.diff', name), span: 6, className: 'sw-hpx', chip: hudChip(st, step.failed ? t('sw.replay.notApplied') : t('sw.replay.applied')),
         children: [
-          jsx('b', { className: 'sw-rof', 'aria-live': 'polite', children: t('sw.replay.of', i + 1, steps.length) }, 'of'),
           jsxs('div', {
-            className: 'sw-btns',
+            className: 'sw-hgrid', ref: hero,
             children: [
-              jsx(IconButton, { label: t('sw.replay.prev'), icon: ICON.chev.bind(null, false), onClick: () => { setPlaying(false); setIndex(i - 1) }, disabled: i === 0, text: true }, 'p'),
-              jsx(IconButton, { label: t('sw.replay.next'), icon: ICON.chev.bind(null, false), onClick: () => { setPlaying(false); setIndex(i + 1) }, disabled: i >= steps.length - 1, text: true }, 'n'),
-              jsx(Tip, { label: t('sw.replay.playTip'), children: jsx('span', { children: jsx(IconButton, { label: t(playing ? 'sw.replay.pause' : 'sw.replay.play'), icon: ICON.run, onClick: () => { if (!playing && i >= steps.length - 1) setIndex(0); setPlaying(!playing) }, disabled: steps.length < 2, text: true, primary: true }) }) }, 'go')
+              jsx('svg', { className: 'sw-wires', 'aria-hidden': 'true', children: wires.map(([ax, ay, kx, bx, y], k) => jsxs('g', { children: [jsx('path', { d: `M${ax},${ay} H${kx} L${bx},${y}` }, 'p'), jsx('circle', { cx: bx, cy: y, r: 2.5 }, 'c')] }, k)) }, 'w'),
+              jsx(DiffLines, { t, step, got }, step.id),
+              jsxs('div', {
+                className: 'sw-cos', 'aria-hidden': 'true',
+                children: [
+                  jsxs('div', { className: 'sw-co', children: [jsx('span', { className: 'sw-col', children: hudCaps(playing ? t('sw.replay.replaying') : t('sw.replay.paused')) }, 'l'), jsxs('span', { className: 'sw-cop', children: [jsx('span', { className: 'sw-copn', children: `${pct}%` }, 'n'), jsx('span', { className: 'sw-copb', children: bars(10) }, 'b')] }, 'p')] }, 'st'),
+                  ...hunks.slice(0, 3).map(h => jsxs('div', { className: 'sw-co', 'data-to': h.k, children: [jsx('span', { className: 'sw-col', children: hudCaps(t('sw.replay.from', h.text)) }, 'l'), jsx('span', { className: 'sw-cov', 'data-st': st, children: `+${h.add} −${h.rem}` }, 'v')] }, h.k))
+                ]
+              }, 'co')
             ]
-          }, 'b')
+          }, 'hero'),
+          step.failed ? jsxs('p', { className: 'sw-rfail', children: [jsx(OneLine, { text: t('sw.replay.failed', step.error) }, 'e'), jsx('span', { children: t('sw.replay.failedNote') }, 'n')] }, 'x') : null
         ]
-      }, 'bar'),
-      jsx('div', {
-        className: 'sw-rmarks', ref: marks, role: 'list',
-        children: steps.map((s, k) => jsx('span', {
-          role: 'listitem',
-          children: jsx(Tip, {
-            label: t('sw.replay.markTip', tipText(s.path), s.failed),
-            children: jsx('button', {
-              type: 'button', className: 'sw-rmark', 'data-at': k < i ? 'past' : k === i ? 'now' : 'next', 'data-failed': s.failed ? 'true' : undefined,
-              'aria-current': k === i ? 'step' : undefined,
-              'aria-label': t('sw.replay.stepLabel', k + 1, splitPath(s.path).name, s.failed), onClick: () => { setPlaying(false); setIndex(k) },
-              children: [jsx('b', { children: k + 1 }, 'n'), jsx('span', { className: 'sw-1l', children: splitPath(s.path).name }, 'f'), s.failed ? jsx('span', { className: 'sw-rbad', children: '✗' }, 'x') : null]
+      }, 'diff'),
+      jsx(HudPanel, {
+        title: t('sw.replay.linesChanged'), span: 2,
+        children: [
+          jsx(HudTrack, { label: t('sw.replay.addedSign'), value: `+${step.added || 0}`, frac: (step.added || 0) / maxA, top: maxA, st: 'completed' }, 'a'),
+          jsx(HudTrack, { label: t('sw.replay.removedSign'), value: `−${step.removed || 0}`, frac: (step.removed || 0) / maxR, top: maxR, st: 'failed' }, 'r'),
+          jsx(HudTrack, { label: t('sw.replay.thisEdit'), value: t('sw.replay.lines', sizes[i]), frac: sizes[i] / maxS, top: t('sw.replay.max', maxS) }, 's')
+        ]
+      }, 'lines'),
+      jsx(HudPanel, {
+        title: t('sw.replay.soFar'), span: 2,
+        children: [
+          jsxs('div', { className: 'sw-hbig', children: [sums[i], jsx('small', { children: `/ ${all}` }, 's')] }, 'b'),
+          jsx(HudChart, { vals: sums, at: i, failed }, 'c'),
+          jsxs('div', { className: 'sw-chax', 'aria-hidden': 'true', children: [jsx('span', { children: '#1' }, 'a'), jsx('span', { children: `#${steps.length}` }, 'b')] }, 'x')
+        ]
+      }, 'sofar'),
+      jsx(HudPanel, {
+        title: playing ? t('sw.replay.replaying') : t('sw.replay.playback'), span: 2,
+        children: [
+          jsxs('div', { className: 'sw-hrow', children: [jsx('b', { className: 'sw-rof', 'aria-live': 'polite', children: t('sw.replay.of', i + 1, steps.length) }, 'of'), jsx('b', { 'aria-hidden': 'true', children: `${pct}%` }, 'p')] }, 'r'),
+          jsx('div', {
+            className: 'sw-rmarks', ref: marks, role: 'list',
+            children: steps.map((s, k) => jsx('span', {
+              role: 'listitem',
+              children: jsx(Tip, {
+                label: t('sw.replay.markTip', tipText(s.path), s.failed),
+                children: jsx('button', {
+                  type: 'button', className: 'sw-rmark', 'data-at': k < i ? 'past' : k === i ? 'now' : 'next', 'data-failed': s.failed ? 'true' : undefined,
+                  'aria-current': k === i ? 'step' : undefined,
+                  'aria-label': t('sw.replay.stepLabel', k + 1, splitPath(s.path).name, s.failed), onClick: () => go(k)
+                })
+              })
+            }, s.id))
+          }, 'marks'),
+          jsx('div', {
+            className: 'sw-rbar',
+            children: jsxs('div', {
+              className: 'sw-btns',
+              children: [
+                jsx(IconButton, { label: t('sw.replay.prev'), icon: ICON.chev.bind(null, false), onClick: () => go(i - 1), disabled: i === 0, text: true }, 'p'),
+                jsx(Tip, { label: t('sw.replay.playTip'), children: jsx('span', { children: jsx(IconButton, { label: t(playing ? 'sw.replay.pause' : 'sw.replay.play'), icon: ICON.run, onClick: () => { if (!playing && i >= steps.length - 1) setIndex(0); setPlaying(!playing) }, disabled: steps.length < 2, text: true, primary: true }) }) }, 'go'),
+                jsx(IconButton, { label: t('sw.replay.next'), icon: ICON.chev.bind(null, false), onClick: () => go(i + 1), disabled: i >= steps.length - 1, text: true }, 'n')
+              ]
             })
-          })
-        }, s.id))
-      }, 'marks'),
-      jsxs('div', {
-        className: 'sw-rstep', 'data-failed': step.failed ? 'true' : undefined,
+          }, 'bar')
+        ]
+      }, 'play'),
+      jsx(HudPanel, {
+        title: t('sw.replay.file'), span: 3, className: 'sw-rstep',
         children: [
           jsxs('div', {
             className: 'sw-rfile',
             children: [
               jsx(Tip, { label: tipText(step.path), children: jsx('b', { className: 'sw-rname sw-1l', tabIndex: 0, children: name }) }, 'n'),
-              dir ? jsx(OneLine, { text: dirLabel(dir, cwd, t), className: 'sw-rdir' }, 'd') : null
+              hudChip(st, step.failed ? t('sw.replay.notApplied') : t('sw.replay.applied'))
             ]
           }, 'f'),
-          jsx('p', { className: 'sw-rwhat', children: [stepSummary(step, t), who, t('sw.replay.at', fmtWhen(step.at, now, t))].join(' · ') }, 'w'),
-          step.failed ? jsxs('p', { className: 'sw-rfail', children: [jsx(OneLine, { text: t('sw.replay.failed', step.error) }, 'e'), jsx('span', { children: t('sw.replay.failedNote') }, 'n')] }, 'x') : null,
-          jsx(DiffLines, { t, step, got }, step.id)
+          jsxs('dl', {
+            className: 'sw-kv',
+            children: [
+              jsx('dt', { children: hudCaps(t('sw.replay.folder')) }, 'dk'), jsx('dd', { children: dir ? jsx(OneLine, { text: dirLabel(dir, cwd, t), className: 'sw-rdir' }) : '—' }, 'dv'),
+              jsx('dt', { children: hudCaps(t('sw.replay.change')) }, 'wk'), jsx('dd', { children: jsx('p', { className: 'sw-rwhat sw-1l', children: [stepSummary(step, t), who, t('sw.replay.at', fmtWhen(step.at, now, t))].join(' · ') }) }, 'wv'),
+              jsx('dt', { children: hudCaps(t('sw.replay.request')) }, 'rk'), jsx('dd', { children: jsx(OneLine, { text: turn.id === 't-' ? t('sw.replay.beforeFirst') : turn.ask || t('sw.replay.noText') }) }, 'rv')
+            ]
+          }, 'kv')
         ]
-      }, `step-${step.id}`)
+      }, `step-${step.id}`),
+      jsx(HudPanel, {
+        title: t('sw.replay.log', steps.length), span: 3,
+        children: [jsx('div', {
+          className: 'sw-hlog', ref: log,
+          children: steps.map((s, k) => jsxs('button', {
+            type: 'button', 'data-st': s.failed ? 'failed' : 'completed', 'aria-current': k === i ? 'step' : undefined,
+            'aria-label': t('sw.replay.stepLabel', k + 1, splitPath(s.path).name, s.failed), onClick: () => go(k),
+            children: [
+              jsx('span', { className: 'sw-hlt', children: fmtWhen(s.at, now, t) }, 't'),
+              jsx('span', { className: 'sw-hle', children: stepWord(s, t) }, 'e'),
+              jsx('span', { className: 'sw-hlm', children: splitPath(s.path).name }, 'm'),
+              jsx('span', { className: 'sw-hln', children: `+${s.added || 0} −${s.removed || 0}` }, 'n')
+            ]
+          }, s.id))
+        }, 'l')]
+      }, 'log')
     ]
   })
 }
@@ -1964,10 +2168,9 @@ function Replay({ t, replay, now, names, storedId, onToast }) {
           : jsxs('div', {
             className: 'sw-rgrid',
             children: [
-              jsxs('section', {
-                className: 'sw-rturns',
+              jsx(HudPanel, {
+                title: t('sw.replay.requests'), span: 6, className: 'sw-rturns',
                 children: [
-                  jsx('h3', { className: 'sw-k', children: t('sw.replay.requests') }, 'k'),
                   jsx('div', { className: 'sw-rtlist', children: turns.map(x => jsx(TurnRow, { t, turn: x, now, selected: x.id === turn.id, onPick: () => pick(x.id) }, x.id)) }, 'l'),
                   replay.data.more_turns ? jsx('p', { className: 'sw-pu', children: t('sw.replay.olderTurns', replay.data.more_turns) }, 'o') : null
                 ]
@@ -2589,11 +2792,17 @@ function ProgressChip() {
   })
 }
 
-// The Terminal look's palette, derived from the app theme the way Cockpit's is: the theme's accent
-// is its ink and glow, the theme's green / red / yellow its statuses, the theme's background its
-// ground. Like the rest of this file it holds no colour literal (audit_static.py hexColor).
+// Two palettes. The page wears the HUD palette the user picked from a mission-control reference:
+// black ground, near-black panels on hairlines, one mint accent with dark-teal tracks, grey caps labels.
+// It is fixed, so the page looks the same in every app theme; this block is the only place in the file
+// allowed to hold colour literals (audit_static.py hexColor). The status-bar chip sits in the app's own
+// bar and keeps the theme-derived palette: the accent is its ink, green / red / yellow its statuses.
 const TM_PALETTE = `
-.sw-page[data-theme=terminal],.sw-sbw[data-theme=terminal]{--tm-acc:color-mix(in srgb,var(--ui-accent) 70%,var(--ui-text-primary));
+.sw-page[data-theme=terminal]{--tm-acc:#72f2d2;--tm-bg:#000;--tm-raised:#101010;--tm-ink:#c4c4c4;--tm-hi:#f2f2f2;--tm-name:#e2e2e2;--tm-dim:#8a8a8a;
+ --tm-line:#232323;--tm-badline:#5a2a22;--tm-run:#e8c46a;--tm-bad:#f07a62;--tm-ok:#72f2d2;--tm-glow:#72f2d266;--tm-shade:#000;
+ --hud-page:#000;--hud-hero:#0c0b0e;--hud-line2:#2e2e2e;--hud-grid:#161618;--hud-track:#1d1d1d;--hud-teal:#243e38;--hud-teal-b:#315046;--hud-teal-d:#142521;
+ --hud-wire:#a9a9ab;--hud-frame:#bdbdbf;--hud-node:#3a3a3c}
+.sw-sbw[data-theme=terminal]{--tm-acc:color-mix(in srgb,var(--ui-accent) 70%,var(--ui-text-primary));
  --tm-bg:color-mix(in srgb,var(--ui-accent) 5%,var(--dt-background));--tm-raised:color-mix(in srgb,var(--ui-accent) 10%,var(--dt-background));
  --tm-ink:color-mix(in srgb,var(--ui-accent) 30%,var(--ui-text-primary));--tm-hi:color-mix(in srgb,var(--ui-accent) 12%,var(--ui-text-primary));
  --tm-name:color-mix(in srgb,var(--ui-accent) 20%,var(--ui-text-primary));--tm-dim:color-mix(in srgb,var(--ui-accent) 30%,var(--ui-text-secondary));
@@ -2630,7 +2839,7 @@ const CHIP_CSS = `${TM_PALETTE}
 
 
 const CSS = `${TM_PALETTE}
-.sw-page{height:100%;min-height:0;overflow:auto;padding:16px 20px;font-size:12.5px;--mono:ui-monospace,"Cascadia Mono",Consolas,var(--dt-font-mono,monospace)}
+.sw-page{height:100%;min-height:0;overflow:auto;padding:16px 20px;font-size:12.5px;--mono:"Cascadia Mono",ui-monospace,Consolas,var(--dt-font-mono,monospace)}
 .sw-page:not([data-theme=terminal]){--a:var(--ui-accent);--ink:var(--ui-text-primary);--dim:var(--ui-text-secondary);--bg:var(--dt-background);
  --run:var(--a);--ok:var(--ink);--bad:var(--ui-red);--idle:var(--ui-text-tertiary);--line:color-mix(in srgb,var(--ink) 11%,transparent);
  --raised:color-mix(in srgb,var(--ink) 8%,var(--bg));--tile:color-mix(in srgb,var(--ink) 5%,var(--bg));--off:color-mix(in srgb,var(--ink) 16%,var(--bg))}
@@ -2641,14 +2850,13 @@ const CSS = `${TM_PALETTE}
 .sw-page [data-st=failed]{--c:var(--bad)}
 .sw-page [data-st=stopped],.sw-page [data-st=queued],.sw-page [data-st=idle]{--c:var(--idle)}
 .sw-panel{position:relative;container-type:inline-size;max-width:860px;margin:0 auto;padding:16px 18px 18px;color:var(--ink);background:var(--bg)}
-.sw-page[data-theme=terminal] .sw-panel{border-radius:8px;font:12.5px/1.6 var(--mono);overflow:hidden;box-shadow:inset 0 0 0 1px var(--line),inset 0 0 60px color-mix(in srgb,var(--tm-shade) 80%,transparent)}
-.sw-page[data-theme=terminal] .sw-panel::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:9;
- background:repeating-linear-gradient(0deg,color-mix(in srgb,var(--tm-shade) 25%,transparent) 0 1px,transparent 1px 3px)}
+.sw-page[data-theme=terminal]{background:var(--hud-page)}
+.sw-page[data-theme=terminal] .sw-panel{font:350 12.5px/1.6 var(--mono);font-variant-ligatures:none;-webkit-font-smoothing:antialiased;overflow:hidden;box-shadow:inset 0 0 0 1px var(--line)}
 .sw-page :where(button){font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
 .sw-page button:focus-visible,.sw-page [tabindex]:focus-visible{outline:2px solid var(--a);outline-offset:2px}
 .sw-page button:disabled{opacity:.5;cursor:default}
 .sw-k{margin:0;font:600 11.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
-.sw-page[data-theme=terminal] .sw-k{letter-spacing:0;text-transform:lowercase;font-weight:400}
+.sw-page[data-theme=terminal] .sw-k{font-size:11.5px;font-weight:400}
 .sw-cur{display:none}
 .sw-page[data-theme=terminal] .sw-cur{display:inline-block;width:8px;height:14px;margin-left:4px;vertical-align:-2px;background:var(--a);box-shadow:0 0 8px var(--a);animation:sw-blink 1.06s steps(1) infinite}
 /* header */
@@ -2675,20 +2883,21 @@ const CSS = `${TM_PALETTE}
 .sw-ibi{display:inline-flex;width:13px;height:13px}
 .sw-ibi svg{width:100%;height:100%}
 .sw-page[data-theme=terminal] .sw-ib{box-shadow:none;color:var(--a)}
-.sw-page[data-theme=terminal] .sw-ib.is-text{padding:1px 8px;gap:4px;clip-path:none;text-transform:lowercase;letter-spacing:0;font-weight:400;color:var(--ink);background:none;box-shadow:inset 0 0 0 1px var(--ink)}
-.sw-page[data-theme=terminal] .sw-ib.is-text:hover{background:color-mix(in srgb,var(--a) 18%,transparent)}
+.sw-page[data-theme=terminal] .sw-ib.is-text{padding:2px 9px;gap:4px;clip-path:none;font-size:11.5px;letter-spacing:.12em;font-weight:400;color:var(--ink);background:none;box-shadow:inset 0 0 0 1px var(--hud-line2)}
+.sw-page[data-theme=terminal] .sw-ib.is-text:hover{color:var(--tm-hi);background:none;box-shadow:inset 0 0 0 1px var(--hud-teal-b)}
 .sw-page[data-theme=terminal] .sw-ib.is-text .sw-ibi{display:none}
 .sw-page[data-theme=terminal] .sw-ib.is-pri{background:none}
-.sw-page[data-theme=terminal] .sw-ib.is-text.is-pri{color:var(--bg);background:var(--ink)}
+.sw-page[data-theme=terminal] .sw-ib.is-text.is-pri{color:var(--a);background:var(--hud-teal-d);box-shadow:inset 0 0 0 1px var(--hud-teal-b)}
 /* tabs */
 .sw-tabs{display:flex;gap:18px;margin:12px 0;border-bottom:1px solid color-mix(in srgb,var(--a) 25%,transparent)}
 .sw-tab{display:inline-flex;align-items:center;gap:6px;padding:6px 0;margin-bottom:-1px;font:12px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);border-bottom:2px solid transparent!important}
 .sw-tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--a)!important}
 .sw-tabn{padding:0 5px;font-size:11.5px;letter-spacing:0;background:var(--run);color:var(--bg)}
-.sw-page[data-theme=terminal] .sw-tabs{border-bottom-color:var(--line)}
-.sw-page[data-theme=terminal] .sw-tab{letter-spacing:0;text-transform:lowercase;border-bottom:0!important}
+.sw-page[data-theme=terminal] .sw-tabs{counter-reset:sw-tab;border-bottom-color:var(--line)}
+.sw-page[data-theme=terminal] .sw-tab{font-size:11.5px;border-bottom-width:1px!important}
+.sw-page[data-theme=terminal] .sw-tab::before{counter-increment:sw-tab;content:"0" counter(sw-tab);color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-tab[aria-selected=true]{color:var(--tm-hi)}
-.sw-page[data-theme=terminal] .sw-tab[aria-selected=true]::before{content:"▸"}
+.sw-page[data-theme=terminal] .sw-tab[aria-selected=true]::before{color:var(--a)}
 .sw-page[data-theme=terminal] .sw-tabn{background:none;color:var(--run)}
 .sw-page[data-theme=terminal] .sw-tabn::before{content:"("}
 .sw-page[data-theme=terminal] .sw-tabn::after{content:")"}
@@ -2997,7 +3206,7 @@ const CSS = `${TM_PALETTE}
 .sw-pu{margin:8px 0 0;color:var(--dim)}
 .sw-pu::before{content:"⚠ ";color:var(--run)}
 .sw-page[data-theme=terminal] .sw-cmr{background:none!important;border-left:0!important;padding:2px 0!important}
-.sw-page[data-theme=terminal] .sw-cmx{letter-spacing:0;text-transform:lowercase}
+.sw-page[data-theme=terminal] .sw-cmx{font-size:11.5px}
 .sw-page[data-theme=terminal] .sw-cmo{margin:4px 0 10px 14px;padding:6px 0 0;border:0;background:none}
 .sw-page[data-theme=terminal] .sw-cbody{grid-template-columns:auto minmax(0,1fr);align-items:center}
 .sw-page[data-theme=terminal] .sw-exit{width:auto;height:auto;padding:4px 12px;clip-path:none;background:none;border:1px solid currentColor;color:color-mix(in srgb,var(--c) 80%,var(--ink));line-height:1.1}
@@ -3007,11 +3216,11 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-radar::before{content:"◜"}
 .sw-page[data-theme=terminal] .sw-cmeta{flex-direction:column;align-items:flex-start;gap:0}
 .sw-page[data-theme=terminal] .sw-cchip{padding:0;box-shadow:none}
-.sw-page[data-theme=terminal] .sw-cchip>span{letter-spacing:0;text-transform:lowercase}
+.sw-page[data-theme=terminal] .sw-cchip>span{font-size:11.5px}
 .sw-page[data-theme=terminal] .sw-crt{grid-column:1/-1;margin-top:16px;overflow:visible;background:none;box-shadow:none;border:1px solid var(--line)}
 .sw-page[data-theme=terminal] .sw-cmo[data-st=failed] .sw-crt{border-color:var(--tm-badline)}
 .sw-page[data-theme=terminal] .sw-crt::after{display:none}
-.sw-page[data-theme=terminal] .sw-crth{position:absolute;top:-11px;left:10px;padding:0 6px;border:0;background:var(--bg);letter-spacing:0;text-transform:lowercase}
+.sw-page[data-theme=terminal] .sw-crth{position:absolute;top:-11px;left:10px;padding:0 6px;border:0;background:var(--bg);font-size:11.5px}
 .sw-page[data-theme=terminal] .sw-crt[data-state=output]{padding-top:6px}
 .sw-page[data-theme=terminal] .sw-ol::before{text-align:left;padding-left:8px}
 .sw-page[data-theme=terminal] .sw-scan{height:8px;margin:14px 10px 10px;background:linear-gradient(90deg,var(--a),var(--a)) 0 0/14% 100% no-repeat,repeating-linear-gradient(90deg,var(--line) 0 6px,transparent 6px 8px)}
@@ -3060,55 +3269,118 @@ const CSS = `${TM_PALETTE}
 @keyframes sw-sweep{from{left:-40%}to{left:100%}}
 @keyframes sw-reveal{from{clip-path:inset(0 0 100% 0)}}
 @keyframes sw-scan{from{background-position:-70% 0,0 0}to{background-position:170% 0,0 0}}
-/* replay */
+/* replay: a HUD — a six-column grid of hairline panels, caps titles, one accent; status colour rides the marks */
 .sw-replay{display:flex;flex-direction:column;gap:12px;min-width:0}
 .sw-replay .sw-why{margin:0}
-.sw-rgrid{display:flex;flex-direction:column;gap:14px;min-width:0}
-.sw-rturns{display:flex;flex-direction:column;gap:6px;min-width:0}
-.sw-rturns h3{margin:0}
-.sw-rtlist{display:flex;flex-direction:column;max-height:172px;overflow:auto;box-shadow:inset 0 0 0 1px var(--line)}
-.sw-rturn{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"ask when" "count count";gap:0 12px;padding:6px 10px;border-left:2px solid transparent!important}
-.sw-rturn+.sw-rturn{border-top:1px solid var(--line)!important}
-.sw-rturn:hover{background:color-mix(in srgb,var(--a) 8%,transparent)}
-.sw-rturn[aria-pressed=true]{background:color-mix(in srgb,var(--a) 14%,transparent);border-left-color:var(--a)!important}
-.sw-rask{grid-area:ask;min-width:0;color:var(--ink)}
-.sw-rwhen{grid-area:when;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
-.sw-rcount{grid-area:count;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sw-rbad{color:var(--bad)}
-.sw-rplay{display:flex;flex-direction:column;gap:10px;min-width:0}
-.sw-rbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
-.sw-rof{font-weight:700;color:var(--ink);white-space:nowrap}
-.sw-rbar .sw-btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:0}
-.sw-rmarks{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;scrollbar-width:thin}
-.sw-rmark{display:inline-flex;align-items:baseline;gap:6px;max-width:170px;padding:2px 8px;white-space:nowrap;color:var(--dim);box-shadow:inset 0 0 0 1px var(--line)}
-.sw-rmark b{font-weight:700}
-.sw-rmark[data-at=past]{color:var(--ink)}
-.sw-rmark[data-at=now]{color:var(--bg);background:var(--a);box-shadow:none}
-.sw-rmark[data-at=now] .sw-rbad{color:var(--bg)}
-.sw-rstep{display:flex;flex-direction:column;gap:6px;min-width:0}
-.sw-page .sw-rstep{animation:sw-rin .25s ease-out}
-.sw-rfile{display:flex;align-items:baseline;gap:10px;min-width:0}
-.sw-rname{flex:0 1 auto;min-width:0;font-size:13.5px;color:var(--tm-hi,var(--ink))}
-.sw-rdir{flex:0 1 auto;min-width:0;color:var(--dim)}
-.sw-rwhat{margin:0;color:var(--dim)}
-.sw-rfail{display:flex;flex-direction:column;margin:0;padding:6px 10px;color:var(--ink);background:color-mix(in srgb,var(--bad) 14%,var(--bg));box-shadow:inset 2px 0 0 var(--bad)}
-.sw-rfail>span:last-child{color:var(--dim)}
+.sw-rgrid,.sw-rplay{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;min-width:0}
+.sw-rplay,.sw-rgrid>.sw-pu{grid-column:1/-1}
+.sw-rgrid>.sw-pu{margin:0}
+.sw-hp{position:relative;grid-column:span 6;min-width:0;padding:11px 12px 13px;background:var(--raised);box-shadow:inset 0 0 0 1px var(--line)}
+.sw-hp[data-span="3"]{grid-column:span 3}
+.sw-hp[data-span="2"]{grid-column:span 2}
+.sw-hph{display:flex;align-items:center;gap:10px;min-width:0;min-height:18px;margin-bottom:12px}
+.sw-hpt{margin:0;min-width:0;font:400 11.5px var(--mono);letter-spacing:.14em;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.sw-hchip{flex:none;margin-left:auto;display:inline-flex;align-items:center;gap:6px;padding:1px 7px;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
+ background:color-mix(in srgb,var(--c) 9%,var(--raised));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 32%,var(--raised))}
+.sw-hchip::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--c);box-shadow:0 0 6px var(--c)}
+.sw-tk{margin-bottom:14px}
+.sw-tk:last-child{margin-bottom:0}
+.sw-tkh{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;letter-spacing:.12em;color:var(--dim);white-space:nowrap}
+.sw-tkh b{font-weight:400;color:var(--ink);letter-spacing:0}
+.sw-tkb{position:relative;height:5px;margin:6px 0 4px;background:var(--hud-track,var(--line))}
+.sw-tkb>i{position:absolute;left:0;top:0;bottom:0;--k:var(--c,var(--a));background:linear-gradient(90deg,color-mix(in srgb,var(--k) 8%,var(--raised)),color-mix(in srgb,var(--k) 34%,var(--raised)))}
+.sw-tkb>i::after{content:"";position:absolute;right:-1px;top:-2px;bottom:-2px;width:2px;background:var(--k);box-shadow:0 0 6px var(--k)}
+.sw-tks{display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim)}
+.sw-hbig{display:flex;align-items:baseline;gap:6px;font-size:32px;line-height:1;font-weight:250;letter-spacing:-.03em;color:var(--tm-hi,var(--ink))}
+.sw-hbig small{font-size:11.5px;font-weight:400;letter-spacing:0;color:var(--dim)}
+.sw-ch{display:block;width:100%;height:92px;margin-top:8px}
+.sw-chg{stroke:var(--hud-grid,var(--line));stroke-width:1;vector-effect:non-scaling-stroke}
+.sw-chs0{stop-color:color-mix(in srgb,var(--a) 50%,var(--raised));stop-opacity:.55}
+.sw-chs1{stop-color:color-mix(in srgb,var(--a) 50%,var(--raised));stop-opacity:0}
+.sw-cha{fill:url(#sw-chfill)}
+.sw-chl{fill:none;stroke:var(--a);stroke-width:1.4;vector-effect:non-scaling-stroke}
+.sw-chm{stroke:var(--hud-teal-b,var(--line));stroke-width:1;stroke-dasharray:2 2;vector-effect:non-scaling-stroke}
+.sw-chd{fill:var(--a);stroke:var(--raised);stroke-width:2;vector-effect:non-scaling-stroke}
+.sw-chx{fill:var(--bad)}
+.sw-chax{display:flex;justify-content:space-between;margin-top:4px;font-size:11.5px;color:var(--dim)}
+.sw-hrow{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--tm-hi,var(--ink));white-space:nowrap}
+.sw-hrow b{font-weight:400}
+.sw-rmarks{display:flex;gap:3px;height:30px;margin-top:10px;overflow:hidden}
+.sw-rmarks>span{display:flex;flex:1 1 0;min-width:3px}
+.sw-rmarks>span>*{display:flex;flex:1 1 auto;min-width:0}
+.sw-rmark{flex:1 1 auto;min-width:0;background:var(--hud-teal-d,var(--line));box-shadow:inset 0 0 0 1px var(--hud-teal,var(--line))}
+.sw-rmark[data-at=past]{background:color-mix(in srgb,var(--a) 70%,var(--raised));box-shadow:none}
+.sw-rmark[data-at=next][data-failed=true]{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--bad) 60%,var(--raised))}
+.sw-rmark[data-at=past][data-failed=true]{background:color-mix(in srgb,var(--bad) 75%,var(--raised))}
+.sw-rmark[data-at=now]{background:var(--a);box-shadow:0 0 10px color-mix(in srgb,var(--a) 60%,transparent)}
+.sw-rmark[data-at=now][data-failed=true]{background:var(--bad);box-shadow:0 0 10px color-mix(in srgb,var(--bad) 60%,transparent)}
+.sw-rmark:hover{box-shadow:inset 0 0 0 1px var(--tm-hi,var(--ink))}
+.sw-rbar .sw-btns{gap:6px 10px;margin-top:12px}
+.sw-hgrid{position:relative;min-height:190px;background-image:linear-gradient(var(--hud-grid,var(--line)) 1px,transparent 1px),linear-gradient(90deg,var(--hud-grid,var(--line)) 1px,transparent 1px);background-size:28px 28px;background-position:-1px -1px}
+.sw-hpx{background:var(--hud-hero,var(--raised))}
+.sw-wires{position:absolute;inset:0;z-index:2;width:100%;height:100%;overflow:visible;pointer-events:none}
+.sw-wires path{fill:none;stroke:var(--hud-wire,var(--dim));stroke-width:1}
+.sw-wires circle{fill:var(--hud-frame,var(--ink))}
+.sw-hgrid>.sw-rdiff,.sw-hgrid>.sw-cmnote{position:relative;z-index:1;margin-right:196px}
+.sw-cos{position:absolute;top:10px;right:12px;z-index:3;display:flex;flex-direction:column;align-items:flex-start;gap:20px;width:170px}
+.sw-co{display:flex;flex-direction:column;align-items:flex-start;gap:4px;max-width:100%;white-space:nowrap}
+.sw-col{max-width:100%;overflow:hidden;text-overflow:ellipsis;padding:3px 9px;font-size:11.5px;letter-spacing:.14em;color:var(--tm-hi,var(--ink));background:var(--hud-hero,var(--raised));box-shadow:inset 0 0 0 1px var(--hud-frame,var(--ink))}
+.sw-cov{padding:0 6px;font-size:11.5px;color:var(--ink);background:color-mix(in srgb,var(--c) 10%,var(--hud-hero,var(--raised)));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 40%,var(--hud-hero,var(--raised)))}
+.sw-cop{display:flex;align-items:center;gap:7px;font-size:11.5px}
+.sw-copn{padding:0 5px;color:var(--a);background:var(--hud-teal-d,var(--raised));box-shadow:inset 0 0 0 1px var(--hud-teal-b,var(--line))}
+.sw-copb{display:flex;gap:2px}
+.sw-copb i{width:3px;height:10px;background:var(--hud-teal,var(--line))}
+.sw-copb i.on{background:var(--a)}
 .sw-rdiff{display:flex;flex-direction:column;gap:6px;min-width:0}
-.sw-rlines{max-height:320px;overflow:auto;padding:4px 0;font:12px/1.6 var(--mono);white-space:pre;background:color-mix(in srgb,var(--a) 3%,var(--bg));box-shadow:inset 0 0 0 1px var(--line)}
+.sw-rlines{max-height:300px;overflow:auto;padding:6px 0;font:12px/1.6 var(--mono);white-space:pre;scrollbar-width:thin;scrollbar-color:var(--hud-line2,var(--line)) transparent}
 .sw-rdiff[data-failed=true] .sw-rlines{opacity:.7}
-.sw-rl{display:flex;min-width:max-content;padding-right:12px}
-.sw-page .sw-rl{animation:sw-rin .3s ease-out both}
+.sw-rl{display:flex;min-width:max-content;padding-right:12px;color:var(--dim)}
 .sw-rsign{flex:none;width:24px;text-align:center;color:var(--dim)}
-.sw-rl[data-tag=" "]{color:var(--dim)}
-.sw-rl[data-tag="-"]{color:var(--ink);background:color-mix(in srgb,var(--bad) 20%,var(--bg))}
-.sw-rl[data-tag="-"] .sw-rsign{color:var(--bad)}
-.sw-rl[data-tag="+"]{color:var(--ink);background:color-mix(in srgb,var(--ok) 18%,var(--bg))}
+.sw-rl[data-tag="+"]{color:var(--tm-hi,var(--ink));background:color-mix(in srgb,var(--ok) 7%,transparent)}
 .sw-rl[data-tag="+"] .sw-rsign{color:var(--ok)}
-.sw-rl[data-tag="@"]{padding-left:24px;color:var(--dim);font-style:italic}
-.sw-rl[data-tag="@"]:not(:first-child){margin-top:4px;border-top:1px dashed var(--line)}
+.sw-rl[data-tag="-"]{color:var(--dim);background:color-mix(in srgb,var(--bad) 8%,transparent)}
+.sw-rl[data-tag="-"] .sw-rsign{color:var(--bad)}
+.sw-rl[data-tag="@"]{align-items:center;gap:8px;margin:8px 0 3px;padding-left:6px;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase}
+.sw-rl[data-tag="@"]:first-child{margin-top:0}
+.sw-rl[data-tag="@"]::before{content:"";flex:none;width:14px;height:1px;background:var(--a)}
+.sw-rl[data-tag="@"]::after{content:"";flex:1 0 40px;height:1px;background:var(--line)}
 .sw-rmore{display:flex}
-@keyframes sw-rin{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-@container (min-width:640px){.sw-rgrid{display:grid;grid-template-columns:minmax(200px,34%) minmax(0,1fr);align-items:start}.sw-rtlist{max-height:520px}.sw-rgrid>.sw-pu{grid-column:2}}
+.sw-rfail{display:flex;flex-direction:column;margin:10px 0 0;padding:4px 10px;color:var(--ink);background:color-mix(in srgb,var(--bad) 7%,transparent);box-shadow:inset 2px 0 0 var(--bad)}
+.sw-rfail>span:last-child{color:var(--dim)}
+.sw-rbad{color:var(--ink)}
+.sw-rbad::after{content:"";display:inline-block;width:6px;height:6px;margin-left:6px;vertical-align:1px;background:var(--bad)}
+.sw-rfile{display:flex;align-items:center;gap:10px;min-width:0;margin:-4px 0 10px}
+.sw-rname{flex:0 1 auto;min-width:0;font-size:17px;font-weight:600;letter-spacing:.04em;color:var(--tm-hi,var(--ink))}
+.sw-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);column-gap:14px;row-gap:5px;margin:0}
+.sw-kv>dt{font-size:11.5px;letter-spacing:.1em;line-height:1.8;color:var(--dim)}
+.sw-kv>dd{min-width:0;margin:0;color:var(--ink)}
+.sw-rwhat{margin:0}
+.sw-rtlist,.sw-hlog{display:grid;align-content:start;overflow:hidden auto;scrollbar-width:thin;scrollbar-color:var(--hud-line2,var(--line)) transparent}
+.sw-rtlist{grid-template-columns:max-content max-content minmax(0,1fr);max-height:150px}
+.sw-hlog{grid-template-columns:max-content max-content minmax(0,1fr) max-content;max-height:176px}
+.sw-rturn,.sw-hlog>button{display:grid;grid-column:1/-1;grid-template-columns:subgrid;column-gap:14px;padding:2px 6px;white-space:nowrap}
+.sw-rturn>*,.sw-hlog>button>*{grid-row:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.sw-rwhen{grid-column:1;color:var(--dim)}
+.sw-rcount{grid-column:2;color:var(--dim)}
+.sw-rask{grid-column:3;color:var(--ink)}
+.sw-hlt,.sw-hln{color:var(--dim)}
+.sw-hln{text-align:right}
+.sw-hle{display:inline-flex;align-items:center;gap:6px;letter-spacing:.06em;color:var(--ink)}
+.sw-hle::before{content:"";flex:none;width:5px;height:5px;background:var(--c)}
+.sw-hlm{color:var(--ink)}
+.sw-rturn:hover,.sw-hlog>button:hover{background:color-mix(in srgb,var(--a) 6%,transparent)}
+.sw-rturn[aria-pressed=true],.sw-hlog>button[aria-current=step]{background:var(--hud-teal-d,var(--raised));box-shadow:inset 2px 0 0 var(--c,var(--a))}
+.sw-rturn[aria-pressed=true]>*,.sw-hlog>button[aria-current=step]>*{color:var(--tm-hi,var(--ink))}
+@container (max-width:540px){
+ .sw-hp[data-span]{grid-column:span 6}
+ .sw-cos,.sw-wires{display:none}
+ .sw-hgrid>.sw-rdiff,.sw-hgrid>.sw-cmnote{margin-right:0}
+ .sw-hlog{grid-template-columns:max-content minmax(0,1fr) max-content}
+ .sw-hle{display:none}
+ .sw-rtlist{grid-template-columns:max-content minmax(0,1fr)}
+ .sw-rturn>.sw-rcount{grid-column:2;grid-row:2;white-space:normal}
+}
 @media (prefers-reduced-motion:reduce){.sw-page *,.sw-page *::before,.sw-page *::after{animation:none!important;transition:none!important}}
 `
 

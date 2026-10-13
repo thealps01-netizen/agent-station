@@ -519,6 +519,15 @@ MUTATIONS = [
      "yesterday's edit reads as a date"),
     ("render", JS, "      got.data?.cut ? jsx('p', { className: 'sw-cmnote', children: t('sw.replay.notLoaded', got.data.cut) }, 'c') : null", "      null",
      "lines the backend cut are not counted"),
+    # ── 2.0.0 the HUD ───────────────────────────────────────────────────────────────────────
+    ("render", JS, "...hunks.slice(0, 3).map(h => ", "...[].map(h => ", "the diff's parts get no callouts"),
+    ("render", JS, "const sizes = steps.map(s => (s.failed ? 0 :", "const sizes = steps.map(s => (false ? 0 :",
+     "a failed edit counts as applied lines"),
+    ("render", JS, "onClick: () => go(k),\n            children: [", "onClick: () => {},\n            children: [", "a log row does not open its edit"),
+    ("render", JS, "jsx('span', { className: 'sw-sr', children: title }, 's')", "null", "a HUD title is read out with Ø"),
+    ("audit", JS, ".sw-hp{position:relative;grid-column:span 6;min-width:0;padding:11px 12px 13px;background:var(--raised);",
+     ".sw-hp{position:relative;grid-column:span 6;min-width:0;padding:11px 12px 13px;background:#101010;",
+     "hexColor: a colour literal outside the HUD palette rule"),
 ]
 
 

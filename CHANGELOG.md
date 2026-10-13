@@ -3,6 +3,26 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 2.0.0 — 2026-10-14
+
+The page is redrawn as a mission-control HUD, from a reference the user picked: a black ground,
+near-black panels on hairlines, one mint accent with dark-teal tracks, grey caps titles, a light
+monospace. The colours are fixed, so the page looks the same in every app theme; the status-bar chip
+still takes the theme's colours. Red marks only a failure, amber only something still running.
+
+### Changed
+
+- **Replay is a HUD.** A six-column grid: your requests on top; the edit's lines on a faint grid with a
+  callout per part ("FROM LINE 12", "+1 −1") tied to its row by a leader line and a PAUSED / REPLAYING
+  gauge; LINES CHANGED (added, removed, this edit, each against the request's largest); LINES SO FAR
+  (applied lines up to this edit over the request's total, a curve with failed edits ticked in red);
+  PLAYBACK (one cell per edit, Previous / Play / Next); FILE (name, folder, what changed, the request);
+  LOG (every edit with its time, EDIT / WRITE / DELETE / MOVE / FAILED and its +/−; a row opens it).
+  Below 540 px the panels stack and the callouts give way.
+- **Agents and Commands take the same look:** caps titles and tabs ("01 AGENTS"), square hairline
+  panels, no scanlines, quiet outlined buttons.
+- A failed request's count keeps its text in the reading colour and carries a red mark.
+
 ## 1.8.0 — 2026-10-12
 
 ### Added

@@ -223,7 +223,8 @@ Interrupt / steer / live transcript — the composer status stack already owns t
   run found two behaviours no check covered (a failed command-output read, cards left open after a
   chat switch); both are now render checks.
 - `python tests/audit_static.py` — i18n, native `title`, icon names, `aria-expanded`, status-mark / header-count names, hard-coded
-  colour, tone used as text ink, silent catches, read-only backend, release gate.
+  colour (except the page's fixed HUD palette, the `.sw-page` rule at the top of `TM_PALETTE`), tone used as text ink, silent
+  catches, read-only backend, release gate.
 - `python tests/contract_core.py [--selftest]` — every column, marker, field, event and SDK export
   read from the core still exists (source read, no import).
 - Visual pass: `node tests/preview.mjs` then `<electron> tests/shot.cjs preview.html preview.png` —

@@ -444,10 +444,16 @@ check(stub.calls.request.some(([m, p]) => m === 'subagent.list' && p.session_id 
 check(units().length === 3 && units().every(u => u.querySelector('pre.sw-spr'))
   && units().map(u => u.querySelector('.sw-us').textContent).join() === '[IDLE],[OK ],[ERR]',
   `Terminal draws ASCII sprite boxes with status tags (${units().map(u => u.querySelector('.sw-us')?.textContent)})`)
-check(!/TERMINAL PALETTE/.test(css) && /\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-acc\)/.test(css) && /--tm-acc:color-mix\(in srgb,var\(--ui-accent\)/.test(css)
-  && /--tm-ok:color-mix\(in srgb,var\(--ui-green\)/.test(css) && /--tm-bad:color-mix\(in srgb,var\(--ui-red\)/.test(css) && /--tm-run:color-mix\(in srgb,var\(--ui-yellow\)/.test(css)
-  && /--tm-bg:color-mix\(in srgb,var\(--ui-accent\) \d+%,var\(--dt-background\)\)/.test(css) && !/#[0-9a-f]{3,8}\b/i.test(css),
-  'Terminal takes the theme: the accent is its ink, the theme tones its statuses, its ground the theme background; no literal colour')
+{
+  // The page wears the fixed HUD palette (black ground, one mint accent); its colour literals live in
+  // that one rule and nowhere else. The status-bar chip sits in the app's bar and keeps the theme's tokens.
+  const hud = css.match(/\.sw-page\[data-theme=terminal\]\{--tm-acc:[^}]*\}/)?.[0] || ''
+  const chip = css.match(/\.sw-sbw\[data-theme=terminal\]\{[^}]*\}/)?.[0] || ''
+  check(/\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-acc\)/.test(css) && /--tm-acc:#72f2d2/.test(hud) && /--tm-bg:#000/.test(hud) && /--tm-bad:#/.test(hud)
+    && /--tm-acc:color-mix\(in srgb,var\(--ui-accent\)/.test(chip) && /--tm-ok:color-mix\(in srgb,var\(--ui-green\)/.test(chip) && /--tm-bad:color-mix\(in srgb,var\(--ui-red\)/.test(chip)
+    && !/#[0-9a-f]{3,8}\b/i.test(css.replace(hud, '')),
+    'Terminal: the page wears the fixed HUD palette (literals only in its one rule); the status-bar chip keeps the theme tokens')
+}
 
 // 22. the run picker: the last run now, earlier runs on demand, Back to now
 await act(async () => { q('.sw-pick').click() })
@@ -1333,6 +1339,16 @@ mod.default.register(quietCtx({ storage: undefined }))
     `replay: the first edit shows its removed and added lines and where they start (${q('.sw-rof')?.textContent})`)
   check(/\+1 line added · −1 line removed · by the main agent/.test(q('.sw-rwhat')?.textContent || ''), 'replay: an edit says in words what it did and who did it')
   check(asked.every(([sid]) => sid === 'st-1') && asked.some(([, id]) => id === 'a#0'), 'replay: the list and the edit are read for this chat')
+  // the HUD: requests + six panels; titles drawn in caps with Ø, read out as plain words
+  check(qa('.sw-hp').length === 7 && qa('.sw-hpt').some(h => h.querySelector('[aria-hidden=true]')?.textContent === 'LINES SØ FAR' && h.querySelector('.sw-sr')?.textContent === 'Lines so far'),
+    `replay HUD: requests and six panels, each title in caps on screen and in plain words for a screen reader (${qa('.sw-hp').length})`)
+  check(qa('.sw-co[data-to]').length === 1 && q('.sw-co[data-to] .sw-col')?.textContent === 'FRØM LINE 12' && q('.sw-co[data-to] .sw-cov')?.textContent === '+1 −1'
+    && q(`.sw-rl[data-h="${q('.sw-co[data-to]')?.dataset.to}"]`) !== null,
+    'replay HUD: each part of the edit gets a callout with where it starts and its +/− count, tied to its row')
+  check(q('.sw-hbig')?.textContent === '2/ 5', `replay HUD: lines so far counts applied edits only, a failed edit adds nothing (${q('.sw-hbig')?.textContent})`)
+  check(qa('.sw-hlog>button').length === 3 && qa('.sw-hlog>button')[1].dataset.st === 'failed' && qa('.sw-hlog .sw-hle').map(e => e.textContent).join() === 'EDIT,FAILED,WRITE'
+    && qa('.sw-hlog>button')[0].getAttribute('aria-current') === 'step',
+    `replay HUD: the log lists every edit with what it was, the current one marked (${qa('.sw-hlog .sw-hle').map(e => e.textContent)})`)
   await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Next edit').click() })
   await tick(20)
   check(q('.sw-rof')?.textContent === 'Edit 2 of 3' && /This edit failed: no match/.test(q('.sw-rfail')?.textContent || '') && /by helper: docs-writer/.test(q('.sw-rwhat')?.textContent || ''),
@@ -1354,6 +1370,9 @@ mod.default.register(quietCtx({ storage: undefined }))
   await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Pause').click() })
   await tick(1600)
   check(q('.sw-rof')?.textContent === 'Edit 2 of 3', 'replay: Pause stops it')
+  await act(async () => { qa('.sw-hlog>button')[2].click() })
+  await act(async () => { await new Promise(res => setTimeout(res, 20)) })
+  check(q('.sw-rof')?.textContent === 'Edit 3 of 3' && qa('.sw-hlog>button')[2].getAttribute('aria-current') === 'step', `replay HUD: a log row opens its edit (${q('.sw-rof')?.textContent})`)
   await act(async () => { rows[1].click() })
   await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
   await tick(20)
