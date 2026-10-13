@@ -3,12 +3,12 @@
  * subagents it started, and the shell commands it left running in the background.
  *
  *   Agents    one run at a time — the running one, else the last; the run picker opens earlier
- *             ones, calm, with "Back to now". A score (subagents done / all), one status cell per
- *             subagent, the cost the subagents spent, and one unit per agent — the main agent first
- *             and selected — whose icon says what it does now (editing, reading, running a command,
- *             waiting, done, failed, stopped, idle). Past SWARM_AT subagents the units turn into a
- *             swarm grouped by status, failed first by name. One focus panel under the units shows
- *             the selected agent: what it works on now, the files it changed and the ones it only
+ *             ones, calm, with "Back to now". A HUD: the FLEET schematic — the main agent (first and
+ *             selected) wired through a callout per subagent to its node, each node's icon saying what
+ *             it does now (editing, reading, running a command, waiting, done, failed, stopped, idle);
+ *             past SWARM_AT subagents a swarm grouped by status, failed first by name — then time per
+ *             agent, SPENT (cost, done / all), FILES, the selected AGENT, a LOG row per subagent, and
+ *             one DETAIL focus panel for the selected agent: what it works on now, the files it changed and the ones it only
  *             read (from the backend's /files `who` / `editors`); a subagent's panel adds its task,
  *             model, answer, Copy answer (/output) and Open its chat.
  *             Fed by gateway `subagent.*` and `tool.*` events for the watched runtime session,
@@ -223,6 +223,49 @@ const BUNDLES = {
       tile: {
         onTask: 'on task', touched: 'files touched', changed: 'changed', read: 'only read',
         runTime: 'run time', tools: 'tool calls', tokens: 'tokens', cost: 'cost'
+      },
+      hudAgents: {
+        fleet: run => (run ? `Fleet · ${run}` : 'Fleet'),
+        done: (done, total) => `${done}/${total} done`,
+        runDone: 'run complete',
+        running: 'running',
+        coDone: 'handed off',
+        coFailed: 'failed',
+        coRunning: 'working',
+        coQueued: 'waiting',
+        coStopped: 'stopped',
+        tools: (n, tokens) => [`${n} tool${n === 1 ? '' : 's'}`, tokens].filter(Boolean).join(' · '),
+        time: 'Time per agent',
+        noTime: 'No subagent has run yet.',
+        spent: 'Spent',
+        tokens: 'tokens',
+        toolCalls: 'tools',
+        agents: 'agents',
+        agentsV: (n, done) => `${n} · ${done} done`,
+        doneK: 'done',
+        files: 'Files',
+        changedN: n => `changed ${n}`,
+        readN: n => `read ${n}`,
+        legChanged: 'changed',
+        legFailed: 'failed',
+        legRead: 'read',
+        filesLabel: (changed, failed, read) => `${changed} changed, ${failed} failed, ${read} only read`,
+        moreFiles: n => `+${n}`,
+        noFiles: 'No files yet.',
+        agent: 'Agent',
+        model: 'model',
+        timeK: 'time',
+        toolsK: 'tools',
+        toolsV: (tools, tokens, cost) => [String(tools), tokens ? `${tokens} tokens` : '', cost].filter(Boolean).join(' · '),
+        task: 'task',
+        state: 'state',
+        subagents: 'subagents',
+        filesK: 'files',
+        filesV: (changed, read) => `${changed} changed · ${read} read`,
+        log: 'Log',
+        noLog: 'Each subagent gets a line here.',
+        detail: 'Detail',
+        pastRun: 'earlier run'
       },
       modelTip: (model, effort) => (effort ? `${model} · reasoning effort ${effort}` : model),
       replay: {
@@ -1048,20 +1091,36 @@ function unitLine(t, u) {
   return [what, time].filter(Boolean).join(' · ')
 }
 
-function Unit({ t, theme, u, selected, onSelect, flash, waitingOn }) {
+/**
+ * An agent as a node of the fleet schematic: its activity sprite, its name, its status tag and one
+ * meta line (model · time; the main agent's state). The same node heads the swarm.
+ */
+function Unit({ t, theme, u, selected, onSelect, flash, waitingOn, meta, time }) {
   const icon = unitIcon(u)
   const word = statusWord(t, u, waitingOn)
   const tag = t(`sw.tag.${u.status === 'running' ? u.act || 'think' : u.status}`)
   const goal = String(u.rec?.goal || '').trim()
   const button = jsxs('button', {
     type: 'button', className: `sw-unit${selected ? ' is-sel' : ''}${flash ? ` is-${flash}` : ''}`,
-    'data-st': u.status, 'data-icon': icon, 'data-main': u.main ? 'true' : undefined, 'data-batch': u.batch,
+    'data-st': u.status, 'data-icon': icon, 'data-main': u.main ? 'true' : undefined, 'data-batch': u.batch, 'data-node': u.key,
     'aria-pressed': selected, 'aria-label': `${u.name}: ${word}`, onClick: () => onSelect(u.key),
     children: [
       jsx('pre', { className: 'sw-spr', 'aria-hidden': 'true', children: sprite(icon) }, 'v'),
-      jsx('span', { className: 'sw-un', children: `${u.main ? '★ ' : ''}${slugName(u.name)}` }, 'n'),
-      // Keyed by its text: a new status mounts anew, so the Terminal look types it again.
-      jsx('span', { className: 'sw-us', children: tag }, `s-${tag}`)
+      jsxs('span', {
+        className: 'sw-ut',
+        children: [
+          jsx('span', { className: 'sw-un', children: `${u.main ? '★ ' : ''}${slugName(u.name)}` }, 'n'),
+          jsxs('span', {
+            className: 'sw-ul',
+            children: [
+              // Keyed by its text: a new status mounts anew, so the Terminal look types it again.
+              jsx('span', { className: 'sw-us', children: tag }, `s-${tag}`),
+              meta ? jsx('span', { className: 'sw-um', children: meta }, 'm') : null,
+              time ? jsx('span', { className: 'sw-ux', children: time }, 'x') : null
+            ]
+          }, 'l')
+        ]
+      }, 't')
     ]
   })
   return jsx(Tip, { label: [tipText(goal || u.name), tipText(unitLine(t, u))].filter(Boolean).join('\n'), children: button })
@@ -1081,22 +1140,84 @@ function Cell({ t, theme, u, selected, onSelect }) {
   })
 }
 
-/**
- * Columns for n units when a row holds at most `fit`: rows are split evenly, so 6 units are 3 + 3,
- * never 5 + 1. The page sets one such value per width step (--sw-c2 … --sw-c8) and the stylesheet
- * picks the one for the panel's width, so it holds with no script running.
- */
-export function unitCols(n, fit) {
-  const k = Math.max(1, Math.floor(Number(n) || 0))
-  return k <= fit ? k : Math.ceil(k / Math.ceil(k / fit))
+/** A model as a node prints it: 'anthropic/claude-opus-5-5' -> 'opus-5-5'. */
+export function shortModel(model) {
+  return modelLabel(model).replace(/^claude-/, '')
 }
 
-function Units({ t, theme, units, selected, onSelect, flash, waitingOn }) {
-  const cols = { '--sw-n': units.length }
-  for (let fit = 2; fit <= SWARM_AT; fit++) cols[`--sw-c${fit}`] = unitCols(units.length, fit)
-  return jsx('div', {
-    className: 'sw-units', role: 'group', 'aria-label': t('sw.agents'), style: cols,
-    children: units.map(u => jsx(Unit, { t, theme, u, selected: selected === u.key, onSelect, flash: flash.get(u.key), waitingOn }, u.key))
+/** The main node's meta line: its model when known, and what it does ('waiting on 3'). */
+function mainMeta(t, main, waitingOn) {
+  return [shortModel(main.rec?.model), statusWord(t, main, waitingOn)].filter(Boolean).join(' · ')
+}
+
+/** A subagent node's time: how long it ran ('' when it was stopped or has not started). */
+function unitTime(t, u) {
+  return u.status === 'stopped' ? '' : fmtDuration(u.duration, t)
+}
+
+// What a callout between the main agent and a subagent says about the hand-off.
+const CO_WORD = {
+  completed: 'sw.hudAgents.coDone', failed: 'sw.hudAgents.coFailed', running: 'sw.hudAgents.coRunning',
+  queued: 'sw.hudAgents.coQueued', stopped: 'sw.hudAgents.coStopped'
+}
+
+/** A subagent's tool calls and tokens, as a callout chip reads them: '6 tools · 9k'. */
+function unitWork(t, u) {
+  return t('sw.hudAgents.tools', Number(u.rec?.tool_calls ?? u.rec?.tool_count) || 0, fmtTokens(u.rec?.tokens, t))
+}
+
+/**
+ * The fleet hero: the main agent on the left, each subagent a node on the right, and between them a
+ * callout per subagent (how the hand-off went, its tools and tokens) on leader lines: main -> spine ->
+ * callout -> node. Narrow, the callouts and lines go and the nodes stack.
+ */
+function Fleet({ t, theme, main, subs, selected, onSelect, flash, waitingOn }) {
+  const done = subs.filter(u => u.status === 'completed').length
+  const ended = subs.every(u => TERMINAL.has(u.status))
+  const pct = Math.round((100 * subs.filter(u => TERMINAL.has(u.status)).length) / subs.length)
+  const bars = Array.from({ length: 10 }, (_, k) => jsx('i', { className: k < Math.round(pct / 10) ? 'on' : undefined }, k))
+  // The leader lines are drawn by the grid itself (a lead after each box, a spine down the callouts), so they
+  // follow every layout, the static preview's too, and never need measuring.
+  const lead = key => jsx('span', { className: 'sw-flead', 'aria-hidden': 'true' }, key)
+  return jsxs('div', {
+    className: 'sw-hgrid sw-fleet', role: 'group', 'aria-label': t('sw.agents'), 'data-done': done,
+    style: { '--sw-rows': subs.length },
+    children: [
+      jsxs('div', {
+        className: 'sw-fmain',
+        children: [
+          jsxs('div', {
+            className: 'sw-co sw-frun', 'aria-hidden': 'true',
+            children: [
+              jsx('span', { className: 'sw-col', children: hudCaps(t(ended ? 'sw.hudAgents.runDone' : 'sw.hudAgents.running')) }, 'l'),
+              jsxs('span', { className: 'sw-cop', children: [jsx('span', { className: 'sw-copn', children: `${pct}%` }, 'n'), jsx('span', { className: 'sw-copb', children: bars }, 'b')] }, 'p')
+            ]
+          }, 'run'),
+          jsx(Unit, { t, theme, u: main, selected: selected === main.key, onSelect, flash: flash.get(main.key), waitingOn, meta: mainMeta(t, main, waitingOn) }, 'main'),
+          lead('lead')
+        ]
+      }, 'm'),
+      ...subs.flatMap((u, k) => [
+        jsxs('div', {
+          className: 'sw-fco', 'data-to': u.key, 'data-st': u.status, 'aria-hidden': 'true', style: { gridRow: k + 1 },
+          'data-end': [k === 0 ? 'first' : '', k === subs.length - 1 ? 'last' : ''].filter(Boolean).join(' ') || undefined,
+          children: [
+            jsxs('div', {
+              className: 'sw-co',
+              children: [
+                jsx('span', { className: 'sw-col', children: hudCaps(t(CO_WORD[u.status] || 'sw.hudAgents.coRunning')) }, 'l'),
+                jsx('span', { className: 'sw-cov', 'data-st': u.status, children: unitWork(t, u) }, 'v')
+              ]
+            }, 'c'),
+            lead('lead')
+          ]
+        }, `co-${u.key}`),
+        jsx('div', {
+          className: 'sw-fnode', style: { gridRow: k + 1 },
+          children: jsx(Unit, { t, theme, u, selected: selected === u.key, onSelect, flash: flash.get(u.key), waitingOn, meta: shortModel(u.rec?.model), time: unitTime(t, u) })
+        }, u.key)
+      ])
+    ]
   })
 }
 
@@ -1127,7 +1248,7 @@ function Swarm({ t, theme, main, subs, selected, onSelect, flash, waitingOn }) {
   return jsxs('div', {
     className: 'sw-swarm',
     children: [
-      jsx('div', { className: 'sw-grp sw-gmain', children: jsx(Unit, { t, theme, u: main, selected: selected === main.key, onSelect, flash: null, waitingOn }) }, 'main'),
+      jsx('div', { className: 'sw-grp sw-gmain', children: jsx(Unit, { t, theme, u: main, selected: selected === main.key, onSelect, flash: null, waitingOn, meta: mainMeta(t, main, waitingOn) }) }, 'main'),
       groups.failed.length ? jsxs('section', {
         className: 'sw-grp', 'data-grp': 'failed',
         children: [
@@ -1151,40 +1272,162 @@ function Swarm({ t, theme, main, subs, selected, onSelect, flash, waitingOn }) {
   })
 }
 
-/** The big score: subagents done / all, one cell per subagent, what the subagents spent. */
+/** SPENT: what the subagents spent, their tokens and tools, and how many are done (one cell each). */
 function Score({ t, subs }) {
   const done = subs.filter(u => u.status === 'completed').length
   const sum = sumCost(subs.map(u => u.rec))
   const cost = fmtCost(sum.usd, sum.status, t)
-  return jsxs('div', {
-    className: 'sw-score', role: 'group', 'aria-label': subs.length ? t('sw.score.label', done, subs.length) : t('sw.score.none'),
+  const tokens = subs.reduce((n, u) => n + (Number(u.rec?.tokens) || 0), 0)
+  const tools = subs.reduce((n, u) => n + (Number(u.rec?.tool_calls ?? u.rec?.tool_count) || 0), 0)
+  return jsx(HudPanel, {
+    title: t('sw.hudAgents.spent'), span: 2, className: 'sw-hspent',
+    children: [jsxs('div', {
+      className: 'sw-score', role: 'group', 'aria-label': subs.length ? t('sw.score.label', done, subs.length) : t('sw.score.none'),
+      children: [
+        jsx('div', {
+          className: 'sw-hbig sw-spent',
+          children: subs.length
+            ? jsx(Tip, {
+              label: t('sw.cost.tip', sum.priced, sum.included, sum.unknown),
+              children: jsx('b', { className: 'sw-money', tabIndex: 0, children: cost || '—' })
+            })
+            : jsx('b', { children: '—' })
+        }, '$'),
+        jsx(HudKV, {
+          rows: [
+            [t('sw.hudAgents.tokens'), fmtTokens(tokens, t) || '—'],
+            [t('sw.hudAgents.toolCalls'), String(tools)],
+            [t('sw.hudAgents.agents'), t('sw.hudAgents.agentsV', subs.length, done)]
+          ]
+        }, 'kv'),
+        jsxs('div', {
+          className: 'sw-tk sw-sdone',
+          children: [
+            jsxs('div', {
+              className: 'sw-tkh',
+              children: [
+                jsx('span', { 'aria-hidden': 'true', children: hudCaps(t('sw.hudAgents.doneK')) }, 'l'),
+                jsx('span', { className: 'sw-sr', children: subs.length ? t('sw.score.done') : t('sw.score.none') }, 's'),
+                // Keyed by the count: a new count mounts anew and rolls up into place.
+                jsxs('b', { className: 'sw-big', children: [jsx('span', { className: 'sw-bign', children: done }, `n-${done}`), jsx('small', { children: `/${subs.length}` }, 't')] }, 'b')
+              ]
+            }, 'h'),
+            jsx(Cells, { statuses: subs.map(u => u.status), className: 'sw-seg' }, 'c'),
+            jsxs('div', { className: 'sw-tks', 'aria-hidden': 'true', children: [jsx('span', { children: '0' }, 'a'), jsx('span', { children: subs.length }, 'b')] }, 's')
+          ]
+        }, 'done')
+      ]
+    }, 'score')]
+  })
+}
+
+/** TIME PER AGENT: one track per subagent, its run time against the longest, in its status colour. */
+function FleetTimes({ t, subs }) {
+  const top = Math.max(1, ...subs.map(u => (Number.isFinite(u.duration) ? u.duration : 0)))
+  return jsx(HudPanel, {
+    title: t('sw.hudAgents.time'), span: 2, className: 'sw-htime',
+    children: subs.length
+      ? [jsx('div', {
+        className: 'sw-tlist', tabIndex: subs.length > 5 ? 0 : undefined, role: 'group', 'aria-label': t('sw.hudAgents.time'),
+        children: subs.map(u => jsxs('div', {
+        className: 'sw-tk', 'data-st': u.status,
+        children: [
+          jsxs('div', { className: 'sw-tkh', children: [jsx(OneLine, { text: slugName(u.name), className: 'sw-tkn' }, 'l'), jsx('b', { children: fmtDuration(u.duration, t) || '—' }, 'v')] }, 'h'),
+          jsx('div', { className: 'sw-tkb', 'aria-hidden': 'true', children: jsx('i', { style: { width: `${Math.max(1.5, Math.min(100, ((u.duration || 0) / top) * 100)).toFixed(1)}%` } }) }, 'b'),
+          jsxs('div', { className: 'sw-tks', 'aria-hidden': 'true', children: [jsx('span', { children: fmtDuration(0, t) }, 'a'), jsx('span', { children: fmtDuration(top, t) }, 'b')] }, 's')
+        ]
+      }, u.key))
+      }, 'l')]
+      : [jsx('p', { className: 'sw-hnote', children: t('sw.hudAgents.noTime') }, 'none')]
+  })
+}
+
+const FILE_CELLS = 48
+
+/** FILES: the chat's files as cells — changed, failed, only read — with their counts and a legend. */
+function FleetFiles({ t, files }) {
+  const all = files.data?.files || []
+  const kinds = all.map(f => {
+    const s = fileState(f, false)
+    return s === 'failed' ? 'failed' : s === 'read' ? 'read' : 'changed'
+  })
+  const n = k => kinds.filter(x => x === k).length
+  const shown = kinds.slice(0, FILE_CELLS)
+  const leg = (k, word) => jsx('span', { 'data-k': k, children: hudCaps(word) }, k)
+  return jsx(HudPanel, {
+    title: t('sw.hudAgents.files'), span: 2, className: 'sw-hfiles',
+    children: all.length
+      ? [
+        jsxs('div', { className: 'sw-hrow', children: [jsx('b', { children: hudCaps(t('sw.hudAgents.changedN', n('changed'))) }, 'c'), jsx('b', { children: hudCaps(t('sw.hudAgents.readN', n('read'))) }, 'r')] }, 'n'),
+        jsxs('div', {
+          className: 'sw-fcells', 'data-big': all.length <= 12 ? 'true' : undefined, role: 'img', 'aria-label': t('sw.hudAgents.filesLabel', n('changed'), n('failed'), n('read')),
+          children: [
+            ...shown.map((k, i) => jsx('i', { 'data-k': k }, i)),
+            kinds.length > FILE_CELLS ? jsx('span', { className: 'sw-fmore', children: t('sw.hudAgents.moreFiles', kinds.length - FILE_CELLS) }, 'more') : null
+          ]
+        }, 'cells'),
+        jsxs('div', { className: 'sw-fleg', 'aria-hidden': 'true', children: [leg('changed', t('sw.hudAgents.legChanged')), leg('failed', t('sw.hudAgents.legFailed')), leg('read', t('sw.hudAgents.legRead'))] }, 'leg')
+      ]
+      : [jsx('p', { className: 'sw-hnote', children: files.loading ? t('sw.loading') : t('sw.hudAgents.noFiles') }, 'none')]
+  })
+}
+
+/** AGENT: the selected agent's name, its status chip, and its key facts. */
+function FleetAgent({ t, u, subs, files, waitingOn }) {
+  const goal = String(u.rec?.goal || '').trim()
+  const name = `${u.main ? '★ ' : ''}${slugName(u.name)}`
+  let rows
+  if (u.main) {
+    const mine = agentFiles(files.data?.files, '')
+    rows = [
+      [t('sw.hudAgents.state'), statusWord(t, u, waitingOn)],
+      [t('sw.hudAgents.subagents'), t('sw.hudAgents.agentsV', subs.length, subs.filter(x => x.status === 'completed').length)],
+      [t('sw.hudAgents.filesK'), t('sw.hudAgents.filesV', mine.changed.length, mine.read.length)]
+    ]
+  } else {
+    const rec = u.rec || {}
+    rows = [
+      [t('sw.hudAgents.model'), modelChip(rec.model, rec.effort) || '—'],
+      [t('sw.hudAgents.timeK'), fmtDuration(u.duration, t) || '—'],
+      [t('sw.hudAgents.toolsK'), t('sw.hudAgents.toolsV', Number(rec.tool_calls ?? rec.tool_count) || 0, fmtTokens(rec.tokens, t), fmtCost(rec.cost_usd, rec.cost_status, t))],
+      [t('sw.hudAgents.task'), goal ? jsx(OneLine, { text: goal }) : '—']
+    ]
+  }
+  return jsx(HudPanel, {
+    title: t('sw.hudAgents.agent'), span: 3, className: 'sw-hagent',
     children: [
       jsxs('div', {
-        className: 'sw-sbig',
+        className: 'sw-rfile',
         children: [
-          jsx('div', { className: 'sw-k', children: t('sw.score.status') }, 'k'),
-          // Keyed by the count: a new count mounts anew and rolls up into place.
-          jsxs('div', { className: 'sw-big', children: [jsx('span', { className: 'sw-bign', children: done }, `n-${done}`), jsx('small', { children: `/${subs.length}` }, 't')] }, 'b')
+          jsx(Tip, { label: tipText(goal || u.name), children: jsx('b', { className: 'sw-rname sw-1l', tabIndex: 0, children: name }) }, 'n'),
+          hudChip(u.status, u.main ? statusWord(t, u, waitingOn) : t(`sw.st.${u.status}`))
         ]
-      }, 'b'),
-      jsxs('div', {
-        className: 'sw-sseg',
-        children: [
-          jsx('div', { className: 'sw-k', children: subs.length ? t('sw.score.done') : t('sw.score.none') }, 'k'),
-          jsx(Cells, { statuses: subs.map(u => u.status), className: 'sw-seg' }, 'c')
-        ]
-      }, 's'),
-      subs.length ? jsxs('div', {
-        className: 'sw-spent',
-        children: [
-          jsx('div', { className: 'sw-k', children: t('sw.score.spent') }, 'k'),
-          jsx(Tip, {
-            label: t('sw.cost.tip', sum.priced, sum.included, sum.unknown),
-            children: jsx('b', { className: 'sw-money', tabIndex: 0, children: cost || '—' })
-          }, 'v')
-        ]
-      }, '$') : null
+      }, `n-${u.key}`),
+      jsx(HudKV, { rows }, 'kv')
     ]
+  })
+}
+
+/** LOG: one row per subagent — when it started, its name, its answer or what it does; a click selects it. */
+function FleetLog({ t, subs, selected, onSelect, now }) {
+  return jsx(HudPanel, {
+    title: t('sw.hudAgents.log'), span: 3, className: 'sw-hlogp',
+    children: subs.length
+      ? [jsx('div', {
+        className: 'sw-hlog sw-alog',
+        children: subs.map(u => {
+          const said = String(u.rec?.summary || '').trim().split('\n', 1)[0] || unitLine(t, u)
+          return jsxs('button', {
+            type: 'button', 'data-st': u.status, 'aria-pressed': selected === u.key, onClick: () => onSelect(u.key),
+            children: [
+              jsx('span', { className: 'sw-hlt', children: fmtWhen(u.rec?.started_at, now, t) || '—' }, 't'),
+              jsx('span', { className: 'sw-hle', children: slugName(u.name) }, 'e'),
+              jsx(Tip, { label: tipText(u.rec?.summary || said), children: jsx('span', { className: 'sw-hlm', children: said }) }, 'm')
+            ]
+          }, u.key)
+        })
+      }, 'l')]
+      : [jsx('p', { className: 'sw-hnote', children: t('sw.hudAgents.noLog') }, 'none')]
   })
 }
 
@@ -2519,21 +2762,38 @@ export function Page() {
       className: 'sw-agents', role: 'tabpanel', id: 'sw-tab-agents', 'aria-labelledby': 'sw-tabb-agents',
       children: [
         view ? jsx(RunBar, { t, view, runs, onPick: pickRun, onBack: () => pickRun('now') }, 'run') : null,
-        jsx(Score, { t, subs }, 'score'),
-        swarm
-          ? jsx(Swarm, { t, theme, main, subs, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, `swarm-${view?.key || 'now'}`)
-          : subs.length
-            ? jsx(Units, { t, theme, units, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, 'units')
-            : jsxs('div', {
-              className: 'sw-solo',
-              children: [
-                jsx(Units, { t, theme, units: [main], selected: sel.key, onSelect: setSelected, flash, waitingOn: 0 }, 'u'),
-                jsx('p', { className: 'sw-nosub', children: t('sw.noSubagents') }, 'p')
-              ]
-            }, 'solo'),
-        sel.main
-          ? jsx(MainPanel, { t, theme, main, files, touching: calm ? new Map() : touching, tool: calm ? null : tool, waitingOn: active, onToast }, 'focus-main')
-          : jsx(SubPanel, { t, theme, u: sel, parentName, files, onToast }, `focus-${sel.key}`)
+        jsxs('div', {
+          className: 'sw-agrid',
+          children: [
+            jsx(HudPanel, {
+              title: t('sw.hudAgents.fleet', view ? t(view.kind === 'live' ? 'sw.run.current' : view.kind === 'last' ? 'sw.run.last' : 'sw.hudAgents.pastRun') : ''),
+              span: 6, className: 'sw-hpx sw-hfleet',
+              chip: subs.length ? hudChip(batchState(subs.map(u => u.status)), t('sw.hudAgents.done', subs.filter(u => u.status === 'completed').length, subs.length)) : null,
+              children: [swarm
+                ? jsx(Swarm, { t, theme, main, subs, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, `swarm-${view?.key || 'now'}`)
+                : subs.length
+                  ? jsx(Fleet, { t, theme, main, subs, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, `fleet-${view?.key || 'now'}`)
+                  : jsxs('div', {
+                    className: 'sw-solo',
+                    children: [
+                      jsx(Unit, { t, theme, u: main, selected: sel.key === main.key, onSelect: setSelected, flash: null, waitingOn: 0, meta: mainMeta(t, main, 0) }, 'u'),
+                      jsx('p', { className: 'sw-nosub', children: t('sw.noSubagents') }, 'p')
+                    ]
+                  }, 'solo')]
+            }, 'fleet'),
+            jsx(FleetTimes, { t, subs }, 'time'),
+            jsx(Score, { t, subs }, 'score'),
+            jsx(FleetFiles, { t, files }, 'files'),
+            jsx(FleetAgent, { t, u: sel, subs, files, waitingOn: active }, 'agent'),
+            jsx(FleetLog, { t, subs, selected: sel.key, onSelect: setSelected, now }, 'log'),
+            jsx(HudPanel, {
+              title: t('sw.hudAgents.detail'), span: 6, className: 'sw-hdetail',
+              children: [sel.main
+                ? jsx(MainPanel, { t, theme, main, files, touching: calm ? new Map() : touching, tool: calm ? null : tool, waitingOn: active, onToast }, 'focus-main')
+                : jsx(SubPanel, { t, theme, u: sel, parentName, files, onToast }, `focus-${sel.key}`)]
+            }, 'detail')
+          ]
+        }, 'grid')
       ]
     })
   }
@@ -2967,15 +3227,7 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-seg{gap:0;height:12px}
 .sw-page[data-theme=terminal] .sw-seg i{transform:none}
 .sw-page[data-theme=terminal] .sw-money{font-size:14px;color:var(--tm-hi)}
-/* units: the shared grid; each look sizes its tiles */
-.sw-units{--sw-fit:8;--sw-cols:var(--sw-c8,var(--sw-n));display:grid;grid-template-columns:repeat(var(--sw-cols),96px);justify-content:space-around;column-gap:8px;row-gap:12px;margin:20px 0 4px}
-/* how many 96 px units fit a row at the panel's width; the rows are then split evenly (unitCols) */
-@container (max-width:823px){.sw-units{--sw-fit:7;--sw-cols:var(--sw-c7,var(--sw-n))}}
-@container (max-width:719px){.sw-units{--sw-fit:6;--sw-cols:var(--sw-c6,var(--sw-n))}}
-@container (max-width:615px){.sw-units{--sw-fit:5;--sw-cols:var(--sw-c5,var(--sw-n))}}
-@container (max-width:511px){.sw-units{--sw-fit:4;--sw-cols:var(--sw-c4,var(--sw-n))}}
-@container (max-width:407px){.sw-units{--sw-fit:3;--sw-cols:var(--sw-c3,var(--sw-n))}}
-@container (max-width:303px){.sw-units{--sw-fit:2;--sw-cols:var(--sw-c2,var(--sw-n))}}
+/* units: the agents as nodes (the fleet schematic, the swarm's head) */
 .sw-unit{width:96px;display:flex;flex-direction:column;align-items:center;gap:5px;text-align:center!important;padding:4px 0!important}
 .sw-ic{position:relative;z-index:1;width:22px;height:22px;color:var(--ink);filter:drop-shadow(0 0 6px var(--c))}
 .sw-ic svg{width:100%;height:100%;display:block}
@@ -2984,8 +3236,6 @@ const CSS = `${TM_PALETTE}
 .sw-unit.is-fail,.sw-frow.is-fail{animation:sw-shake .5s ease-in-out 2}
 .sw-unit:hover .sw-un{color:var(--ink)}
 /* units: Terminal sprites */
-/* Terminal: a box is as wide as when a full row fills the line; a short row starts at the left */
-.sw-page[data-theme=terminal] .sw-units{grid-template-columns:repeat(var(--sw-cols),calc((100% - (var(--sw-fit) - 1) * 8px) / var(--sw-fit)));justify-content:start;gap:8px;margin:12px 0}
 .sw-page[data-theme=terminal] .sw-unit{width:auto;min-width:0;padding:8px 4px 6px!important;gap:2px;border:1px solid var(--line)}
 .sw-page[data-theme=terminal] .sw-unit.is-sel{border-color:var(--a);box-shadow:0 0 12px color-mix(in srgb,var(--a) 25%,transparent),inset 0 0 12px color-mix(in srgb,var(--a) 12%,transparent)}
 .sw-spr{margin:0;font:12px/1.05 var(--mono);white-space:pre;color:var(--c)}
@@ -2993,12 +3243,10 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-us{letter-spacing:0;color:var(--c);animation:sw-type .6s steps(6,end)}
 .sw-page[data-theme=terminal] .sw-unit[data-main][data-st=running] .sw-spr{animation:sw-breathe 2.8s ease-in-out infinite}
 .sw-solo{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-.sw-solo .sw-units{flex:none;margin:12px 0 4px}
 .sw-nosub{flex:1;min-width:160px;margin:0;color:var(--dim)}
-.sw-page[data-theme=terminal] .sw-solo .sw-units{grid-template-columns:120px}
 /* swarm */
 .sw-grp{margin-top:14px}
-.sw-gmain .sw-units,.sw-gmain{display:flex;justify-content:flex-start}
+.sw-gmain{display:flex;justify-content:flex-start}
 .sw-gh{display:flex;align-items:center;gap:8px;margin-bottom:7px}
 .sw-gh em{font-style:normal;color:var(--ink);letter-spacing:0}
 .sw-fold{margin-left:auto;font:11.5px var(--mono)!important;letter-spacing:.06em;text-transform:uppercase;color:var(--ink)!important;text-decoration:underline;text-decoration-color:var(--a);text-underline-offset:3px}
@@ -3275,6 +3523,90 @@ const CSS = `${TM_PALETTE}
 @keyframes sw-sweep{from{left:-40%}to{left:100%}}
 @keyframes sw-reveal{from{clip-path:inset(0 0 100% 0)}}
 @keyframes sw-scan{from{background-position:-70% 0,0 0}to{background-position:170% 0,0 0}}
+/* agents: HUD */
+/* the fleet schematic over a faint grid, then time per agent, spent, files, the agent, the log; status colour rides the marks */
+.sw-agrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;min-width:0}
+.sw-page[data-theme=terminal] .sw-agents .sw-runb{margin-bottom:8px;padding:7px 12px;background:var(--raised);box-shadow:inset 0 0 0 1px var(--line)}
+.sw-page[data-theme=terminal] .sw-agents .sw-pick{text-transform:uppercase;letter-spacing:.12em;color:var(--tm-hi)!important}
+.sw-page[data-theme=terminal] .sw-agents .sw-pick::before{color:var(--dim);letter-spacing:.14em}
+.sw-page[data-theme=terminal] .sw-agents .sw-back{text-transform:uppercase;letter-spacing:.12em}
+.sw-hnote{margin:0;color:var(--dim)}
+.sw-hgrid.sw-fleet{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) minmax(0,.8fr) minmax(0,1.15fr);grid-template-rows:repeat(var(--sw-rows,1),minmax(62px,auto));column-gap:34px;row-gap:10px;min-height:0;padding:8px 4px}
+.sw-fmain{grid-column:1;grid-row:1/-1;position:relative;display:flex;align-items:center;min-width:0;min-height:140px;padding:52px 0}
+.sw-frun{position:absolute;top:0;left:0}
+.sw-fmain>.sw-unit,.sw-fmain>:not(.sw-frun):not(.sw-flead){flex:0 1 250px;min-width:0}
+.sw-flead{position:relative;flex:1 1 0;min-width:10px;height:1px;background:var(--hud-wire)}
+.sw-fmain>.sw-flead{margin-right:-17px}
+.sw-fmain>.sw-flead::before{content:"";position:absolute;left:-3px;top:-2px;width:5px;height:5px;border-radius:50%;background:var(--hud-frame)}
+.sw-fco{grid-column:2;position:relative;display:flex;align-items:center;min-width:0}
+.sw-fco>.sw-co{position:relative;flex:0 1 auto;min-width:0}
+.sw-fco>.sw-co .sw-cov{position:absolute;top:calc(100% + 4px);left:0}
+.sw-fco>.sw-flead{margin-right:-34px}
+.sw-fco::before,.sw-fco::after{content:"";position:absolute;left:-17px;background:var(--hud-wire)}
+.sw-fco::before{top:-5px;bottom:-5px;width:1px}
+.sw-fco[data-end~=first]::before{top:50%}
+.sw-fco[data-end~=last]::before{bottom:50%}
+.sw-fco::after{top:50%;width:17px;height:1px}
+.sw-fnode{grid-column:3;position:relative;align-self:center;min-width:0;max-width:280px}
+.sw-fnode::before{content:"";position:absolute;z-index:1;left:-3px;top:calc(50% - 2px);width:5px;height:5px;border-radius:50%;background:var(--hud-frame)}
+.sw-page[data-theme=terminal] .sw-agents .sw-unit{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:0 10px;width:100%;min-width:0;padding:6px 10px!important;text-align:left!important;
+ background:var(--hud-hero);border:1px solid var(--hud-node);box-shadow:inset 2px 0 0 var(--c)}
+.sw-page[data-theme=terminal] .sw-agents .sw-unit:hover{border-color:var(--hud-frame)}
+.sw-page[data-theme=terminal] .sw-agents .sw-unit.is-sel{border-color:var(--c);box-shadow:inset 2px 0 0 var(--c),0 0 14px color-mix(in srgb,var(--c) 32%,transparent),inset 0 0 14px color-mix(in srgb,var(--c) 10%,transparent)}
+.sw-panel[data-calm] .sw-agents .sw-unit.is-sel{box-shadow:inset 2px 0 0 var(--c)}
+.sw-page[data-theme=terminal] .sw-agents .sw-spr{font:11.5px/1 var(--mono)}
+.sw-ut{display:flex;flex-direction:column;gap:3px;min-width:0}
+.sw-page[data-theme=terminal] .sw-agents .sw-un{display:block;margin:0;font:400 12.5px/1.3 var(--mono);letter-spacing:.02em;color:var(--tm-hi);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-ul{display:flex;align-items:baseline;gap:8px;min-width:0;font-size:11.5px;line-height:1.3;white-space:nowrap}
+.sw-page[data-theme=terminal] .sw-agents .sw-us{flex:none;color:var(--ink)}
+.sw-um{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--dim)}
+.sw-ux{flex:none;margin-left:auto;color:var(--dim)}
+.sw-agents .sw-solo{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 8px}
+.sw-agents .sw-solo>:first-child{flex:0 1 240px}
+.sw-agents .sw-solo .sw-nosub{position:relative;z-index:1}
+.sw-page[data-theme=terminal] .sw-agents .sw-gmain .sw-unit{max-width:280px}
+.sw-hfleet .sw-swarm{position:relative;z-index:1}
+.sw-hspent .sw-spent{margin-bottom:12px}
+.sw-page[data-theme=terminal] .sw-score .sw-money{display:inline;font:250 32px/1 var(--mono);letter-spacing:-.03em;color:var(--tm-hi)}
+.sw-page[data-theme=terminal] .sw-score .sw-big{font:400 12.5px/1 var(--mono);text-shadow:none;color:var(--tm-hi);overflow:visible;letter-spacing:0}
+.sw-page[data-theme=terminal] .sw-score .sw-big small{font-size:12.5px;color:var(--dim)}
+.sw-hspent .sw-score{display:block}
+.sw-page[data-theme=terminal] .sw-score .sw-seg{gap:2px;height:5px;margin:6px 0 4px}
+.sw-score .sw-seg i{max-width:none}
+.sw-sdone .sw-big{margin-left:auto}
+.sw-sdone{margin-top:14px}
+.sw-tlist{max-height:340px;overflow-x:hidden;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--hud-node) transparent}
+.sw-htime .sw-tkh .sw-tkn{flex:0 1 auto;text-transform:uppercase;letter-spacing:.12em}
+.sw-htime .sw-tkh b{flex:none}
+.sw-hfiles .sw-hrow{font-size:12.5px;letter-spacing:.1em}
+.sw-fcells{display:grid;grid-template-columns:repeat(auto-fill,minmax(18px,1fr));gap:4px;margin:12px 0 10px}
+.sw-fcells[data-big]{grid-template-columns:repeat(auto-fill,minmax(30px,1fr))}
+.sw-fcells>i{height:18px;background:var(--hud-teal-d);box-shadow:inset 0 0 0 1px var(--hud-teal)}
+.sw-fcells[data-big]>i{height:30px}
+.sw-fcells>i[data-k=changed]{background:color-mix(in srgb,var(--a) 62%,var(--raised));box-shadow:none}
+.sw-fcells>i[data-k=failed]{background:color-mix(in srgb,var(--bad) 80%,var(--raised));box-shadow:none}
+.sw-fmore{grid-column:span 2;align-self:center;font-size:11.5px;color:var(--dim)}
+.sw-fleg{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11.5px;letter-spacing:.12em;color:var(--dim)}
+.sw-fleg>span{display:inline-flex;align-items:center;gap:6px}
+.sw-fleg>span::before{content:"";width:7px;height:7px;background:var(--hud-teal)}
+.sw-fleg>[data-k=changed]::before{background:var(--a)}
+.sw-fleg>[data-k=failed]::before{background:var(--bad)}
+.sw-hagent .sw-rfile{margin:-2px 0 12px}
+.sw-hlog.sw-alog{grid-template-columns:max-content fit-content(18ch) minmax(0,1fr)}
+.sw-alog .sw-hle{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-alog .sw-hle::before{display:inline-block;margin:0 7px 2px 0;vertical-align:middle}
+.sw-alog>button[aria-pressed=true]{background:var(--hud-teal-d);box-shadow:inset 2px 0 0 var(--c,var(--a))}
+.sw-alog>button[aria-pressed=true]>*{color:var(--tm-hi,var(--ink))}
+.sw-hp.sw-hdetail{background:var(--bg)}
+.sw-page[data-theme=terminal] .sw-hdetail .sw-focus{margin-top:0;padding:0;border:0;background:none}
+@container (max-width:540px){
+ .sw-hgrid.sw-fleet{grid-template-columns:minmax(0,1fr);grid-template-rows:none;row-gap:8px;padding:6px 0}
+ .sw-fmain,.sw-fnode{grid-column:1;grid-row:auto!important;max-width:none}
+ .sw-fmain{min-height:0;padding:0}
+ .sw-fmain>:not(.sw-frun):not(.sw-flead){flex:1 1 auto}
+ .sw-fleet .sw-fco,.sw-fleet .sw-frun,.sw-fmain>.sw-flead,.sw-fnode::before{display:none}
+ .sw-hlog.sw-alog{grid-template-columns:max-content fit-content(12ch) minmax(0,1fr)}
+}
 /* replay: a HUD — a six-column grid of hairline panels, caps titles, one accent; status colour rides the marks */
 .sw-replay{display:flex;flex-direction:column;gap:12px;min-width:0}
 .sw-replay .sw-why{margin:0}

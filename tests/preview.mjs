@@ -263,7 +263,7 @@ const TITLES = {
   6: "6 · A command's other open states: running, loading, unreadable, printed nothing",
   7: '7 · A chat with no subagents yet — the main agent and its files',
   8: '8 · No chat selected · loading · several sources failing',
-  9: '9 · Narrow (380 px): units wrap into rows; nothing scrolls sideways',
+  9: '9 · Narrow (380 px): the nodes stack, the callouts go; nothing scrolls sideways',
   10: '10 · The status-bar chip · the header "held" state after a click inside the page',
   11: '11 · 40 subagents: the grouped swarm — failed by name, then working, waiting, done',
   12: "12 · Replay tab — a request's edits one at a time: removed and added lines, a failed edit, narrow"

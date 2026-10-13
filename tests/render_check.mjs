@@ -421,6 +421,33 @@ check(q('.sw-bign')?.textContent === '1' && q('.sw-big small')?.textContent === 
   `the score counts finished subagents of all, one cell per subagent (${q('.sw-big')?.textContent})`)
 check(q('.sw-money')?.textContent === '~$0.08' && q('.sw-money')?.tabIndex === 0 && /1 priced/.test(q('.sw-money')?.dataset.tip || '') && /1 not priced/.test(q('.sw-money')?.dataset.tip || ''),
   `the score shows what the subagents spent, a focusable chip with the breakdown (${q('.sw-money')?.dataset.tip})`)
+// 21b. the fleet HUD: the schematic, its callouts and lines, time per agent, the agent card, the log
+{
+  const fleet = q('.sw-agents .sw-hfleet')
+  check(fleet?.querySelector('.sw-hpt .sw-sr')?.textContent === 'Fleet · Last run' && fleet.querySelector('.sw-hchip')?.textContent === '1/2 done'
+    && fleet.querySelector('.sw-hchip')?.dataset.st === 'failed',
+    `the fleet hero is titled with the run and chips how many are done, in the run's state (${fleet?.querySelector('.sw-hchip')?.textContent})`)
+  const cos = qa('.sw-fleet .sw-fco')
+  check(cos.map(c => c.querySelector('.sw-col')?.textContent).join() === 'HANDED ØFF,FAILED' && cos.every(c => c.getAttribute('aria-hidden') === 'true')
+    && cos.map(c => c.querySelector('.sw-cov')?.dataset.st).join() === 'completed,failed' && cos.every(c => /^\d+ tools?( · \d+k?)?$/.test(c.querySelector('.sw-cov')?.textContent || ''))
+    && q('.sw-frun .sw-col')?.textContent === 'RUN CØMPLETE' && q('.sw-frun .sw-copn')?.textContent === '100%' && qa('.sw-frun .sw-copb i.on').length === 10,
+    `a callout per subagent says how its hand-off went, with its tools and tokens; the run callout says it is complete (${cos.map(c => c.textContent).join(' | ')})`)
+  check(qa('.sw-fleet .sw-flead').length === 3 && qa('.sw-fleet .sw-flead').every(l => l.getAttribute('aria-hidden') === 'true')
+    && cos.map(c => c.dataset.end).join() === 'first,last' && q('.sw-fmain .sw-um')?.textContent === 'idle',
+    'leader lines: one from the main agent to the callout spine, one from each callout to its node; the spine runs first to last; the main node says its state')
+  check(qa('.sw-htime .sw-tk').map(e => e.dataset.st).join() === 'completed,failed' && qa('.sw-htime .sw-tkn').map(e => e.textContent).join() === 'docs-writer,wiki-watchdog',
+    'time per agent: one track per subagent, in its status colour')
+  check(qa('.sw-alog > button').length === 2 && q('.sw-hagent .sw-rname')?.textContent === '★ main-agent' && q('.sw-hdetail .sw-focus')?.dataset.kind === 'main',
+    'the log has a row per subagent; the agent card and the detail panel show the selected agent')
+  await act(async () => { qa('.sw-fnode .sw-unit')[1].click() })
+  check(q('.sw-focus')?.dataset.kind === 'sub' && qa('.sw-fnode .sw-unit')[1].getAttribute('aria-pressed') === 'true' && q('.sw-hagent .sw-rname')?.textContent === 'wiki-watchdog'
+    && q('.sw-hagent .sw-hchip')?.dataset.st === 'failed' && qa('.sw-alog > button').map(b => b.getAttribute('aria-pressed')).join() === 'false,true',
+    `a node click selects it: the detail panel, the agent card and its log row follow (${q('.sw-hagent .sw-rname')?.textContent})`)
+  await act(async () => { qa('.sw-alog > button')[0].click() })
+  check(q('.sw-hagent .sw-rname')?.textContent === 'docs-writer' && qa('.sw-fnode .sw-unit')[0].getAttribute('aria-pressed') === 'true', 'a log row click selects its subagent')
+  await act(async () => { q('.sw-fmain .sw-unit').click() })
+  check(q('.sw-focus')?.dataset.kind === 'main', 'the main node selects the main agent again')
+}
 const css = q('style')?.textContent || ''
 check(/\.sw-page button:focus-visible[^{]*\{[^}]*outline:2px/.test(css), 'buttons draw a visible focus ring (the app removes every ring)')
 check(/\.sw-toast\{width:max-content;max-width:min\(360px,calc\(100cqw - 40px\)\)/.test(css),
@@ -947,8 +974,8 @@ check(q('.sw-focus')?.dataset.kind === 'main' && q('.sw-focus [data-sec=none] .s
 check(q('.sw-score')?.getAttribute('aria-label') === 'No subagents yet', 'the score says there are none yet')
 // 25. more than SWARM_AT live subagents: the swarm, the main agent on top waiting on them
 for (let i = 0; i < 12; i++) await emit('subagent.spawn_requested', 'rt-e', { subagent_id: `e${i}`, goal: `Spawn 'eq-${i}'`, task_index: i })
-check(q('.sw-swarm') && !q('.sw-swarm ~ .sw-units') && q('.sw-gmain .sw-unit')?.getAttribute('aria-label') === 'Main agent: waiting on 12',
-  `past 8 subagents the units become a swarm, the main agent on top waiting on them (${q('.sw-gmain .sw-unit')?.getAttribute('aria-label')})`)
+check(q('.sw-swarm') && !q('.sw-fleet') && q('.sw-gmain .sw-unit')?.getAttribute('aria-label') === 'Main agent: waiting on 12',
+  `past 8 subagents the schematic gives way to the swarm, the main agent on top waiting on them (${q('.sw-gmain .sw-unit')?.getAttribute('aria-label')})`)
 
 // empty chat
 await act(async () => { stub.atoms.focusedSessionId.set(null); stub.atoms.focusedStoredSessionId.set(null) })
@@ -1081,6 +1108,13 @@ check(rest.some(p => p === '/files?session_id=st-f'), 'files are read for the st
   check(fq('.sw-focus .sw-verb')?.textContent === '○ IDLE' && fq('.sw-focus .sw-ptag')?.textContent === 'main' && fq('.sw-focus .sw-por')?.dataset.st === 'idle',
     `an idle main agent's hero says so, tagged MAIN (${fq('.sw-focus .sw-verb')?.textContent})`)
 }
+{
+  const kinds = fqa('.sw-hfiles .sw-fcells > i').map(i => i.dataset.k)
+  const row = fqa('.sw-hfiles .sw-hrow b').map(b => b.textContent).join(' ')
+  check(kinds.join() === 'changed,failed,read,changed,read' && row === 'CHANGED 2 READ 2'
+    && fq('.sw-hfiles .sw-fcells')?.getAttribute('aria-label') === '2 changed, 1 failed, 2 only read',
+    `FILES: one cell per file, changed / failed / only read, counted and named for a screen reader (${kinds.join()} · ${row})`)
+}
 const note = fq('.sw-focus .sw-note')?.textContent || ''
 check(/terminal commands or code runs are not listed/.test(note) && /Review › Last turn/.test(note), `the panel says what it cannot see and where every change is (${note})`)
 check(sec('changed').map(r => r.querySelector('.sw-fn').textContent).join() === 'a.py,README.md,old.txt' && sec('read').map(r => r.querySelector('.sw-fn').textContent).join() === 'b.py,x.md',
@@ -1200,15 +1234,16 @@ await tick(4100)
 }
 {
   const st = fq('style')?.textContent || ''
-  check(/\.sw-units\{[^}]*display:grid;grid-template-columns:repeat\(var\(--sw-cols\),96px\)/.test(st) && /@container \(max-width:407px\)\{\.sw-units\{--sw-fit:3;--sw-cols:var\(--sw-c3/.test(st)
-    && /\.sw-cellgrid\{display:flex;flex-wrap:wrap/.test(st),
-    'units take the columns that fit the panel and swarm cells wrap: nothing scrolls sideways')
-  check([[6, 5, 3], [7, 5, 4], [6, 6, 6], [5, 4, 3], [9, 8, 5], [3, 5, 3], [1, 2, 1], [8, 3, 3]].every(([n, fit, c]) => mod.unitCols(n, fit) === c),
-    'agents split into even rows: 6 at 5 a row are 3 + 3, 7 are 4 + 3, never 5 + 1')
-  const u = fhost.querySelector('.sw-agents .sw-units')
-  const n = u ? Number(u.style.getPropertyValue('--sw-n')) : 0
-  check(u && n > 0 && [2, 3, 4, 5, 6, 7, 8].every(f => Number(u.style.getPropertyValue(`--sw-c${f}`)) === mod.unitCols(n, f)),
-    `the page hands the stylesheet one column count per width step (n=${n})`)
+  check(/\.sw-hgrid\.sw-fleet\{display:grid;min-height:0;grid-template-columns:minmax\(0,1fr\) minmax\(0,\.8fr\) minmax\(0,1\.15fr\)/.test(st)
+    && /@container \(max-width:540px\)\{\s*\.sw-hgrid\.sw-fleet\{grid-template-columns:minmax\(0,1fr\)/.test(st) && /\.sw-fleet \.sw-fco,\.sw-fleet \.sw-frun,\.sw-fmain>\.sw-flead,\.sw-fnode::before\{display:none\}/.test(st)
+    && /\.sw-fmain,\.sw-fnode\{grid-column:1;grid-row:auto!important;max-width:none\}/.test(st) && /\.sw-cellgrid\{display:flex;flex-wrap:wrap/.test(st),
+    'the fleet is a three-column schematic that stacks into one column without callouts when narrow; swarm cells wrap: nothing scrolls sideways')
+  const fleet = fhost.querySelector('.sw-agents .sw-fleet')
+  const nodes = fleet ? [...fleet.querySelectorAll('.sw-fnode .sw-unit')] : []
+  const cos = fleet ? [...fleet.querySelectorAll('.sw-fco[data-to]')] : []
+  check(nodes.length > 0 && cos.length === nodes.length && cos.every(co => co.querySelector('.sw-flead'))
+    && cos.every((co, i) => co.dataset.to === nodes[i].dataset.node) && fleet.querySelector('.sw-fmain .sw-unit')?.dataset.main === 'true',
+    `the schematic: the main agent on the left, a callout tied to each subagent node (${nodes.length} nodes, ${cos.length} callouts)`)
   check(/@container \(max-width:460px\)\{\.sw-page\[data-theme=terminal\] \.sw-panel \.sw-flist\{grid-template-columns:14px fit-content\(22ch\) 0 39px max-content 0 1fr;/.test(st)
     && !/@container \(max-width:460px\)\{\.sw-page\[data-theme=terminal\][^@]*\.sw-pips(?! i)[^{]*\{display:none/.test(st) && !/\.sw-panel \.sw-ft\{grid-template-columns/.test(st),
     'a narrow Terminal file row keeps its name, thinner blocks and label on the shared columns; the folder and NOW badge give way')

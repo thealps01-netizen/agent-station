@@ -19,6 +19,15 @@ still takes the theme's colours. Red marks only a failure, amber only something 
   PLAYBACK (one cell per edit, Previous / Play / Next); FILE (name, folder, what changed, the request);
   LOG (every edit with its time, EDIT / WRITE / DELETE / MOVE / FAILED and its +/−; a row opens it).
   Below 540 px the panels stack and the callouts give way.
+- **Agents is a HUD.** FLEET: on a faint grid the main agent on the left and each subagent a node on the
+  right (name, [OK ] / [ERR] / [RUN] / [WAIT], model and time), a callout between them per subagent
+  (HANDED ØFF / FAILED / WORKING with its tools and tokens) on leader lines, and a RUN COMPLETE /
+  RUNNING gauge; the selected node glows in its status colour and a click selects it. Past 8 subagents
+  the hero holds the grouped swarm instead. Then TIME PER AGENT (each run time against the longest),
+  SPENT (cost, tokens, tools, done n/N), FILES (a cell per file: changed, failed, only read), AGENT (the
+  selected agent's model, time, tools · tokens · cost, task), LOG (a row per subagent; a row selects it)
+  and DETAIL (the full focus panel: files worked on now, changed and read, the answer, its buttons).
+  Below 540 px the nodes stack and the callouts give way.
 - **Agents and Commands take the same look:** caps titles and tabs ("01 AGENTS"), square hairline
   panels, no scanlines, quiet outlined buttons.
 - A failed request's count keeps its text in the reading colour and carries a red mark.
