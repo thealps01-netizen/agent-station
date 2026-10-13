@@ -9,8 +9,9 @@
  *    2. A failed subagent selected: task, answer, files, buttons; a copy shows its toast.
  *    3. The run picker open: this run and the earlier ones.
  *    4. An earlier run open: calm, with Back to now.
- *    5. The Commands tab with a failed command open (exit code, cwd, output tail).
- *    6. A command's other open states: still running, output loading, unreadable, printed nothing.
+ *    5. The Commands tab with a failed command picked: its CONSOLE (output, FINISHED gauge, FIRST ERROR
+ *       callout on its line), the COMMANDS list and the PROCESS card.
+ *    6. The console's other states: still running, unreadable and printed nothing (narrow).
  *    7. A chat with no subagents yet: the main agent and its files.
  *    8. No chat selected · loading · several sources failing (three frames).
  *    9. Narrow (380 px): units wrap into rows, nothing scrolls sideways.
@@ -259,8 +260,8 @@ const TITLES = {
   2: '2 · A failed subagent selected — task, answer, files, buttons; a copy shows a toast',
   3: '3 · Run picker open — earlier runs live here',
   4: '4 · An earlier run open — calm, one click back to now',
-  5: '5 · Commands tab — a failed command open',
-  6: "6 · A command's other open states: running, loading, unreadable, printed nothing",
+  5: '5 · Commands tab — a failed command picked: console with its first error, the list, the process card',
+  6: "6 · The console's other states: running, unreadable, printed nothing (narrow)",
   7: '7 · A chat with no subagents yet — the main agent and its files',
   8: '8 · No chat selected · loading · several sources failing',
   9: '9 · Narrow (380 px): the nodes stack, the callouts go; nothing scrolls sideways',
@@ -286,15 +287,18 @@ for (const look of LOOKS) {
   await frame(5, look, TITLES[5], {}, async ({ q, qa }) => {
     await click(q('[role=tab][data-tab=commands]'))
     await tick(10)
-    await click(qa('.sw-cmr').find(p => p.dataset.st === 'failed'))
+    await click(qa('.sw-cmrow').find(p => p.dataset.st === 'failed'))
     await tick(20)
+    if (!q('.sw-cmfirst')) problems.push(`5/${look}: the failed command has no FIRST ERROR callout`)
   })
-  await frame(6, look, TITLES[6], { procs: PROCS6 }, async ({ q, qa }) => {
-    await click(q('[role=tab][data-tab=commands]'))
-    await tick(10)
-    for (const row of qa('.sw-cmr')) await click(row)
-    await tick(30)
-  })
+  for (const [id, what, narrow] of [['proc_run', 'still running', false], ['proc_lost', 'an unreadable output', true], ['proc_quiet', 'it printed nothing', true]]) {
+    await frame(6, look, `${TITLES[6]} — ${what}${narrow ? ' (380 px)' : ''}`, { procs: PROCS6, narrow }, async ({ q, qa }) => {
+      await click(q('[role=tab][data-tab=commands]'))
+      await tick(10)
+      await click(qa('.sw-cmrow')[PROCS6.length - 1 - PROCS6.findIndex(x => x.id === id)])
+      await tick(30)
+    })
+  }
   await frame(7, look, TITLES[7], { empty: true })
   await frame(8, look, `${TITLES[8]} — no chat`, { noChat: true })
   await frame(8, look, `${TITLES[8]} — loading`, { loading: true })
