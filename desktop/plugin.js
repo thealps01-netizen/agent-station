@@ -1958,19 +1958,21 @@ function HudChart({ vals, at, failed }) {
   })
 }
 
-/** Leader lines from each callout to the diff row it names, measured from the laid-out page. */
-function useWires(heroRef, deps) {
+/** Leader lines from each `.sw-co[data-to]` callout in the hero to the row of `list` whose `attr`
+ *  equals its data-to (only while that row is scrolled into view), measured from the laid-out page.
+ *  Shared by the Replay diff (rows carry data-h) and any other HUD hero with the same shape. */
+function useWires(heroRef, deps, list = '.sw-rlines', attr = 'data-h') {
   const [wires, setWires] = useState('')
   useEffect(() => {
     const hero = heroRef.current
     if (!hero || typeof hero.getBoundingClientRect !== 'function') return undefined
     const draw = () => {
       const box = hero.getBoundingClientRect()
-      const list = hero.querySelector('.sw-rlines')
-      const view = list ? list.getBoundingClientRect() : box
+      const rows = hero.querySelector(list)
+      const view = rows ? rows.getBoundingClientRect() : box
       const out = []
       for (const co of hero.querySelectorAll('.sw-co[data-to]')) {
-        const row = list?.querySelector(`[data-h="${co.dataset.to}"]`)
+        const row = rows?.querySelector(`[${attr}="${co.dataset.to}"]`)
         const tag = co.querySelector('.sw-col')
         if (!row || !tag || !tag.offsetParent) continue
         const a = tag.getBoundingClientRect(), b = row.getBoundingClientRect()
@@ -1984,13 +1986,18 @@ function useWires(heroRef, deps) {
       setWires(prev => (prev === next ? prev : next))
     }
     draw()
-    const list = hero.querySelector('.sw-rlines')
-    list?.addEventListener('scroll', draw)
+    const rows = hero.querySelector(list)
+    rows?.addEventListener('scroll', draw)
     const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(draw) : null
     ro?.observe(hero)
-    return () => { list?.removeEventListener('scroll', draw); ro?.disconnect() }
+    return () => { rows?.removeEventListener('scroll', draw); ro?.disconnect() }
   }, deps)
   return wires ? JSON.parse(wires) : []
+}
+
+/** A HUD key : value card. rows: [[label, value node], …]; labels are drawn in caps with Ø. */
+function HudKV({ rows, className = '' }) {
+  return jsx('dl', { className: `sw-kv ${className}`.trim(), children: rows.flatMap(([k, v], n) => [jsx('dt', { children: hudCaps(k) }, `k${n}`), jsx('dd', { children: v }, `v${n}`)]) })
 }
 
 function stepWord(s, t) {
@@ -2114,12 +2121,11 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
               hudChip(st, step.failed ? t('sw.replay.notApplied') : t('sw.replay.applied'))
             ]
           }, 'f'),
-          jsxs('dl', {
-            className: 'sw-kv',
-            children: [
-              jsx('dt', { children: hudCaps(t('sw.replay.folder')) }, 'dk'), jsx('dd', { children: dir ? jsx(OneLine, { text: dirLabel(dir, cwd, t), className: 'sw-rdir' }) : '—' }, 'dv'),
-              jsx('dt', { children: hudCaps(t('sw.replay.change')) }, 'wk'), jsx('dd', { children: jsx('p', { className: 'sw-rwhat sw-1l', children: [stepSummary(step, t), who, t('sw.replay.at', fmtWhen(step.at, now, t))].join(' · ') }) }, 'wv'),
-              jsx('dt', { children: hudCaps(t('sw.replay.request')) }, 'rk'), jsx('dd', { children: jsx(OneLine, { text: turn.id === 't-' ? t('sw.replay.beforeFirst') : turn.ask || t('sw.replay.noText') }) }, 'rv')
+          jsx(HudKV, {
+            rows: [
+              [t('sw.replay.folder'), dir ? jsx(OneLine, { text: dirLabel(dir, cwd, t), className: 'sw-rdir' }) : '—'],
+              [t('sw.replay.change'), jsx('p', { className: 'sw-rwhat sw-1l', children: [stepSummary(step, t), who, t('sw.replay.at', fmtWhen(step.at, now, t))].join(' · ') })],
+              [t('sw.replay.request'), jsx(OneLine, { text: turn.id === 't-' ? t('sw.replay.beforeFirst') : turn.ask || t('sw.replay.noText') })]
             ]
           }, 'kv')
         ]
