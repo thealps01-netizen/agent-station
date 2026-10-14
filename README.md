@@ -2,7 +2,9 @@
 
 A Hermes **Desktop** plugin. A read-only page for the `delegate_task` workers of the focused chat, in
 a **Terminal** look laid out as a mission-control HUD (raised panels on hairlines, a light grey mono, one accent; every colour comes from the Hermes theme you picked). The agents are drawn as a wireframe
-space station: the main agent is its core, each subagent a wing whose cells say how it is doing (working, done, failed, waiting); one focus panel
+space station, live on a canvas: the main agent is a ring station turning in thin lines, each subagent a module on its rim that
+says how it is doing (working pulses, done glows, failed flickers, waiting is dashed; the drawing stops for reduced motion and earlier
+runs, and without a 2D canvas the SVG schematic of wings and cells stands in); film-style readouts type in at the corners; one focus panel
 shows the selected agent — what it works on now, the files it changed and read, a subagent's task,
 model, answer and cost, with Copy answer and Open its chat. Earlier runs sit in a run picker; past
 six subagents the station keeps five wings for those that need eyes and one holding the rest. A Commands tab lists the chat's background shell

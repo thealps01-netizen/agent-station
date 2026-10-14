@@ -2,6 +2,6 @@
   "name": "subagent-watch",
   "label": "Subagent Watch",
   "description": "Read-only view of delegate_task workers in a Terminal look: the main agent and each subagent as a unit, one focus panel with its files, answer and cost, earlier runs in a picker, a status-bar progress chip, plus the chat's background shell commands and a Replay tab that steps through the file edits made after each request.",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "api": "plugin_api.py"
 }

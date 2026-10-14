@@ -423,6 +423,49 @@ check(q('.sw-tabn')?.textContent === '1' && q('.sw-tabn')?.getAttribute('aria-la
   check(q('.sw-focus')?.dataset.kind === 'main', 'the focus panel shows the main agent by default')
   check(!q('.sw-sig, .sw-orbl, .sw-letter') && !qa('.sw-page *').some(e => !e.children.length && /^[A-Z]\d?$/.test(e.textContent.trim())),
   'no letter badges anywhere')
+  // the live station canvas: first in the orbit, hidden from screen readers; jsdom has no 2D context, so the
+  // scene must stand down and leave the SVG schematic visible (the fallback)
+  const cv = q('.sw-orbit > canvas.sw-orcv')
+  check(cv && cv === q('.sw-orbit').firstElementChild && cv.getAttribute('aria-hidden') === 'true' && !q('.sw-orbit').classList.contains('has-scene'),
+    'the station canvas leads the orbit, hidden from screen readers; without a 2D context the SVG schematic stays')
+}
+// 21c. the station scene with a 2D context: it takes over from the SVG, draws in the page's token colours
+// (no colour literal), puts one module per callout on the rim in its status colour, and lets the SVG back
+// when it stops
+{
+  const calls = [], fills = []
+  const fake = () => new Proxy({}, {
+    get: (o, k) => k === 'getImageData' ? () => ({ data: [51, 102, 204, 255] })
+      : k === 'createRadialGradient' ? () => ({ addColorStop() {} })
+      : k in o ? o[k] : (...a) => { calls.push(k); if (k === 'fill') fills.push(o.fillStyle) },
+    set: (o, k, v) => { o[k] = v; return true }
+  })
+  const proto = window.HTMLCanvasElement.prototype, real = proto.getContext
+  proto.getContext = fake
+  const box = document.createElement('div')
+  box.className = 'sw-orbit'
+  box.dataset.calm = 'true'
+  box.innerHTML = `<canvas></canvas><svg class="sw-ors"></svg>
+    <button class="sw-ormain" data-st="running" style="top:11%;left:34%;width:32%"></button>
+    <button class="sw-orl" data-side="l" data-st="running" style="top:30%"></button>
+    <button class="sw-orl" data-side="r" data-st="failed" style="top:60%"></button>
+    <div class="sw-orl is-grp" data-side="l" style="top:80%"><span class="sw-orm" data-st="completed">3</span></div>`
+  document.body.appendChild(box)
+  const canvas = box.querySelector('canvas')
+  Object.defineProperty(canvas, 'clientWidth', { value: 666 })
+  Object.defineProperty(canvas, 'clientHeight', { value: 360 })
+  const stop = mod.startStationScene(canvas)
+  canvas.swStationFrame()
+  const styles = fills.filter(f => typeof f === 'string')
+  check(box.classList.contains('has-scene') && calls.filter(c => c === 'lineTo').length > 1000 && styles.length
+    && styles.every(f => /^color\(srgb [\d.]+ [\d.]+ [\d.]+ \/ [\d.]+\)$/.test(f)),
+    `the scene takes over from the SVG and paints in token colours read through the canvas, never a literal (${calls.filter(c => c === 'lineTo').length} line segments, ${styles[0]})`)
+  check(fills.length >= 5, `the running and failed modules, the group's slivers and the MAIN box are filled (${fills.length} fills)`)
+  stop()
+  check(!box.classList.contains('has-scene') && !box.querySelector('.sw-orprobe, span[style*="visibility"]'),
+    'stopped, the scene hands the station back to the SVG and leaves no probe behind')
+  box.remove()
+  proto.getContext = real
 }
 check(q('.sw-bign')?.textContent === '1' && q('.sw-big small')?.textContent === '/2'
   && qa('.sw-score .sw-seg i').map(i => i.dataset.st).join() === 'completed,failed',

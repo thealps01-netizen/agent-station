@@ -33,6 +33,16 @@ PY = "dashboard/plugin_api.py"
 
 # (gate, file, old, new, what the mutation breaks)
 MUTATIONS = [
+    # ── 2.1.0 station scene ─────────────────────────────────────────────────────
+    ("render", JS, "      jsx(StationScene, {}, 'scene'),\n", "",
+     "the FLEET orbit no longer mounts the live station canvas"),
+    ("render", JS, "probe.remove(); root.classList.remove('has-scene') }", "probe.remove() }",
+     "a stopped station scene leaves the SVG schematic hidden"),
+    ("audit", JS, "const C = (c, a = 1) => `color(srgb ${c[0]} ${c[1]} ${c[2]} / ${Math.max(0, Math.min(1, a))})`",
+     "const C = (c, a = 1) => `rgba(${c[0] * 255},${c[1] * 255},${c[2] * 255},${a})`",
+     "the station scene writes a colour literal instead of the token's colour"),
+    ("render", JS, "if (!idle) { ctx.fillStyle = C(col, fa * front * mr); ctx.fill() }", "",
+     "the station's modules are no longer filled in their status colour"),
     # ── 2.0.0 agents HUD ────────────────────────────────────────────────────────────────────
     ("render", JS, "children: [hudCaps(t(`sw.st.${u.status}`)), time ? ` · ${time}` : ''].join('')", "children: [hudCaps(t('sw.st.running')), time ? ` · ${time}` : ''].join('')",
      "a callout says a finished subagent is still working"),
@@ -349,7 +359,7 @@ MUTATIONS = [
      "a run of several workers is named as its first worker alone"),
     ("render", JS, "units.length, fmtCost(cost.usd, cost.status, t)),", "units.length, ''),",
      "an earlier run in the picker drops its cost"),
-    ("render", JS, "'data-calm': calm ? 'true' : undefined", "'data-calm': undefined",
+    ("render", JS, "className: 'sw-panel', 'data-calm': calm ? 'true' : undefined", "className: 'sw-panel', 'data-calm': undefined",
      "an earlier run is drawn with the live glow"),
     ("render", JS, "onBack: () => pickRun('now')", "onBack: () => {}", "Back to now does not return"),
     ("render", JS, "if (subs.length <= ORBIT_WINGS) return", "if (true) return",

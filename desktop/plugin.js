@@ -221,6 +221,7 @@ const BUNDLES = {
         fleet: run => (run ? `Fleet · ${run}` : 'Fleet'),
         done: (done, total) => `${done}/${total} done`,
         orbitMain: word => `main · ${word}`,
+        teleScan: 'scan', teleActive: 'active', teleStandby: 'standby', teleCore: 'core', teleWings: 'wings',
         orbitMore: n => `+${n} more`,
         orbitMoreLabel: (n, parts) => `${n} more subagents: ${parts}`,
         time: 'Time per agent',
@@ -1116,16 +1117,16 @@ const isoLine = (a, b, cls, key) => {
 }
 
 /** A wired cylinder along x: its shell, rings and six struts. */
-function cylinder(x0, x1, r, rings, key) {
+function cylinder(x0, x1, r, rings, key, className) {
   const ring = x => Array.from({ length: 37 }, (_, k) => { const a = (k / 36) * Math.PI * 2; return iso(x, Math.cos(a) * r, Math.sin(a) * r) })
   const A = ring(x0), B = ring(x1)
   const out = [jsx('polygon', { className: 'sw-orcore', points: ptxt([...A, ...B.slice().reverse()]) }, 'shell')]
-  for (let i = 0; i <= rings; i++) out.push(jsx('polyline', { className: i === 0 || i === rings ? 'sw-orw1' : 'sw-orw2', points: ptxt(ring(x0 + ((x1 - x0) * i) / rings)) }, `r${i}`))
+  for (let i = 0; i <= rings; i++) out.push(jsx('polyline', { className: i === 0 || i === rings ? 'sw-orw1' : 'sw-orw2', style: { '--r': i }, points: ptxt(ring(x0 + ((x1 - x0) * i) / rings)) }, `r${i}`))
   for (let k = 0; k < 6; k++) {
     const a = (k / 6) * Math.PI * 2 + 0.3
     out.push(isoLine([x0, Math.cos(a) * r, Math.sin(a) * r], [x1, Math.cos(a) * r, Math.sin(a) * r], 'sw-orw2', `s${k}`))
   }
-  return jsx('g', { children: out }, key)
+  return jsx('g', { className, children: out }, key)
 }
 
 /** The truss the wings hang on. */
@@ -1137,6 +1138,8 @@ function truss() {
     out.push(isoLine([-h, y, -h], [h, y + 12, h], 'sw-orw2', `d${y}`))
     out.push(isoLine([h, y, -h], [h, y, h], 'sw-orw2', `v${y}`))
   }
+  const [ax, ay] = iso(0, -200, 0), [bx, by] = iso(0, 200, 0)
+  out.push(jsx('line', { className: 'sw-ortrail', x1: ax.toFixed(1), y1: ay.toFixed(1), x2: bx.toFixed(1), y2: by.toFixed(1), pathLength: 100 }, 'trail'))
   return jsx('g', { children: out }, 'truss')
 }
 
@@ -1188,6 +1191,352 @@ const pct = (v, of) => `${((v / of) * 100).toFixed(3)}%`
  * the accent when done, a failure turns three cells red and shakes it once, a waiting wing is dashed.
  * Narrow, the callouts drop under the station as a list.
  */
+/* The FLEET station: the main agent as a ring station drawn in thin glowing lines on a canvas — a ribbed
+ * wheel with habitat windows, a top rail and hull blocks on four truss spokes round a column (collar ring,
+ * fuel tanks, solar arrays below), a deck disc with two dishes, a command sphere with an antenna under the
+ * MAIN box, a docking mast with claws. Each subagent is a module on the wheel's rim placed level with its
+ * callout: working pulses and a scan bar crosses it, done glows steady, failed flickers, waiting is a
+ * dashed outline; the group callout is a row of slivers, one per member. The wheel, disc and sphere turn
+ * (faster while the main agent works), a scan ring rides the column, a ping rolls across the wheel. The
+ * canvas also draws the leader lines, the MAIN box and the frame, so the SVG schematic under it is hidden
+ * while the scene runs (it stays as the fallback when there is no 2D canvas).
+ * State is read from the panel's own DOM, colours from the page's tokens. An earlier run (data-calm) or
+ * reduced motion draws one still frame, refreshed once a second. window.__swStationClock, when set,
+ * drives the clock (frame-exact recordings of the scene). */
+export function startStationScene(canvas) {
+  const root = canvas.closest('.sw-orbit')
+  const ctx = canvas?.getContext?.('2d')
+  const swatch = document.createElement('canvas').getContext?.('2d', { willReadFrequently: true })
+  if (!root || !ctx || !swatch) return () => {}
+  root.classList.add('has-scene')
+  const still = root.dataset.calm === 'true' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+  const probe = document.createElement('span')
+  probe.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden;visibility:hidden'
+  root.appendChild(probe)
+  // a token resolved to sRGB 0..1 by painting it: works for any colour syntax the theme uses
+  const tok = v => {
+    probe.style.color = `var(${v})`
+    swatch.clearRect(0, 0, 1, 1); swatch.fillStyle = window.getComputedStyle(probe).color; swatch.fillRect(0, 0, 1, 1)
+    const d = swatch.getImageData(0, 0, 1, 1).data
+    return [d[0] / 255, d[1] / 255, d[2] / 255]
+  }
+  let P
+  const readPal = () => { P = { line: tok('--a'), hot: tok('--run'), ok: tok('--ok'), bad: tok('--bad'), idle: tok('--idle'), bg: tok('--bg') } }
+  const C = (c, a = 1) => `color(srgb ${c[0]} ${c[1]} ${c[2]} / ${Math.max(0, Math.min(1, a))})`
+  const stCol = st => ({ running: P.hot, completed: P.ok, failed: P.bad, queued: P.idle, stopped: P.idle })[st] || P.line
+  const clamp = x => Math.max(0, Math.min(1, x))
+
+  // ── camera: tilt the top toward the viewer, lean right, breathe a little ──
+  const TILT = 0.64, ROLL = -0.24
+  let W = 0, H = 0, dpr = 1, U = 1, CX = 0, CY = 0, yaw = 0
+  const cam = ([x, y, z]) => {
+    const cy0 = Math.cos(yaw), sy0 = Math.sin(yaw)
+    const x1 = x * cy0 + z * sy0, z1 = -x * sy0 + z * cy0
+    const ct = Math.cos(TILT), st = Math.sin(TILT)
+    const y2 = y * ct - z1 * st, z2 = y * st + z1 * ct
+    const cr = Math.cos(ROLL), sr = Math.sin(ROLL)
+    return [x1 * cr - y2 * sr, x1 * sr + y2 * cr, z2]
+  }
+  const proj = p => { const c = cam(p), k = U * 900 / (900 - c[2]); return [CX + c[0] * k, CY - c[1] * k, c[2]] }
+  const resize = () => {
+    const w = canvas.clientWidth, h = canvas.clientHeight, d = Math.min(2, window.devicePixelRatio || 1)
+    if (w === W && h === H && d === dpr) return false
+    W = w; H = h; dpr = d
+    canvas.width = Math.round(w * d); canvas.height = Math.round(h * d)
+    U = Math.min(W / 666, H / 360); CX = W * 0.5; CY = H * 0.55
+    return true
+  }
+
+  // ── geometry (model units; y is the station's axis) ──
+  const R = 150, RI = 132, BH = 17, HUB = 14, SPH = [0, 86, 0], SR = 19
+  const pt = (r, y, a) => [r * Math.cos(a), y, r * Math.sin(a)]
+  const add3 = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+  const build = (spin) => {
+    const S = []   // [p1, p2, group, order, mul]
+    const ring = (g, r, y, n, ph, mul = 1, o0 = 0, o1 = 1) => { for (let k = 0; k < n; k++) { const a = ph + k / n * 6.2832, b = ph + (k + 1) / n * 6.2832; S.push([pt(r, y, a), pt(r, y, b), g, o0 + (o1 - o0) * k / n, mul]) } }
+    // wheel: outer and inner rims top and bottom, a faint mid seam, ribs that turn with it
+    ring('band', R, BH, 96, spin); ring('band', R, -BH, 96, spin); ring('band', RI, BH, 96, spin); ring('band', RI, -BH, 96, spin)
+    ring('band', R, 0, 96, spin, 0.4)
+    for (let k = 0; k < 64; k++) {
+      const a = spin + k / 64 * 6.2832, o = k / 64, m = k % 8 === 0 ? 1.4 : 0.7
+      S.push([pt(R, -BH, a), pt(R, BH, a), 'band', o, m], [pt(RI, BH, a), pt(R, BH, a), 'band', o, m], [pt(RI, -BH, a), pt(R, -BH, a), 'band', o, m])
+    }
+    // column
+    for (let y = -130; y <= 66; y += 14) ring('hub', HUB, y, 20, spin * 2, 0.8, (y + 130) / 200, (y + 130) / 200)
+    for (let k = 0; k < 6; k++) { const a = spin * 2 + k / 6 * 6.2832; S.push([pt(HUB, -130, a), pt(HUB, 66, a), 'hub', 0, 0.6]) }
+    // deck disc
+    ring('disc', 62, 46, 48, -spin * 1.6); ring('disc', 62, 39, 48, -spin * 1.6); ring('disc', 48, 46, 48, -spin * 1.6, 0.6)
+    for (let k = 0; k < 24; k++) { const a = -spin * 1.6 + k / 24 * 6.2832; S.push([pt(62, 39, a), pt(62, 46, a), 'disc', k / 24, 0.8], [pt(HUB, 42, a), pt(48, 46, a), 'disc', k / 24, 0.35]) }
+    // command sphere
+    for (let j = 1; j < 6; j++) { const la = -1.5708 + j / 6 * 3.1416; ring('sph', SR * Math.cos(la), SPH[1] + SR * Math.sin(la), 28, spin * 3, 0.9, j / 6, j / 6) }
+    for (let k = 0; k < 10; k++) {
+      const a = spin * 3 + k / 10 * 6.2832
+      for (let j = 0; j < 12; j++) { const l0 = -1.5708 + j / 12 * 3.1416, l1 = -1.5708 + (j + 1) / 12 * 3.1416; S.push([pt(SR * Math.cos(l0), SPH[1] + SR * Math.sin(l0), a), pt(SR * Math.cos(l1), SPH[1] + SR * Math.sin(l1), a), 'sph', k / 10, 0.7]) }
+    }
+    // docking mast: a lattice down to a claw ring
+    for (let j = 0; j < 6; j++) {
+      const y0 = -130 - j * 8, y1 = y0 - 8
+      S.push([[-6, y0, 0], [-6, y1, 0], 'mast', j / 7, 1], [[6, y0, 0], [6, y1, 0], 'mast', j / 7, 1], [[j % 2 ? -6 : 6, y0, 0], [j % 2 ? 6 : -6, y1, 0], 'mast', j / 7, 0.6])
+    }
+    ring('mast', 12, -182, 20, spin, 1, 0.9, 1); ring('mast', 8, -188, 16, spin, 0.7, 0.9, 1)
+
+    // ── detail pass ──
+    const L = (g, a, b, o, m) => S.push([a, b, g, o, m])
+    const off = (p, a, w) => [p[0] - Math.sin(a) * w, p[1], p[2] + Math.cos(a) * w]   // sideways from a radial line
+    const box = (g, c, dr, dy, dw, a, o, m) => {   // a radial-aligned box: centre c=[r,y], half sizes
+      const v = []; for (const sr of [-1, 1]) for (const sy of [-1, 1]) for (const sw of [-1, 1]) v.push(off(pt(c[0] + sr * dr, c[1] + sy * dy, a), a, sw * dw))
+      for (const [i, j] of [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]]) L(g, v[i], v[j], o, m)
+    }
+    const cyl = (g, cx, cz, r, y0, y1, o, m, n = 12) => {
+      for (const y of [y0, (y0 + y1) / 2, y1]) for (let k = 0; k < n; k++) { const a = k / n * 6.2832, b = (k + 1) / n * 6.2832; L(g, [cx + r * Math.cos(a), y, cz + r * Math.sin(a)], [cx + r * Math.cos(b), y, cz + r * Math.sin(b)], o, y === (y0 + y1) / 2 ? m * 0.5 : m) }
+      for (let k = 0; k < 4; k++) { const a = k / 4 * 6.2832 + 0.4; L(g, [cx + r * Math.cos(a), y0, cz + r * Math.sin(a)], [cx + r * Math.cos(a), y1, cz + r * Math.sin(a)], o, m * 0.7) }
+    }
+    // wheel: two rows of habitat windows on the outer face, a raised rail on top, pipes inside, hull blocks
+    for (let k = 0; k < 120; k++) {
+      if (k % 10 === 0) continue
+      const a0 = spin + (k + 0.2) / 120 * 6.2832, a1 = spin + (k + 0.75) / 120 * 6.2832
+      for (const [y0, y1] of [[5, 10], [-10, -5]]) {
+        const c = [pt(R + 0.3, y0, a0), pt(R + 0.3, y0, a1), pt(R + 0.3, y1, a1), pt(R + 0.3, y1, a0)]
+        for (let i = 0; i < 4; i++) L('win', c[i], c[(i + 1) % 4], k / 120, 0.5)
+      }
+    }
+    ring('detail', (R + RI) / 2, BH + 5, 96, spin, 0.7)
+    for (let k = 0; k < 32; k++) { const a = spin + k / 32 * 6.2832; L('detail', pt((R + RI) / 2, BH, a), pt((R + RI) / 2, BH + 5, a), k / 32, 0.6) }
+    ring('detail', RI - 3, 10, 96, spin, 0.55); ring('detail', RI - 3, -10, 96, spin, 0.55)
+    for (let k = 0; k < 8; k++) { const a = spin + (k + 0.5) / 8 * 6.2832; box('detail', [R + 5, 0], 5, 13, 9, a, k / 8, 0.9); box('detail', [R + 12, 0], 2, 6, 4, a, k / 8, 0.7) }
+    // spokes become box trusses: four longerons with cross bracing
+    for (let k = 0; k < 4; k++) {
+      const a = spin + k * 1.5708 + 0.4
+      for (const w of [-4, 4]) for (const y of [-5, 5]) L('spoke', off(pt(HUB, y, a), a, w), off(pt(RI, y, a), a, w), k / 4, 0.8)
+      for (let j = 1; j < 9; j++) { const r0 = HUB + (RI - HUB) * (j - 1) / 8, r1 = HUB + (RI - HUB) * j / 8
+        for (const y of [-5, 5]) L('spoke', off(pt(r0, y, a), a, j % 2 ? -4 : 4), off(pt(r1, y, a), a, j % 2 ? 4 : -4), k / 4, 0.4)
+        L('spoke', off(pt(r1, -5, a), a, -4), off(pt(r1, 5, a), a, -4), k / 4, 0.35); L('spoke', off(pt(r1, -5, a), a, 4), off(pt(r1, 5, a), a, 4), k / 4, 0.35) }
+    }
+    // column: a collar ring on its own short spokes, fuel tanks, thicker segment bands
+    const cs = spin * 2
+    ring('detail', 38, -42, 48, cs); ring('detail', 38, -36, 48, cs); ring('detail', 30, -39, 48, cs, 0.5)
+    for (let k = 0; k < 6; k++) { const a = cs + k / 6 * 6.2832; L('detail', pt(HUB, -39, a), pt(30, -39, a), k / 6, 0.7); L('detail', pt(38, -42, a), pt(38, -36, a), k / 6, 0.8) }
+    for (let k = 0; k < 4; k++) { const a = cs + k / 4 * 6.2832 + 0.78; cyl('detail', 25 * Math.cos(a), 25 * Math.sin(a), 6.5, -112, -78, k / 4, 0.85) }
+    for (const y of [-10, 22]) { ring('hub', HUB + 4, y, 20, cs, 0.9); ring('hub', HUB + 4, y + 6, 20, cs, 0.9); for (let k = 0; k < 10; k++) { const a = cs + k / 10 * 6.2832; L('hub', pt(HUB + 4, y, a), pt(HUB + 4, y + 6, a), 0.5, 0.6) } }
+    // solar arrays on a boom under the wheel, panels gridded
+    for (const s of [0, 3.1416]) {
+      const a = cs + s + 1.1, y = -62
+      L('solar', pt(HUB, y, a), pt(118, y, a), 0, 0.8)
+      for (const [r0, r1] of [[42, 76], [82, 116]]) {
+        const c = [off(pt(r0, y, a), a, -15), off(pt(r1, y, a), a, -15), off(pt(r1, y, a), a, 15), off(pt(r0, y, a), a, 15)]
+        for (let i = 0; i < 4; i++) L('solar', c[i], c[(i + 1) % 4], r0 / 120, 1)
+        for (let j = 1; j < 6; j++) { const rr = r0 + (r1 - r0) * j / 6; L('solar', off(pt(rr, y, a), a, -15), off(pt(rr, y, a), a, 15), r0 / 120, 0.4) }
+        for (const w of [-5, 5]) L('solar', off(pt(r0, y, a), a, w), off(pt(r1, y, a), a, w), r0 / 120, 0.4)
+      }
+    }
+    // deck disc: window band, two dishes
+    for (let k = 0; k < 36; k++) { const a = -spin * 1.6 + k / 36 * 6.2832; if (k % 3) L('win', pt(62.3, 42.5, a), pt(62.3, 42.5, a + 0.09), k / 36, 0.7) }
+    for (const s of [0.6, 3.7]) {
+      const a = -spin * 1.6 + s, base = pt(40, 46, a), top = pt(44, 58, a)
+      L('detail', base, top, 0.5, 0.8)
+      for (let k = 0; k < 14; k++) { const b0 = k / 14 * 6.2832, b1 = (k + 1) / 14 * 6.2832, q = (b) => add3(top, [7 * Math.cos(b) * Math.cos(a), 7 * Math.sin(b) * 0.7, 7 * Math.cos(b) * Math.sin(a)]); L('detail', q(b0), q(b1), 0.6, 0.9); if (k % 4 === 0) L('detail', q(b0), add3(top, [Math.cos(a) * 6, 2, Math.sin(a) * 6]), 0.6, 0.5) }
+    }
+    // command sphere: antenna mast with crossbars
+    L('detail', [0, SPH[1] + SR, 0], [0, SPH[1] + SR + 14, 0], 0.9, 0.9)
+    for (const [y, w] of [[SPH[1] + SR + 5, 6], [SPH[1] + SR + 10, 3.5]]) L('detail', [-w, y, 0], [w, y, 0], 0.95, 0.8)
+    // docking mast: claws
+    for (let k = 0; k < 4; k++) { const a = spin + k / 4 * 6.2832; L('mast', pt(12, -182, a), pt(20, -190, a), 0.95, 0.8); L('mast', pt(20, -190, a), pt(17, -198, a), 0.97, 0.7) }
+    return S
+  }
+  const INTRO = { hub: [0, 0.7], mast: [0.3, 0.6], band: [0.35, 1.0], spoke: [0.8, 0.5], disc: [0.9, 0.5], sph: [1.1, 0.6], mod: [1.9, 0.6], win: [1.2, 0.6], detail: [1.3, 0.6], solar: [0.95, 0.5] }
+
+  // ── state from the DOM, modules placed near their labels ──
+  let S = null, frame = 0, mods = []
+  const readState = () => {
+    const main = root.querySelector('.sw-ormain')
+    const calls = [...root.querySelectorAll('.sw-orl')].map((el, i) => {
+      const grp = el.classList.contains('is-grp')
+      return {
+        el, i, grp, st: grp ? 'group' : el.dataset.st || 'queued', sel: el.classList.contains('is-sel'), side: el.dataset.side,
+        members: grp ? [...el.querySelectorAll('.sw-orm')].flatMap(m => Array(Number(m.textContent) || 0).fill(m.dataset.st)) : null
+      }
+    })
+    S = { main, mainSt: main?.dataset.st || 'idle', mainSel: !!main?.classList.contains('is-sel'), calls }
+    place()
+  }
+  const labelY = c => parseFloat(c.el.style.top) / 100 * H + 6
+  const place = () => {
+    const taken = [], sph = proj(SPH)
+    mods = S.calls.slice().sort((a, b) => labelY(a) - labelY(b)).map(c => {
+      let best = null, bc = 1e9
+      for (let d = 0; d < 360; d += 2) {
+        const a = d * Math.PI / 180, q = proj(pt(R, 0, a))
+        if ((c.side === 'l') !== (q[0] < CX)) continue
+        const n = cam([Math.cos(a), 0, Math.sin(a)]), facing = n[2]
+        let cost = Math.abs(q[1] - labelY(c)) + (1 - facing) * 70
+        if (Math.hypot(q[0] - sph[0], q[1] - sph[1]) < 46 * U) cost += 300
+        for (const t of taken) { const dd = Math.abs(((a - t + 9.4248) % 6.2832) - 3.1416); if (dd < 0.42) cost += 1e4 }
+        if (cost < bc) { bc = cost; best = a }
+      }
+      taken.push(best)
+      return { c, a: best, span: c.grp ? 0.34 : 0.17 }
+    })
+  }
+
+  const rnd = (() => { let x = 7654321; return () => ((x = (x * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff) })()
+  const STARS = Array.from({ length: 150 }, () => ({ x: rnd(), y: rnd(), z: 0.2 + rnd() * 0.8, p: rnd() * 6.28, s: rnd() }))
+  const glow = (x, y, r, c, a) => { const g = ctx.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, C(c, a)); g.addColorStop(1, C(c, 0)); ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2) }
+  const poly = (pts) => { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath() }
+  const t0 = performance.now() / 1000
+
+  const render = () => {
+    if (resize() || frame % 30 === 0) { readPal(); readState() }
+    frame++
+    if (!W || !H) return
+    const t = still ? 30 : (window.__swStationClock ?? performance.now() / 1000 - t0)
+    const busy = S.mainSt !== 'idle' && S.mainSt !== 'completed'
+    yaw = 0.05 * Math.sin(t * 0.13)
+    const spin = t * (busy ? 0.11 : 0.05)
+    const reveal = g => { const [s, d] = INTRO[g]; return clamp((t - s) / d) }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, W, H)
+    ctx.globalCompositeOperation = 'lighter'
+
+    for (const s of STARS) {
+      const a = (0.1 + 0.32 * s.z) * (0.55 + 0.45 * Math.sin(t * (0.5 + s.s) + s.p))
+      ctx.fillStyle = C(P.line, a); ctx.fillRect(s.x * W, s.y * H, s.z > 0.88 ? 1.5 : 1, s.z > 0.88 ? 1.5 : 1)
+    }
+    glow(CX, CY, W * 0.32, P.line, 0.07)
+
+    // ping across the wheel plane, scan ring riding the column
+    const ring2 = (r, y, a, w, dash) => {
+      ctx.beginPath()
+      for (let k = 0; k <= 80; k++) { const q = proj(pt(r, y, k / 80 * 6.2832)); k ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]) }
+      ctx.lineWidth = w; ctx.strokeStyle = C(P.line, a); if (dash) ctx.setLineDash(dash); ctx.stroke(); ctx.setLineDash([])
+    }
+    const ph = (t % 7) / 7
+    if (ph < 0.6 && t > 2) ring2(20 + ph / 0.6 * 300, 0, 0.5 * (1 - ph / 0.6), 1.2)
+    const sp = (t % 5) / 5, sy = -130 + sp * 230
+    ring2(26 + 8 * Math.sin(sp * 3.14), sy, 0.65 * Math.sin(sp * 3.14) * reveal('hub'), 1.4)
+    ring2(196, 0, 0.12, 1, [2, 6]); ring2(250, 0, 0.07, 1, [1, 9])
+
+    // wireframe in depth buckets: back lines dim, front lines bright, each stroked as glow + core
+    const B = 8, bk = Array.from({ length: B }, () => [])
+    for (const [p1, p2, g, o, m] of build(spin)) {
+      const [s, d] = INTRO[g], prog = (t - s) / d
+      if (prog <= o) continue
+      const a1 = proj(p1), a2 = proj(p2)
+      const f = clamp(((a1[2] + a2[2]) / 2 + 160) / 320)
+      const a = (0.1 + 0.8 * f) * m * clamp((prog - o) * 6)
+      bk[Math.min(B - 1, (a * B) | 0)].push(a1, a2)
+    }
+    bk.forEach((list, b) => {
+      if (!list.length) return
+      ctx.beginPath(); for (let i = 0; i < list.length; i += 2) { ctx.moveTo(list[i][0], list[i][1]); ctx.lineTo(list[i + 1][0], list[i + 1][1]) }
+      const a = (b + 0.5) / B
+      ctx.lineWidth = 3; ctx.strokeStyle = C(P.line, a * 0.13); ctx.stroke()
+      ctx.lineWidth = 0.8; ctx.strokeStyle = C(P.line, a * 0.95); ctx.stroke()
+    })
+
+    // beacons round the rim, command-sphere windows
+    for (let k = 0; k < 8; k++) {
+      const a = spin + k / 8 * 6.2832 + 0.2, q = proj(pt(R, BH, a)), on = ((t * 0.6 + k / 8) % 1) < 0.08
+      if (reveal('band') < 1) continue
+      ctx.fillStyle = C(P.line, (q[2] > 0 ? 1 : 0.45) * (on ? 1 : 0.35)); ctx.fillRect(q[0] - 1, q[1] - 1, 2, 2)
+    }
+    const core = proj(SPH)
+    glow(core[0], core[1], 30 * U, P.line, (busy ? 0.18 + 0.12 * Math.sin(t * 4) : 0.14) * reveal('sph'))
+
+    // modules on the rim
+    const mr = reveal('mod')
+    const patch = (a0, a1, inset = 3) => { const top = [], bot = []; for (let k = 0; k <= 6; k++) { const a = a0 + (a1 - a0) * k / 6; top.push(proj(pt(R + 0.5, BH - inset, a))); bot.push(proj(pt(R + 0.5, -BH + inset, a))) } return [...top, ...bot.reverse()] }
+    for (const m of mods) {
+      if (mr <= 0) break
+      const { c, a } = m, center = proj(pt(R, 0, a)), front = center[2] > 0 ? 1 : 0.7
+      m.q = center
+      const draw = (a0, a1, st, k) => {
+        const col = stCol(st), pts = patch(a0, a1)
+        let fa = 0.4
+        if (st === 'running') fa = 0.5 + 0.35 * (0.5 + 0.5 * Math.sin(t * 3.2 + k))
+        if (st === 'completed') fa = 0.45
+        if (st === 'failed') fa = Math.sin(t * 17 + k * 3) > 0.2 || Math.sin(t * 5.3 + k) > 0.6 ? 0.55 : 0.12
+        const idle = st === 'queued' || st === 'stopped'
+        poly(pts)
+        if (!idle) { ctx.fillStyle = C(col, fa * front * mr); ctx.fill() }
+        ctx.lineWidth = 1; ctx.strokeStyle = C(col, 0.95 * front * mr); if (idle) ctx.setLineDash([3, 2.5]); ctx.stroke(); ctx.setLineDash([])
+      }
+      if (c.grp) {
+        const n = Math.min(10, c.members.length), w = m.span * 2 / Math.max(1, n)
+        c.members.slice(0, n).forEach((st, k) => draw(a - m.span + k * w + w * 0.15, a - m.span + (k + 1) * w - w * 0.15, st, k))
+      } else {
+        draw(a - m.span, a + m.span, c.st, c.i)
+        if (c.st === 'running' && mr >= 1) {
+          const f = ((t * 0.6 + c.i * 0.23) % 1), aa = a - m.span + 2 * m.span * f
+          const p1 = proj(pt(R + 0.5, BH - 3, aa)), p2 = proj(pt(R + 0.5, -BH + 3, aa))
+          ctx.lineWidth = 1.4; ctx.strokeStyle = C(P.hot, 0.95 * front * Math.sin(f * 3.1416))
+          ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.stroke()
+        }
+        if (c.st === 'running' && mr >= 1) {   // data packets from the hub
+          const h = proj([0, 0, 0]), e = proj(pt(RI, 0, a))
+          ctx.lineWidth = 0.8; ctx.strokeStyle = C(P.hot, 0.18 * front); ctx.setLineDash([2, 5]); ctx.lineDashOffset = -t * 20
+          ctx.beginPath(); ctx.moveTo(h[0], h[1]); ctx.lineTo(e[0], e[1]); ctx.stroke(); ctx.setLineDash([])
+        }
+      }
+    }
+
+    // frame: chamfered border, accent bars, a tick ruler
+    ctx.globalCompositeOperation = 'source-over'
+    const i0 = 3, ch = 9
+    poly([[i0 + ch, i0], [W - i0 - ch, i0], [W - i0, i0 + ch], [W - i0, H - i0 - ch], [W - i0 - ch, H - i0], [i0 + ch, H - i0], [i0, H - i0 - ch], [i0, i0 + ch]])
+    ctx.lineWidth = 1; ctx.strokeStyle = C(P.line, 0.26); ctx.stroke()
+    ctx.lineWidth = 2; ctx.strokeStyle = C(P.hot, 0.85)
+    const bar = (x0, y0, x1, y1) => { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke() }
+    bar(i0, H * 0.4, i0, H * 0.4 + 26); bar(W - i0, H * 0.6 - 26, W - i0, H * 0.6)
+    bar(W * 0.5 - 30, H - i0, W * 0.5 + 30, H - i0)
+    ctx.lineWidth = 1; ctx.strokeStyle = C(P.line, 0.3)
+    ctx.beginPath(); for (let x = W * 0.5 - 120; x <= W * 0.5 + 120; x += 8) { if (Math.abs(x - W * 0.5) < 34) continue; ctx.moveTo(x, H - i0); ctx.lineTo(x, H - i0 - ((x / 8 | 0) % 4 ? 3 : 6)) } ctx.stroke()
+
+    // leader lines, brackets, the MAIN box (its text is the panel's own HTML above this canvas)
+    if (W >= 520) {
+      for (const m of mods) {
+        const { c } = m, q = m.q
+        if (!q || mr <= 0) continue
+        const top = labelY(c) - 6, left = c.side === 'l', u = W / 666
+        const x0 = left ? 14 * u : W - 14 * u, x1 = left ? 150 * u : W - 150 * u
+        ctx.globalAlpha = mr
+        ctx.strokeStyle = c.sel ? C(P.hot, 0.95) : C(P.line, 0.45); ctx.lineWidth = c.sel ? 1.2 : 0.8
+        ctx.beginPath(); ctx.moveTo(x0, top); ctx.lineTo(x1, top); ctx.lineTo(q[0], q[1]); ctx.stroke()
+        ctx.fillStyle = C(P.line, 0.95); ctx.fillRect(q[0] - 1.5, q[1] - 1.5, 3, 3)
+        if (c.sel) brackets(q[0], q[1], 20 + 2 * Math.sin(t * 3))
+        ctx.globalAlpha = 1
+      }
+      const mb = S.main
+      if (mb) {
+        const u = W / 666, bx = parseFloat(mb.style.left) / 100 * W, by = parseFloat(mb.style.top) / 100 * H, bw = parseFloat(mb.style.width) / 100 * W, bh = 18 * u
+        ctx.strokeStyle = C(P.line, 0.45); ctx.lineWidth = 0.8
+        ctx.beginPath(); ctx.moveTo(bx + 24 * u, by + bh); ctx.lineTo(bx + 24 * u, by + bh + 6); ctx.lineTo(core[0], core[1]); ctx.stroke()
+        poly([[bx, by], [bx + bw - 10 * u, by], [bx + bw, by + bh / 2], [bx + bw - 10 * u, by + bh], [bx, by + bh]])
+        ctx.fillStyle = C(P.bg, 0.88); ctx.fill(); ctx.strokeStyle = S.mainSel ? C(P.hot, 0.95) : C(P.line, 0.85); ctx.lineWidth = S.mainSel ? 1.4 : 0.9; ctx.stroke()
+      }
+    }
+  }
+  const brackets = (x, y, r) => {
+    ctx.strokeStyle = C(P.hot, 0.95); ctx.lineWidth = 1.3
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { ctx.beginPath(); ctx.moveTo(x + sx * r, y + sy * (r - 7)); ctx.lineTo(x + sx * r, y + sy * r); ctx.lineTo(x + sx * (r - 7), y + sy * r); ctx.stroke() }
+  }
+  let raf = 0, tick = 0
+  const loop = () => { if (!canvas.isConnected) { stop(); return } render(); if (!still) raf = window.requestAnimationFrame(loop) }
+  const stop = () => { window.cancelAnimationFrame(raf); clearInterval(tick); probe.remove(); root.classList.remove('has-scene') }
+  canvas.swStationFrame = render
+  raf = window.requestAnimationFrame(loop)
+  if (still) tick = setInterval(() => { if (canvas.isConnected) render(); else stop() }, 1000)
+  return stop
+}
+
+function StationScene() {
+  const ref = useRef(null)
+  useEffect(() => startStationScene(ref.current), [])
+  return jsx('canvas', { className: 'sw-orcv', ref, 'aria-hidden': 'true' })
+}
+
+
 function Orbit({ t, main, subs, selected, onSelect, flash, waitingOn, calm }) {
   const wings = orbitWings(subs)
   const done = subs.filter(u => u.status === 'completed').length
@@ -1201,22 +1550,22 @@ function Orbit({ t, main, subs, selected, onSelect, flash, waitingOn, calm }) {
   const svgKids = [
     truss(),
     ...wings.map(w => wing(w, w.u ? flash.get(w.u.key) : null, w.u && selected === w.u.key)),
-    cylinder(-78, 78, 17, 6, 'body'),
+    cylinder(-78, 78, 17, 6, 'body', 'sw-orbody'),
     cylinder(78, 104, 10, 2, 'cap1'),
     cylinder(-104, -78, 10, 2, 'cap2'),
     ...calls.flatMap(o => {
       const ex = o.left ? 150 : ORBIT_W - 150, mx = ex + (o.left ? 14 : -14)
       return [
-        jsx('path', { className: 'sw-orlead', d: `M${o.left ? 14 : ORBIT_W - 14},${o.ly} H${ex} H${mx} L${o.pin[0].toFixed(1)},${o.pin[1].toFixed(1)}` }, `l${o.i}`),
+        jsx('path', { className: 'sw-orlead', pathLength: 100, d: `M${o.left ? 14 : ORBIT_W - 14},${o.ly} H${ex} H${mx} L${o.pin[0].toFixed(1)},${o.pin[1].toFixed(1)}` }, `l${o.i}`),
         jsx('circle', { className: 'sw-orpin', cx: o.pin[0].toFixed(1), cy: o.pin[1].toFixed(1), r: 2.2 }, `p${o.i}`)
       ]
     }),
-    jsx('path', { className: 'sw-orlead', d: `M${bx + 24},${by + 18} V${by + 40} L${core[0].toFixed(1)},${core[1].toFixed(1)}` }, 'lmain'),
+    jsx('path', { className: 'sw-orlead', pathLength: 100, d: `M${bx + 24},${by + 18} V${by + 40} L${core[0].toFixed(1)},${core[1].toFixed(1)}` }, 'lmain'),
     jsx('circle', { className: 'sw-orpin', cx: core[0].toFixed(1), cy: core[1].toFixed(1), r: 2.6 }, 'pmain'),
     jsx('path', { className: `sw-orbox${selected === main.key ? ' is-sel' : ''}`, d: `M${bx},${by} h${bw - 10} l10,9 l-10,9 h-${bw - 10}z` }, 'box')
   ]
   const mainWord = statusWord(t, main, waitingOn)
-  const bars = Array.from({ length: 14 }, (_, k) => jsx('i', { className: subs.length && k < Math.round((14 * done) / subs.length) ? 'on' : undefined }, k))
+  const bars = Array.from({ length: 14 }, (_, k) => jsx('i', { className: subs.length && k < Math.round((14 * done) / subs.length) ? 'on' : undefined, style: { '--k': k } }, k))
   const callout = o => {
     const pos = { top: pct(o.ly, ORBIT_H), left: pct(o.left ? 14 : ORBIT_W - 150, ORBIT_W), width: pct(136, ORBIT_W) }
     if (o.w.rest) {
@@ -1248,8 +1597,10 @@ function Orbit({ t, main, subs, selected, onSelect, flash, waitingOn, calm }) {
   }
   return jsxs('div', {
     className: 'sw-hgrid sw-orbit', role: 'group', 'aria-label': t('sw.agents'), 'data-done': done, 'data-live': live ? 'true' : undefined,
+    'data-calm': calm ? 'true' : undefined, 'data-subs': subs.length,
     children: [
-      live ? jsx('div', { className: 'sw-orscan', 'aria-hidden': 'true' }, 'scan') : null,
+      jsx(StationScene, {}, 'scene'),
+      calm ? null : jsx('div', { className: 'sw-orscan', 'aria-hidden': 'true' }, 'scan'),
       jsx('svg', { className: 'sw-ors', viewBox: `0 0 ${ORBIT_W} ${ORBIT_H}`, preserveAspectRatio: 'xMidYMid meet', 'aria-hidden': 'true', children: svgKids }, 'svg'),
       jsx(Tip, { label: [tipText(main.name), tipText(unitLine(t, main))].filter(Boolean).join('\n'), children: jsxs('button', {
         type: 'button', className: `sw-ormain${selected === main.key ? ' is-sel' : ''}${flash.get(main.key) ? ` is-${flash.get(main.key)}` : ''}`,
@@ -1265,6 +1616,7 @@ function Orbit({ t, main, subs, selected, onSelect, flash, waitingOn, calm }) {
         ]
       }) }, 'main'),
       ...calls.map(callout),
+      ...telemetry(t, mainWord, subs, done, live),
       subs.length ? null : jsx('p', { className: 'sw-nosub', children: t('sw.noSubagents') }, 'none'),
       jsx('div', {
         className: 'sw-orkey', 'aria-hidden': 'true',
@@ -1272,6 +1624,28 @@ function Orbit({ t, main, subs, selected, onSelect, flash, waitingOn, calm }) {
       }, 'key')
     ]
   })
+}
+
+/** Station telemetry: two corner columns of the run's own numbers. The left one types in from the left,
+ *  the right one from the right, line after line; a changed value rolls in. Decorative (aria-hidden):
+ *  every number here is also said by the panels below. */
+function telemetry(t, mainWord, subs, done, live) {
+  const n = st => subs.filter(u => u.status === st).length
+  const col = (side, rows) => jsx('div', {
+    className: 'sw-ortele', 'data-side': side, 'aria-hidden': 'true',
+    children: rows.map(([k, v], i) => jsxs('div', {
+      className: 'sw-otl', style: { '--i': i * 2 + (side === 'r' ? 1 : 0) },
+      children: [jsx('span', { children: hudCaps(k) }, 'k'), jsx('b', { children: v }, `v-${v}`)]
+    }, k))
+  }, `tele-${side}`)
+  return [
+    col('l', [
+      [t('sw.hudAgents.teleScan'), hudCaps(t(live ? 'sw.hudAgents.teleActive' : 'sw.hudAgents.teleStandby'))],
+      [t('sw.hudAgents.teleCore'), hudCaps(mainWord)],
+      [t('sw.hudAgents.teleWings'), `${done}/${subs.length}`]
+    ]),
+    col('r', ['running', 'failed', 'queued'].map(st => [t(`sw.st.${st}`), String(n(st)).padStart(2, '0')]))
+  ]
 }
 
 /** SPENT: what the subagents spent, their tokens and tools, and how many are done (one cell each). */
@@ -1640,10 +2014,12 @@ function Hero({ t, theme, u, verb, head, full, file, where, chip, cursor }) {
  * reduced-motion lock stops it); any other value rolls in. The real value is always in the DOM.
  */
 function Tiles({ tiles }) {
+  const all = tiles.find(x => x.k === 'touched')?.n
+  const share = x => (all > 0 && Number.isInteger(x.n) && ['touched', 'changed', 'read'].includes(x.k) ? { '--p': Math.min(1, x.n / all).toFixed(3) } : undefined)
   return jsx('div', {
     className: 'sw-tiles',
     children: tiles.map(x => jsxs('div', {
-      className: 'sw-tile', 'data-k': x.k, 'data-tone': x.tone,
+      className: 'sw-tile', 'data-k': x.k, 'data-tone': x.tone, style: share(x),
       children: [
         Number.isInteger(x.n) && x.n >= 0
           ? jsx('b', { className: 'sw-tn', 'data-count': x.n, style: { '--sw-n': x.n }, children: jsx('span', { children: String(x.n) }) }, `n-${x.n}`)
@@ -3988,6 +4364,121 @@ const CSS = `${TM_PALETTE}
  .sw-rtlist{grid-template-columns:max-content minmax(0,1fr)}
  .sw-rturn>.sw-rcount{grid-column:2;grid-row:2;white-space:normal}
 }
+/* DETAIL in the HUD's own order: the stats are boxed counters with a caps label over a big light
+   number, the file lists are ticked sub-panels, the blocks are the FILES panel's cells, the portrait a
+   ticked tile on the station grid, the state a chip. One tick recipe for panels, counters and lists. */
+.sw-page[data-theme=terminal]{--hud-ticks:linear-gradient(var(--hud-tick),var(--hud-tick)) left top/8px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) left top/1px 8px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right top/8px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right top/1px 8px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) left bottom/8px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) left bottom/1px 8px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right bottom/8px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right bottom/1px 8px no-repeat}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-hero{grid-template-columns:auto minmax(0,1fr);gap:14px;align-items:center;margin-top:2px}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-por{width:auto;gap:5px}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-pg{position:relative;overflow:hidden;width:56px;height:46px;border:0;font-size:18px;color:var(--c);
+ background:var(--hud-ticks),linear-gradient(var(--hud-grid) 1px,transparent 1px) -1px -1px/9px 9px,linear-gradient(90deg,var(--hud-grid) 1px,transparent 1px) -1px -1px/9px 9px,color-mix(in srgb,var(--c) 7%,transparent);
+ box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 30%,transparent),0 0 16px -6px var(--c);text-shadow:0 0 10px var(--c)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-ptag{font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-verb{display:inline-flex;align-items:center;margin-bottom:7px;padding:1px 7px;font-size:11.5px;letter-spacing:.04em;color:var(--ink);
+ background:color-mix(in srgb,var(--c) 9%,var(--raised));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 34%,var(--raised))}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-head{font-size:14px;color:var(--tm-hi)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:14px 0 0}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile{--tc:var(--a);position:relative;display:flex;flex-direction:column-reverse;justify-content:flex-end;gap:9px;min-width:0;padding:9px 11px 11px;
+ background:color-mix(in srgb,var(--tc) 4%,transparent);box-shadow:inset 0 0 0 1px var(--line)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile[data-k=touched]{--tc:var(--ink)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile[data-k=read]{--tc:var(--hud-teal-b)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile::before{display:block;content:"";position:absolute;inset:0;width:auto;pointer-events:none;background:var(--hud-ticks);box-shadow:none}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile::after{content:"";position:absolute;left:11px;right:11px;bottom:0;height:2px;background:var(--tc);box-shadow:0 0 8px var(--tc);transform-origin:left;transform:scaleX(var(--p,0))}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tiles .sw-tl{font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tiles .sw-tn{font:250 24px/1 var(--mono);letter-spacing:-.02em;color:var(--tm-hi);text-shadow:0 0 18px var(--tm-glow)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-flist{row-gap:8px;margin-top:8px}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-fsec{position:relative;margin:0;padding:10px 12px 9px;border:0;background:color-mix(in srgb,var(--a) 3%,transparent);box-shadow:inset 0 0 0 1px var(--line)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-fsec::before{content:"";position:absolute;inset:0;pointer-events:none;background:var(--hud-ticks)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-fh{margin:0 0 8px}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-fh .sw-k{font-size:11.5px;letter-spacing:.04em;color:var(--dim)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-leg{margin-left:auto;font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-leg::before{display:none}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-pips{gap:2px}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-pips i{width:8px;height:12px;background:var(--hud-teal-d);box-shadow:inset 0 0 0 1px var(--hud-teal)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-pips i.on{background:color-mix(in srgb,var(--fc) 70%,var(--raised));box-shadow:0 0 6px var(--tm-glow)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-ft[data-op=read]{--fc:var(--hud-teal-b)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-ft[data-op=read] .sw-pips i.on{background:var(--hud-teal-b);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 50%,transparent)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-ft:hover{background:color-mix(in srgb,var(--a) 6%,transparent)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-note{margin-top:10px;font-size:11.5px}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-note::before{content:none}
+
+/* DETAIL motion: it opens and closes smoothly; on open the counters power on one after another and
+   count up, the bars under them draw in, the blocks fill left to right, the file rows slide in */
+.sw-hfold{interpolate-size:allow-keywords}
+.sw-hfold::details-content{block-size:0;overflow:clip;opacity:0;transition:block-size .32s cubic-bezier(.2,.7,.2,1),opacity .24s ease-out,content-visibility .32s allow-discrete}
+.sw-hfold[open]::details-content{block-size:auto;opacity:1}
+@keyframes sw-pipon{from{background:var(--hud-teal-d);box-shadow:inset 0 0 0 1px var(--hud-teal)}}
+.sw-page .sw-hfold[open] .sw-tile{animation:sw-boot .45s cubic-bezier(.2,.7,.2,1) both}
+.sw-page .sw-hfold[open] .sw-tile:nth-child(2){animation-delay:.07s}
+.sw-page .sw-hfold[open] .sw-tile:nth-child(3){animation-delay:.14s}
+.sw-page .sw-hfold[open] .sw-tile:nth-child(4){animation-delay:.21s}
+.sw-page .sw-hfold[open] .sw-tile::after{animation:sw-grow .8s cubic-bezier(.2,.7,.2,1) .25s both}
+.sw-page .sw-hfold[open] .sw-tn[data-count]{animation:sw-count 1.1s cubic-bezier(.2,.7,.2,1) .15s both}
+.sw-page .sw-hfold[open] .sw-ft .sw-pips i.on{animation:sw-pipon .2s steps(1,end) both;animation-delay:calc(min(var(--i,0),12) * 55ms + .3s)}
+.sw-page .sw-hfold[open] .sw-ft .sw-pips i.on:nth-child(2){animation-delay:calc(min(var(--i,0),12) * 55ms + .36s)}
+.sw-page .sw-hfold[open] .sw-ft .sw-pips i.on:nth-child(3){animation-delay:calc(min(var(--i,0),12) * 55ms + .42s)}
+.sw-page .sw-hfold[open] .sw-ft .sw-pips i.on:nth-child(4){animation-delay:calc(min(var(--i,0),12) * 55ms + .48s)}
+.sw-page .sw-hfold[open] .sw-ft .sw-pips i.on:nth-child(5){animation-delay:calc(min(var(--i,0),12) * 55ms + .54s)}
+.sw-page .sw-hfold[open] .sw-ft .sw-pips i.on:nth-child(n+6){animation-delay:calc(min(var(--i,0),12) * 55ms + .6s)}
+/* working: a scan line runs down the portrait and keeps sweeping the file being written */
+@keyframes sw-pgscan{from{background-position:0 -120%}to{background-position:0 220%}}
+.sw-page[data-theme=terminal] .sw-hdetail .sw-por[data-st=running] .sw-pg::after{content:"";position:absolute;inset:0;pointer-events:none;
+ background:linear-gradient(180deg,transparent,color-mix(in srgb,var(--c) 38%,transparent) 50%,transparent) no-repeat 0 -120%/100% 45%;animation:sw-pgscan 1.8s linear infinite}
+.sw-page .sw-hdetail .sw-ft.is-now::after{animation:sw-sweep 2.2s ease-in-out .3s infinite}
+
+/* the station never stands dead still: a light runs down the truss, the core's rings glow one after
+   another like an engine at rest, the core pin blinks like a beacon, and while no helper is out a
+   standby light walks the main box's bars. Working, the scan is brighter; an earlier run stays still */
+@keyframes sw-trail{from{stroke-dashoffset:100}to{stroke-dashoffset:-14}}
+@keyframes sw-orflow{0%,55%,100%{stroke:var(--orw2)}18%{stroke:var(--a)}}
+@keyframes sw-beacon{0%,86%,100%{fill:var(--raised)}90%{fill:var(--a)}}
+@keyframes sw-standby{0%,100%{background:color-mix(in srgb,var(--a) 22%,transparent)}6%{background:var(--a)}}
+.sw-ortrail{fill:none;stroke:var(--a);stroke-width:1.6;stroke-linecap:round;stroke-dasharray:14 86;stroke-dashoffset:100;opacity:.75;filter:drop-shadow(0 0 3px var(--a))}
+.sw-page .sw-orbit:not([data-calm]) .sw-ortrail{animation:sw-trail 4.8s cubic-bezier(.45,0,.55,1) infinite}
+.sw-orbit[data-calm] .sw-ortrail{display:none}
+.sw-page .sw-orbit:not([data-calm]) .sw-orbody polyline{animation:sw-orflow 3.6s ease-in-out infinite;animation-delay:calc(var(--r,0) * .16s)}
+.sw-page .sw-orbit:not([data-calm]) .sw-orpin:last-of-type{animation:sw-beacon 2.8s linear infinite}
+.sw-page .sw-orbit[data-subs="0"]:not([data-calm]) .sw-orbars i{animation:sw-standby 2.8s linear infinite;animation-delay:calc(var(--k,0) * .2s)}
+.sw-orbit:not([data-live]) .sw-orscan{opacity:.55;animation-duration:9s}
+
+/* film HUD: text comes in from the sides. The station's corner readouts type in line after line — the
+   left column from the left, the right column from the right — hold, flicker out and type in again;
+   callouts slide in from their side while their leader lines draw toward the wing; every panel title
+   types in behind a blinking block cursor; log lines slide in from the right. An earlier run stays still. */
+.sw-ortele{position:absolute;top:10px;z-index:1;display:flex;flex-direction:column;gap:4px;font:300 11.5px/14px var(--mono);letter-spacing:.06em;color:var(--dim);pointer-events:none}
+.sw-ortele[data-side=l]{left:14px;align-items:flex-start}
+.sw-ortele[data-side=r]{right:14px;align-items:flex-end}
+.sw-otl{display:flex;gap:8px;white-space:nowrap}
+.sw-ortele[data-side=l] .sw-otl::before{content:"▸";color:var(--a)}
+.sw-ortele[data-side=r] .sw-otl::after{content:"◂";color:var(--a)}
+.sw-otl b{display:inline-block;font-weight:inherit;color:var(--tm-hi,var(--ink))}
+.sw-page .sw-otl b{animation:sw-roll .45s cubic-bezier(.2,.7,.2,1) both}
+@keyframes sw-telel{0%{clip-path:inset(0 100% 0 0);transform:translateX(-16px);animation-timing-function:steps(9,end)}7%{clip-path:inset(0 0 0 0);transform:none}80%{opacity:1}81%{opacity:.15}82%{opacity:1}85%,100%{opacity:0}}
+@keyframes sw-teler{0%{clip-path:inset(0 0 0 100%);transform:translateX(16px);animation-timing-function:steps(9,end)}7%{clip-path:inset(0 0 0 0);transform:none}80%{opacity:1}81%{opacity:.15}82%{opacity:1}85%,100%{opacity:0}}
+.sw-page .sw-orbit:not([data-calm]) .sw-ortele[data-side=l] .sw-otl{animation:sw-telel 11s linear infinite both;animation-delay:calc(var(--i) * .35s + .7s)}
+.sw-page .sw-orbit:not([data-calm]) .sw-ortele[data-side=r] .sw-otl{animation:sw-teler 11s linear infinite both;animation-delay:calc(var(--i) * .35s + .7s)}
+@keyframes sw-froml{from{opacity:0;transform:translateX(-24px)}}
+@keyframes sw-fromr{from{opacity:0;transform:translateX(24px)}}
+@keyframes sw-lead{from{stroke-dashoffset:100}}
+.sw-orlead{stroke-dasharray:100}
+.sw-page .sw-orlead{animation:sw-lead .7s cubic-bezier(.3,.6,.2,1) .3s both}
+.sw-page .sw-orl[data-side=l]{animation:sw-froml .5s cubic-bezier(.2,.7,.2,1) .45s both}
+.sw-page .sw-orl[data-side=r]{animation:sw-fromr .5s cubic-bezier(.2,.7,.2,1) .45s both}
+.sw-page .sw-ormain{animation:sw-type .5s steps(12,end) .25s both}
+@keyframes sw-cur{0%,100%{opacity:0}6%,28%,50%,72%{opacity:1}17%,39%,61%,83%{opacity:0}}
+.sw-page .sw-hp .sw-hpt{animation:sw-type .5s steps(14,end) .2s both}
+.sw-page[data-theme=terminal] .sw-hp .sw-hpt::after{content:"";display:inline-block;width:.55em;height:1em;margin-left:3px;vertical-align:-.15em;background:var(--a);opacity:0;animation:sw-cur 1.4s linear .2s both}
+.sw-page .sw-hlog>button{animation:sw-fromr .4s cubic-bezier(.2,.7,.2,1) both}
+.sw-page .sw-hlog>button:nth-child(2){animation-delay:.07s}
+.sw-page .sw-hlog>button:nth-child(3){animation-delay:.14s}
+.sw-page .sw-hlog>button:nth-child(4){animation-delay:.21s}
+.sw-page .sw-hlog>button:nth-child(n+5){animation-delay:.28s}
+@container (max-width:540px){.sw-ortele{display:none}}
+/* the live station canvas sits under the callouts; it draws the station, lines and MAIN box itself,
+   so the SVG schematic hides while it runs (the SVG stays as the fallback without a 2D canvas) */
+.sw-orcv{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+.sw-orbit.has-scene .sw-ors{visibility:hidden}
+@container (max-width:540px){.sw-orcv{bottom:auto;height:auto;aspect-ratio:666/360}}
 @media (prefers-reduced-motion:reduce){.sw-page *,.sw-page *::before,.sw-page *::after{animation:none!important;transition:none!important}}
 `
 

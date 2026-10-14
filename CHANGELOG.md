@@ -3,6 +3,27 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 2.1.0 — 2026-10-14
+
+The FLEET station comes alive, from drafts the user approved on video.
+
+- The station is drawn live on a canvas in thin glowing lines: a ribbed wheel with habitat windows,
+  a top rail and hull blocks on four truss spokes round a central column (collar ring, fuel tanks,
+  solar arrays), a deck disc with two dishes, a command sphere under the MAIN box and a docking mast.
+  It is drawn in part by part on first paint; the wheel, disc and sphere turn, faster while the main
+  agent works; a scan ring rides the column and a ping rolls across the wheel.
+- Each subagent is a module on the rim, level with its callout: working pulses and a scan bar crosses
+  it, done glows steady, failed flickers red, waiting is a dashed outline; the group callout is a row
+  of slivers. The top module keeps clear of the command sphere.
+- Film-style readouts type in at the station's top corners (scan, core, wings on the left; working,
+  failed, waiting counts on the right), callouts slide in from their side, panel titles type in.
+- DETAIL reads like the HUD's own panels: boxed counters with gauges, caps headings over hairlines.
+- Colours come from the page's tokens, read through the canvas, so the scene follows every theme.
+  Reduced motion or an earlier run: one still frame, refreshed once a second. Without a 2D canvas the
+  SVG schematic stays.
+- Gates: render checks for the canvas, its fallback, token colours and hand-back; four new canaries.
+  Readout text is 11.5px, the page's floor.
+
 ## 2.0.0 — 2026-10-14
 
 The page is redrawn as a mission-control HUD, from a reference the user picked: a black ground,
