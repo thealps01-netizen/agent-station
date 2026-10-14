@@ -228,6 +228,7 @@ const BUNDLES = {
         fleet: run => (run ? `Fleet · ${run}` : 'Fleet'),
         done: (done, total) => `${done}/${total} done`,
         runDone: 'run complete',
+        subsDone: 'subagents done',
         running: 'running',
         coDone: 'handed off',
         coFailed: 'failed',
@@ -291,7 +292,6 @@ This edit failed` : path),
         by: name => `by helper: ${name}`,
         byMain: 'by the main agent',
         at: when => `at ${when}`,
-        yesterday: clock => `yesterday ${clock}`,
         whole: n => `Wrote the whole file · ${n} line${n === 1 ? '' : 's'}`,
         changed: (added, removed) => `+${added} line${added === 1 ? '' : 's'} added · −${removed} line${removed === 1 ? '' : 's'} removed`,
         deleted: 'Deleted the file',
@@ -305,7 +305,7 @@ This edit failed` : path),
         rest: n => `Show the rest (${n} more line${n === 1 ? '' : 's'})`,
         notLoaded: n => `${n} more line${n === 1 ? '' : 's'} of this edit not loaded (too long)`,
         reading: 'Reading this edit…',
-        diff: name => `Diff · ${name}`,
+        diff: 'Diff',
         applied: 'Applied',
         notApplied: 'Not applied',
         replaying: 'Replaying…',
@@ -324,12 +324,13 @@ This edit failed` : path),
         word: { edit: 'EDIT', whole: 'WRITE', delete: 'DELETE', move: 'MOVE', failed: 'FAILED' }
       },
       hudCommands: {
-        console: cmd => `Console · ${cmd}`,
+        console: 'Console',
         list: n => `Commands · ${n}`,
         process: 'Process',
         command: 'command',
         lines: 'lines',
         finished: 'Finished',
+        failed: 'Failed',
         running: 'Running',
         stopped: 'Stopped',
         firstError: 'First error',
@@ -1201,7 +1202,7 @@ function Fleet({ t, theme, main, subs, selected, onSelect, flash, waitingOn }) {
           jsxs('div', {
             className: 'sw-co sw-frun', 'aria-hidden': 'true',
             children: [
-              jsx('span', { className: 'sw-col', children: hudCaps(t(ended ? 'sw.hudAgents.runDone' : 'sw.hudAgents.running')) }, 'l'),
+              jsx('span', { className: 'sw-col', children: hudCaps(t(!ended ? 'sw.hudAgents.running' : main.status === 'running' ? 'sw.hudAgents.subsDone' : 'sw.hudAgents.runDone')) }, 'l'),
               jsxs('span', { className: 'sw-cop', children: [jsx('span', { className: 'sw-copn', children: `${pct}%` }, 'n'), jsx('span', { className: 'sw-copb', children: bars }, 'b')] }, 'p')
             ]
           }, 'run'),
@@ -1364,7 +1365,8 @@ function FleetFiles({ t, files }) {
     return s === 'failed' ? 'failed' : s === 'read' ? 'read' : 'changed'
   })
   const n = k => kinds.filter(x => x === k).length
-  const shown = kinds.slice(0, FILE_CELLS)
+  const order = { changed: 0, failed: 1, read: 2 }
+  const shown = [...kinds].sort((a, b) => order[a] - order[b]).slice(0, FILE_CELLS)
   const leg = (k, word) => jsx('span', { 'data-k': k, children: hudCaps(word) }, k)
   return jsx(HudPanel, {
     title: t('sw.hudAgents.files'), span: 2, className: 'sw-hfiles',
@@ -2019,12 +2021,12 @@ function ProcView({ t, p, rows, now, storedId, onToast, onPick }) {
     }, 'b')
   }
   const bars = on => Array.from({ length: 10 }, (_, k) => jsx('i', { className: k < on ? 'on' : undefined }, k))
-  const gauge = finished ? 'sw.hudCommands.finished' : running ? 'sw.hudCommands.running' : 'sw.hudCommands.stopped'
+  const gauge = p.status === 'failed' ? 'sw.hudCommands.failed' : finished ? 'sw.hudCommands.finished' : running ? 'sw.hudCommands.running' : 'sw.hudCommands.stopped'
   return jsxs('div', {
     className: 'sw-cmgrid',
     children: [
       jsx(HudPanel, {
-        title: t('sw.hudCommands.console', commandLine(p.command)), span: 6, className: 'sw-hpx sw-cmcon', chip: hudChip(p.status, word),
+        title: t('sw.hudCommands.console'), name: commandLine(p.command), span: 6, className: 'sw-hpx sw-cmcon', chip: hudChip(p.status, word),
         children: [
           jsxs('div', {
             className: 'sw-hgrid', 'data-st': p.status, ref: hero,
@@ -2106,7 +2108,7 @@ function Commands({ t, procs, now, storedId, onToast }) {
 const PEEK_LINES = 40
 const PLAY_MS = 1500
 
-/** When an edit happened: the clock today, 'yesterday 22:35', else the date and clock. */
+/** When something happened, short enough for a list column: the clock today, 'Tue 22:35' within a week, else the date and clock. */
 export function fmtWhen(at, now, t = enT) {
   if (!Number.isFinite(at)) return ''
   const d = new Date(at * 1000)
@@ -2115,7 +2117,7 @@ export function fmtWhen(at, now, t = enT) {
   const n = new Date(now * 1000)
   const gap = Math.round((day(n) - day(d)) / 86400000)
   if (gap <= 0) return clock
-  if (gap === 1) return t('sw.replay.yesterday', clock)
+  if (gap < 7) return `${d.toLocaleDateString('en', { weekday: 'short' })} ${clock}`
   return `${d.toLocaleDateString('en', { month: 'short', day: 'numeric' })} ${clock}`
 }
 
@@ -2216,14 +2218,23 @@ function DiffLines({ t, step, got, typing }) {
 // reader hears the plain words.
 const hudCaps = text => String(text).toUpperCase().replace(/O/g, 'Ø')
 
-function HudPanel({ title, chip, span, className = '', children }) {
+/** A HUD panel. `title` is our own label and reads in caps; `name` is text from the run (a command, a
+ *  file) and keeps its case, so a path or a command reads as typed. */
+function HudPanel({ title, name, chip, span, className = '', children }) {
+  const plain = name ? `${title} · ${name}` : title
   return jsxs('section', {
     className: `sw-hp ${className}`.trim(), 'data-span': span,
     children: [
       jsxs('div', {
         className: 'sw-hph',
         children: [
-          jsxs('h3', { className: 'sw-hpt', children: [jsx('span', { 'aria-hidden': 'true', children: hudCaps(title) }, 'v'), jsx('span', { className: 'sw-sr', children: title }, 's')] }, 't'),
+          jsxs('h3', {
+            className: 'sw-hpt',
+            children: [
+              jsxs('span', { className: 'sw-hptv', 'aria-hidden': 'true', children: [hudCaps(title), name ? ' · ' : null, name ? jsx('span', { className: 'sw-hpn', children: name }, 'n') : null] }, 'v'),
+              jsx('span', { className: 'sw-sr', children: plain }, 's')
+            ]
+          }, 't'),
           chip || null
         ]
       }, 'h'),
@@ -2339,7 +2350,7 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
     else if (hunks.length && tag === '-') hunks.at(-1).rem++
   })
   const wires = useWires(hero, [i, turn.id, got.data, got.loading])
-  useEffect(() => { setHold(got.data ? playHold((got.data.lines || []).slice(0, PEEK_LINES)) : PLAY_MS) }, [step?.id, got.data])
+  useEffect(() => { setHold(got.data && !step?.failed ? playHold((got.data.lines || []).slice(0, PEEK_LINES)) : PLAY_MS) }, [step?.id, got.data])
   useEffect(() => {
     for (const box of [marks.current, log.current]) {
       const el = box?.querySelector('[aria-current=step]')
@@ -2364,13 +2375,13 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
     className: 'sw-rplay',
     children: [
       jsx(HudPanel, {
-        title: t('sw.replay.diff', name), span: 6, className: 'sw-hpx', chip: hudChip(st, step.failed ? t('sw.replay.notApplied') : t('sw.replay.applied')),
+        title: t('sw.replay.diff'), name, span: 6, className: 'sw-hpx', chip: hudChip(st, step.failed ? t('sw.replay.notApplied') : t('sw.replay.applied')),
         children: [
           jsxs('div', {
             className: 'sw-hgrid', ref: hero,
             children: [
               jsx('svg', { className: 'sw-wires', 'aria-hidden': 'true', children: wires.map(([ax, ay, kx, bx, y], k) => jsxs('g', { children: [jsx('path', { d: `M${ax},${ay} H${kx} L${bx},${y}` }, 'p'), jsx('circle', { cx: bx, cy: y, r: 2.5 }, 'c')] }, k)) }, 'w'),
-              jsx(DiffLines, { t, step, got, typing: playing }, step.id),
+              jsx(DiffLines, { t, step, got, typing: playing && !step.failed }, step.id),
               jsxs('div', {
                 className: 'sw-cos', 'aria-hidden': 'true',
                 children: [
@@ -3660,7 +3671,7 @@ const CSS = `${TM_PALETTE}
 .sw-sdone .sw-big{margin-left:auto}
 .sw-sdone{margin-top:14px}
 .sw-tlist{max-height:340px;overflow-x:hidden;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--hud-node) transparent}
-.sw-htime .sw-tkh .sw-tkn{flex:0 1 auto;text-transform:uppercase;letter-spacing:.12em}
+.sw-htime .sw-tkh .sw-tkn{flex:0 1 auto;letter-spacing:.02em;color:var(--ink)}
 .sw-htime .sw-tkh b{flex:none}
 .sw-hfiles .sw-hrow{font-size:12.5px;letter-spacing:.1em}
 .sw-fcells{display:grid;grid-template-columns:repeat(auto-fill,minmax(18px,1fr));gap:4px;margin:12px 0 10px}
@@ -3683,6 +3694,10 @@ const CSS = `${TM_PALETTE}
 .sw-alog>button[aria-pressed=true]>*{color:var(--tm-hi,var(--ink))}
 .sw-hp.sw-hdetail{background:var(--bg)}
 .sw-page[data-theme=terminal] .sw-hdetail .sw-focus{margin-top:0;padding:0;border:0;background:none}
+/* inside DETAIL the file sections read like the HUD's own panels: a caps grey heading over a hairline,
+   not the boxed sections with a title cut into the frame */
+.sw-page[data-theme=terminal] .sw-hdetail .sw-fsec{margin-top:16px;padding:8px 0 0;border:0;border-top:1px solid var(--hud-line2)}
+.sw-page[data-theme=terminal] .sw-hdetail .sw-fsec>.sw-k,.sw-page[data-theme=terminal] .sw-hdetail .sw-fh{position:static;margin:0 0 6px;padding:0;background:none}
 @container (max-width:540px){
  .sw-hgrid.sw-fleet{grid-template-columns:minmax(0,1fr);grid-template-rows:none;row-gap:8px;padding:6px 0}
  .sw-fmain,.sw-fnode{grid-column:1;grid-row:auto!important;max-width:none}
@@ -3702,6 +3717,7 @@ const CSS = `${TM_PALETTE}
 .sw-hp[data-span="2"]{grid-column:span 2}
 .sw-hph{display:flex;align-items:center;gap:10px;min-width:0;min-height:18px;margin-bottom:12px}
 .sw-hpt{margin:0;min-width:0;font:400 11.5px var(--mono);letter-spacing:.14em;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-hpn{letter-spacing:.02em;color:var(--ink)}
 .sw-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .sw-hchip{flex:none;margin-left:auto;display:inline-flex;align-items:center;gap:6px;padding:1px 7px;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
  background:color-mix(in srgb,var(--c) 9%,var(--raised));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 32%,var(--raised))}

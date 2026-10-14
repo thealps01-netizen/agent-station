@@ -631,6 +631,9 @@ check(rest.includes('/process_output?session_id=st-1&process_id=proc_bad'), 'pic
 check(q('.sw-cmcon .sw-out')?.textContent === 'tail of proc_bad in st-1' && conTitle() === 'Console · python build.py'
   && q('.sw-cmcon .sw-hchip')?.dataset.st === 'failed' && q('.sw-cmcon .sw-hchip')?.textContent === 'exit 1',
   `the console shows the picked command: its output, its command in the title, its exit code on a status chip (${conTitle()})`)
+check(q('.sw-cmcon .sw-hpn')?.textContent === 'python build.py' && q('.sw-cmcon .sw-hptv')?.textContent === 'CØNSØLE · python build.py'
+  && q('.sw-cmgauge .sw-col')?.textContent === 'FAILED',
+  `run text in a HUD title keeps its case (a command is not capitalised); a failed command's gauge says FAILED (${q('.sw-cmcon .sw-hptv')?.textContent} / ${q('.sw-cmgauge .sw-col')?.textContent})`)
 {
   const dd = qa('.sw-cmcard .sw-kv dd')
   check(qa('.sw-cmcard .sw-kv dt').map(d => d.textContent).join('|') === 'CØMMAND|DIR|RAN|EXIT|LINES'
@@ -642,8 +645,8 @@ check(q('.sw-cmcon .sw-out')?.textContent === 'tail of proc_bad in st-1' && conT
 }
 check(q('.sw-cmcon .sw-crt[data-state=output] .sw-ol')?.dataset.n === '1' && /1 line$/.test(q('.sw-cmcon .sw-crth')?.textContent || ''), 'the output: numbered lines under a header that counts them')
 check(/last/.test(q('.sw-cmcon .sw-outl')?.textContent || ''), 'a cut output says it is the end only')
-check(q('.sw-cmgauge .sw-col')?.textContent === 'FINISHED' && q('.sw-cmgauge .sw-copn')?.textContent === '100%' && qa('.sw-cmgauge .sw-copb i.on').length === 10 && !q('.sw-cmfirst'),
-  'a finished command: the FINISHED gauge at 100%, no FIRST ERROR callout without an error line')
+check(q('.sw-cmgauge .sw-col')?.textContent === 'FAILED' && q('.sw-cmgauge .sw-copn')?.textContent === '100%' && qa('.sw-cmgauge .sw-copb i.on').length === 10 && !q('.sw-cmfirst'),
+  'a failed command that has ended: the FAILED gauge at 100%, no FIRST ERROR callout without an error line')
 {
   const btn = label => qa('.sw-cmcard .sw-cmfoot .sw-ib').find(b => b.textContent === label)
   await act(async () => { btn('Copy output').click() })
@@ -1108,8 +1111,8 @@ check(!mod.fileTargets('patch', { mode: 'patch', path: 'a', patch: '*** Begin Pa
 // replay: an edit and its time in words
 {
   const at = new Date(2026, 9, 12, 15, 23).getTime() / 1000
-  check(mod.fmtWhen(at, at + 60) === '15:23' && mod.fmtWhen(at - 86400, at) === 'yesterday 15:23' && /^Oct 9 15:23$/.test(mod.fmtWhen(at - 3 * 86400, at)) && mod.fmtWhen(undefined, at) === '',
-    `replay: an edit's time is the clock today, 'yesterday 15:23', else the date (${mod.fmtWhen(at - 3 * 86400, at)})`)
+  check(mod.fmtWhen(at, at + 60) === '15:23' && mod.fmtWhen(at - 86400, at) === 'Sun 15:23' && mod.fmtWhen(at - 6 * 86400, at) === 'Tue 15:23' && /^Oct 4 15:23$/.test(mod.fmtWhen(at - 8 * 86400, at)) && mod.fmtWhen(undefined, at) === '',
+    `a time is the clock today, the weekday within a week, else the date — short enough for a list column (${mod.fmtWhen(at - 86400, at)} / ${mod.fmtWhen(at - 8 * 86400, at)})`)
   check(mod.stepSummary({ kind: 'diff', added: 1, removed: 2 }) === '+1 line added · −2 lines removed' && mod.stepSummary({ kind: 'whole', total: 7, added: 7 }) === 'Wrote the whole file · 7 lines'
     && mod.stepSummary({ kind: 'delete' }) === 'Deleted the file' && mod.stepSummary({ kind: 'diff', added: 0, removed: 0 }) === 'No lines changed',
     'replay: each edit says what it did in words: lines added and removed, a whole file, a delete')
@@ -1141,9 +1144,9 @@ check(rest.some(p => p === '/files?session_id=st-f'), 'files are read for the st
 {
   const kinds = fqa('.sw-hfiles .sw-fcells > i').map(i => i.dataset.k)
   const row = fqa('.sw-hfiles .sw-hrow b').map(b => b.textContent).join(' ')
-  check(kinds.join() === 'changed,failed,read,changed,read' && row === 'CHANGED 2 READ 2'
+  check(kinds.join() === 'changed,changed,failed,read,read' && row === 'CHANGED 2 READ 2'
     && fq('.sw-hfiles .sw-fcells')?.getAttribute('aria-label') === '2 changed, 1 failed, 2 only read',
-    `FILES: one cell per file, changed / failed / only read, counted and named for a screen reader (${kinds.join()} · ${row})`)
+    `FILES: one cell per file, grouped changed / failed / only read, counted and named for a screen reader (${kinds.join()} · ${row})`)
 }
 const note = fq('.sw-focus .sw-note')?.textContent || ''
 check(/terminal commands or code runs are not listed/.test(note) && /Review › Last turn/.test(note), `the panel says what it cannot see and where every change is (${note})`)
@@ -1430,17 +1433,19 @@ mod.default.register(quietCtx({ storage: undefined }))
   await act(async () => { rows[0].click() })
   await tick(20)
   await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Play').click() })
-  await tick(1600)
-  check(q('.sw-rof')?.textContent === 'Edit 2 of 3', `replay: Play steps on by itself (${q('.sw-rof')?.textContent})`)
+  await tick(20)
   {
     const plus = q('.sw-rlines[data-play=true] .sw-rl[data-tag="+"]'), minus = q('.sw-rlines[data-play=true] .sw-rl[data-tag="-"]')
-    check(plus?.style.getPropertyValue('--n') === '1' && /ms$/.test(plus?.style.getPropertyValue('--d') || '') && /ms$/.test(minus?.style.getPropertyValue('--t') || '')
+    check(Number(plus?.style.getPropertyValue('--n')) === [...(plus?.querySelector('.sw-rtext')?.textContent || ' ')].length && /ms$/.test(plus?.style.getPropertyValue('--d') || '') && /ms$/.test(minus?.style.getPropertyValue('--t') || '')
       && parseFloat(minus.style.getPropertyValue('--d')) < parseFloat(plus.style.getPropertyValue('--d'))
       && /\.sw-rlines\[data-play\] \.sw-rl\[data-tag="\+"\] \.sw-rtext\{[^}]*sw-typew[^}]*sw-caret/.test(css) && /\.sw-rlines\[data-play\] \.sw-rl\[data-tag="-"\] \.sw-rtext\{text-decoration:line-through;animation:sw-strike/.test(css),
-      'replay: while Play runs the removed line is struck out first, then the added line is typed in behind a cursor')
+      `replay: while Play runs the removed line is struck out first, then the added line is typed in behind a cursor (${qa('.sw-rlines .sw-rl').map(e => e.dataset.tag + (e.style.getPropertyValue('--d') || '·')).join(' ')})`)
     check(mod.playHold([['-', 'a'], ['+', 'b']]) === 1500 && mod.playHold(Array.from({ length: 30 }, () => ['+', 'x'.repeat(60)])) > 9000 - 1,
       'replay: Play stays on an edit until its typing is done (1.5 s at least, 9 s at most)')
   }
+  await tick(1600)
+  check(q('.sw-rof')?.textContent === 'Edit 2 of 3', `replay: Play steps on by itself (${q('.sw-rof')?.textContent})`)
+  check(q('.sw-rlines') && !q('.sw-rlines[data-play]'), 'replay: Play does not type in a failed edit — it was never applied')
   await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Pause').click() })
   await tick(1600)
   check(q('.sw-rof')?.textContent === 'Edit 2 of 3', 'replay: Pause stops it')

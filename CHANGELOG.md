@@ -12,6 +12,18 @@ still takes the theme's colours. Red marks only a failure, amber only something 
 
 ### Changed
 
+- **Play types the edit out.** Each removed line is struck through and dims, then each added line is
+  typed in behind a mint cursor, and the list follows the line being typed; Play stays on an edit until
+  it is done (1.5 s at least, 9 s at most). A failed edit was never applied, so it stands still. Reduced
+  motion shows every edit whole.
+- **Run text keeps its case in HUD titles.** A command or a file name next to a caps title
+  (`CØNSØLE · python build.py`, `DIFF · plugin.js`) and the agent names in TIME PER AGENT read as typed;
+  only our own labels are capitalised.
+- **Shorter list times.** Within a week a time reads `Tue 23:56` instead of `yesterday 23:56`, which
+  left the command column a few letters wide.
+- A failed command's gauge says FAILED, not FINISHED; the fleet says SUBAGENTS DØNE, not RUN CØMPLETE,
+  while the main agent still works; FILES groups its cells changed, failed, read; DETAIL's file
+  sections use the HUD's caps headings instead of boxed frames.
 - **Replay is a HUD.** A six-column grid: your requests on top; the edit's lines on a faint grid with a
   callout per part ("FROM LINE 12", "+1 −1") tied to its row by a leader line and a PAUSED / REPLAYING
   gauge; LINES CHANGED (added, removed, this edit, each against the request's largest); LINES SO FAR
