@@ -15,7 +15,7 @@ still takes the theme's colours. Red marks only a failure, amber only something 
 - **The HUD follows the Hermes theme.** Its ground, panels, hairlines and text are the theme's
   foreground mixed into its background; its accent is the theme accent, held light enough to read on a
   dark ground; red and amber are the theme's status colours. No colour is fixed any more.
-- **11 px text.** The HUD page is scaled (CSS zoom .9565) so its smallest text lands at 11 px, and the
+- **10 px text.** The HUD page is scaled (CSS zoom .8696) so its smallest text lands at 10 px, and the
   leader lines convert screen pixels back to the scaled page so they still meet their rows.
 - **Denser, like the draft.** 11.5 px body text, one 8 px gutter and no frame around the panels, tighter
   fleet nodes and smaller large numbers, no text glow. DETAIL sits on the same ground as the other panels,

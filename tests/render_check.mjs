@@ -50,7 +50,7 @@
  *  25. More than 8 subagents: the swarm (40-subagent fixture) — main agent on top, Failed by name,
  *      Working cells (tooltip, click selects), Waiting and Done collapsed behind Show; units wrap.
  *  26. Reduced motion stops every page animation; the motion moments exist (ring close, shake, count
- *      up, slide, breathe, retyped tag, cursor blink); text never below 11.5px (11px once the HUD's scale applies); focus rings; focusable
+ *      up, slide, breathe, retyped tag, cursor blink); text never below 11.5px (10px once the HUD's scale applies); focus rings; focusable
  *      tooltip triggers; reading tokens; a mounted live region.
  *
  * Removed in 1.7.0 with the features they locked: agent letters (agentLetters / baseLetters, the
@@ -460,9 +460,9 @@ check(qa('[data-tip]').filter(e => !e.closest('button')).every(e => e.tabIndex =
     for (const n of decl.match(/(?<![\d./])\d+(\.\d+)?px/g) || []) if (parseFloat(n) < 11.5) small.push(decl)
   }
   check(!small.length, `no text below 11.5px (${small.join(' | ')})`)
-  // the HUD page is scaled so its smallest text lands at the 11px the user picked, never under
+  // the HUD page is scaled so its smallest text lands at the 10px the user picked, never under
   const zoom = parseFloat(css.match(/\.sw-page\[data-theme=terminal\]\{zoom:([\d.]+);/)?.[1] || '1')
-  check(zoom < 1 && 11.5 * zoom >= 11 - 0.01, `the HUD is drawn at its picked scale and no text lands under 11px (zoom ${zoom} → ${(11.5 * zoom).toFixed(1)}px)`)
+  check(zoom < 1 && 11.5 * zoom >= 10 - 0.01, `the HUD is drawn at its picked scale and no text lands under 10px (zoom ${zoom} → ${(11.5 * zoom).toFixed(1)}px)`)
 }
 check(/--dim:var\(--ui-text-secondary\)/.test(css) && !/tertiary/.test(css.match(/\.sw-model\{[^}]*\}/)?.[0] || 'tertiary')
   && !/tertiary/.test(css.match(/\.sw-meta\{[^}]*\}/)?.[0] || 'tertiary'),
