@@ -324,7 +324,9 @@ This edit failed` : path),
         running: 'Running',
         stopped: 'Stopped',
         firstError: 'First error',
-        line: n => `Line ${n}`
+        line: n => `Line ${n}`,
+        orbit: 'Orbit',
+        ended: 'Ended'
       },
       file: {
         op: {
@@ -1536,6 +1538,265 @@ function StationScene() {
   return jsx('canvas', { className: 'sw-orcv', ref, 'aria-hidden': 'true' })
 }
 
+/** The Commands tab's ORBIT panel, drawn live on a canvas in a holographic globe style: a see-through
+ * sphere of fine particles with thin meridians, outer arc bands with tick scales, and a thick tilted
+ * band of segments round it — one segment per background command in its status colour (running pulses,
+ * failed flickers red, stopped is dashed; the selected one stands taller in the running colour). Each
+ * command also rides its own thin orbit (running flies with a trail). A column of labels on the right
+ * names up to six commands (start time and command line), each tied by a leader to its segment; a ring
+ * gauge on the left counts the ended ones. Everything shown is read from the tab's own list rows, colours
+ * from the page's tokens. Without a 2D canvas the panel stays hidden (no `has-scene`). An earlier run
+ * (data-calm) or reduced motion draws one still frame, refreshed once a second.
+ * window.__swStationClock, when set, drives the clock (frame-exact recordings). */
+export function startOrbitScene(canvas, { ended = 'ENDED' } = {}) {
+  const root = canvas?.closest('.sw-cmorb')
+  const ctx = canvas?.getContext?.('2d')
+  const swatch = document.createElement('canvas').getContext?.('2d', { willReadFrequently: true })
+  if (!root || !ctx || !swatch) return () => {}
+  root.classList.add('has-scene')
+  const reduced = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  const isStill = () => reduced || !!root.closest('.sw-panel[data-calm]')
+
+  const probe = document.createElement('span')
+  probe.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden;visibility:hidden'
+  root.appendChild(probe)
+  const tok = v => {
+    probe.style.color = `var(${v})`
+    swatch.clearRect(0, 0, 1, 1); swatch.fillStyle = window.getComputedStyle(probe).color; swatch.fillRect(0, 0, 1, 1)
+    const d = swatch.getImageData(0, 0, 1, 1).data
+    return [d[0] / 255, d[1] / 255, d[2] / 255]
+  }
+  const paint = (c, a = 1) => `color(srgb ${c[0]} ${c[1]} ${c[2]} / ${Math.max(0, Math.min(1, a))})`
+  const clamp = x => Math.max(0, Math.min(1, x))
+  let P, mono = 'monospace', W = 0, H = 0, dpr = 1, cmds = [], frame = 0
+  const stCol = st => ({ running: P.hot, completed: P.ok, failed: P.bad, stopped: P.idle })[st] || P.line
+  const read = () => {
+    P = { line: tok('--a'), hot: tok('--run'), ok: tok('--ok'), bad: tok('--bad'), idle: tok('--idle'), dim: tok('--dim'), ink: tok('--ink') }
+    mono = window.getComputedStyle(root).getPropertyValue('--mono').trim() || 'monospace'
+    cmds = [...(root.closest('.sw-cmds')?.querySelectorAll('.sw-cmrow') || [])].map(r => ({
+      st: r.dataset.st, sel: r.getAttribute('aria-pressed') === 'true',
+      name: r.querySelector('.sw-cmc')?.textContent || '', at: r.querySelector('.sw-cmlt')?.textContent || ''
+    }))
+  }
+  const resize = () => {
+    const w = canvas.clientWidth, h = canvas.clientHeight, d = Math.min(2, window.devicePixelRatio || 1)
+    if (w === W && h === H && d === dpr) return false
+    W = w; H = h; dpr = d; canvas.width = Math.round(w * d); canvas.height = Math.round(h * d)
+    return true
+  }
+
+  // ── geometry: turn about x, then y; the camera looks down a little ──
+  const rot = ([x, y, z], ax, ay) => {
+    const y1 = y * Math.cos(ax) - z * Math.sin(ax), z1 = y * Math.sin(ax) + z * Math.cos(ax)
+    return [x * Math.cos(ay) + z1 * Math.sin(ay), y1, -x * Math.sin(ay) + z1 * Math.cos(ay)]
+  }
+  const CAM = 0.32
+  let CX = 0, CY = 0, R = 1
+  const proj = ([x, y, z]) => { const y2 = y * Math.cos(CAM) - z * Math.sin(CAM), z2 = y * Math.sin(CAM) + z * Math.cos(CAM); return [CX + x * R, CY - y2 * R, z2] }
+  // the particle sphere: a Fibonacci lattice; a smooth field makes land masses denser and brighter
+  let seed = 7
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
+  const field = (x, y, z) => Math.sin(x * 3.1 + 1.3) * Math.sin(y * 3.7 + 0.4) + Math.sin(z * 2.6 + x * 1.9) * 0.8 + Math.sin(y * 5.3 - z * 2.2) * 0.45
+  const NP = 5200
+  const PTS = Array.from({ length: NP }, (_, i) => {
+    const u = 1 - 2 * (i + 0.5) / NP, a = i * 2.39996 + rnd() * 0.02, s = Math.sqrt(1 - u * u), r = 0.985 + rnd() * 0.03
+    const x = s * Math.cos(a), z = s * Math.sin(a), f = field(x, u, z)
+    return [x * r, u * r, z * r, rnd(), f > 0.5 ? 1 : f > 0 ? 0.55 : 0.28, f > 0.5]
+  })
+  const ORB = [[0.5, 0.2, 1.08], [-0.9, 1.4, 1.14], [1.25, 2.6, 1.1], [-0.35, 4.0, 1.18], [0.95, 5.0, 1.05], [-1.2, 0.8, 1.2]]
+  const orbitAt = (i, a) => { const [inc, node, rr] = ORB[i % ORB.length]; return proj(rot([rr * Math.cos(a), 0, rr * Math.sin(a)], inc, node)) }
+  const BUCKETS = 14
+  const t0 = performance.now() / 1000
+
+  const render = () => {
+    if (resize() || frame % 20 === 0) read()
+    frame++
+    if (!W || !H) return
+    const still = isStill()
+    const t = still ? 30 : (window.__swStationClock ?? performance.now() / 1000 - t0)
+    const intro = clamp(t / 1.8)
+    const wide = W >= 520
+    R = wide ? Math.min(H * 0.31, W * 0.17) : Math.min(H * 0.3, W * 0.26)
+    CX = wide ? W * 0.44 : W * 0.5; CY = H * 0.52
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H)
+    ctx.globalCompositeOperation = 'lighter'
+    const seg = (a, b, col, al, w = 1) => { ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineWidth = w; ctx.strokeStyle = paint(col, al); ctx.stroke() }
+
+    // outer arc bands, tick scales, turning slowly both ways
+    const arc = (rr, a0, a1, al, w, step, dash) => {
+      const e = a0 + (a1 - a0) * clamp((intro - 0.1) * 1.8), rad = R * rr
+      if (dash) ctx.setLineDash(dash)
+      ctx.beginPath(); ctx.arc(CX, CY, rad, a0, e); ctx.lineWidth = w; ctx.strokeStyle = paint(P.line, al); ctx.stroke(); ctx.setLineDash([])
+      if (!step) return
+      ctx.beginPath()
+      for (let a = a0, k = 0; a <= e; a += step, k++) { const L = k % 5 ? 3 : 7; ctx.moveTo(CX + Math.cos(a) * rad, CY + Math.sin(a) * rad); ctx.lineTo(CX + Math.cos(a) * (rad - L), CY + Math.sin(a) * (rad - L)) }
+      ctx.lineWidth = 0.8; ctx.strokeStyle = paint(P.line, al * 0.9); ctx.stroke()
+    }
+    const sp = t * 0.03
+    arc(1.48, -2.6 + sp, -0.55 + sp, 0.5, 1, 0.045)
+    arc(1.48, 0.55 + sp, 2.6 + sp, 0.5, 1, 0.045)
+    arc(1.58, 3.0 - sp * 1.5, 3.9 - sp * 1.5, 0.55, 3)
+    arc(1.58, -0.3 - sp * 1.5, 0.35 - sp * 1.5, 0.55, 3)
+    arc(1.66, 0, 6.2832, 0.18, 1, 0, [2, 6])
+    arc(1.4, -1.9 - sp * 2, -1.2 - sp * 2, 0.35, 1.5)
+
+    // particles, batched by brightness so a frame sets a handful of fill styles, not thousands
+    const spin = t * 0.1, TL = 0.35
+    const drawPts = front => {
+      const bins = Array.from({ length: BUCKETS }, () => [])
+      for (const [x, y, z, k, band, land] of PTS) {
+        const q = proj(rot([x, y, z], TL, spin))
+        if ((q[2] >= 0) !== front) continue
+        const reveal = clamp(intro * 2.2 - (1 - y) * 0.6)
+        const a = (front ? 0.35 + 0.65 * q[2] : 0.16) * band * (0.7 + 0.3 * k) * reveal * 1.25
+        if (a < 0.03) continue
+        bins[Math.min(BUCKETS - 1, Math.floor(a * BUCKETS))].push(q[0], q[1], front && land ? 1.4 : 1)
+      }
+      bins.forEach((b, i) => {
+        if (!b.length) return
+        ctx.fillStyle = paint(P.line, (i + 0.5) / BUCKETS)
+        for (let j = 0; j < b.length; j += 3) ctx.fillRect(b[j] - b[j + 2] / 2, b[j + 1] - b[j + 2] / 2, b[j + 2], b[j + 2])
+      })
+    }
+    drawPts(false)
+    // thin meridians and parallels over the particles
+    const circle = (inc, node, al) => {
+      let prev = null
+      for (let k = 0; k <= 96 * clamp(intro * 1.5); k++) {
+        const a = k / 96 * 6.2832, q = proj(rot(rot([Math.cos(a), 0, Math.sin(a)], inc, node), TL, spin))
+        if (prev) seg(prev, q, P.line, al * (q[2] < 0 ? 0.25 : 0.8), 0.7)
+        prev = q
+      }
+    }
+    for (const [inc, node, al] of [[1.5708, 0, 0.5], [1.5708, 1.0472, 0.5], [1.5708, 2.0944, 0.5], [0, 0, 0.55], [0.5, 0, 0.3], [-0.5, 0, 0.3]]) circle(inc, node, al)
+
+    // what is shown: up to six commands, the selected one always among them
+    let shown = cmds.slice(0, 6)
+    const picked = cmds.find(c => c.sel)
+    if (picked && !shown.includes(picked)) shown = [...shown.slice(0, 5), picked]
+    // each shown command's orbit, split into the halves behind and in front of the sphere
+    const back = [], front = []
+    shown.forEach((c, i) => {
+      const f = clamp((intro - 0.35 - i * 0.07) * 3)
+      for (let k = 0; k < 120 * f; k++) {
+        const a = orbitAt(i, k / 120 * 6.2832), b = orbitAt(i, (k + 1) / 120 * 6.2832)
+        ;((a[2] + b[2]) / 2 < 0 ? back : front).push([a, b, c.sel ? 0.7 : 0.32, c.st === 'failed' ? P.bad : P.line])
+      }
+    })
+    for (const [a, b, al, col] of back) seg(a, b, col, al * 0.35, 0.8)
+
+    // the band: a tilted cylinder wall of segments, a command on every other one (up to 16), the rest dim
+    const ring = cmds.slice(0, 16)
+    if (picked && !ring.includes(picked)) ring[ring.length - 1] = picked
+    const NS = Math.max(12, ring.length * 2), turn = -t * 0.06
+    const band = []
+    for (let i = 0; i < NS; i++) {
+      const c = i % 2 === 0 ? ring[i / 2] : null, a0 = turn + i / NS * 6.2832 + 0.03, a1 = turn + (i + 1) / NS * 6.2832 - 0.03
+      const rr = c?.sel ? 1.34 : 1.28, h = c?.sel ? 0.13 : 0.085, m = 8
+      const at = (r, a, y) => proj(rot([r * Math.cos(a), y, r * Math.sin(a)], 0.08, 0.2))
+      const top = [], bot = [], lip = []
+      for (let k = 0; k <= m; k++) { const a = a0 + (a1 - a0) * k / m; top.push(at(rr, a, h)); bot.push(at(rr, a, -h)); lip.push(at(rr * 0.97, a, h)) }
+      band.push({ c, top, bot, lip, i, z: (top[m >> 1][2] + bot[m >> 1][2]) / 2, grow: clamp((intro - 0.5 - i * 0.025) * 4) })
+    }
+    const drawBand = list => {
+      for (const s of list) {
+        const { c, top, bot, lip, grow } = s
+        const col = c?.sel ? P.hot : c ? stCol(c.st) : P.line, depth = s.z < 0 ? 0.4 : 1
+        let fa = c ? 0.3 : 0.1
+        if (c?.st === 'running') fa = 0.28 + 0.1 * (1 + Math.sin(t * 3.2))
+        if (c?.st === 'failed') fa = Math.sin(t * 17 + s.i) > 0.15 || Math.sin(t * 5.3) > 0.6 ? 0.42 : 0.14
+        if (c?.sel) fa = 0.75
+        const shape = (a, b) => { ctx.beginPath(); a.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); for (let k = b.length - 1; k >= 0; k--) ctx.lineTo(b[k][0], b[k][1]); ctx.closePath() }
+        shape(top, bot)
+        ctx.fillStyle = paint(col, fa * grow * depth); ctx.fill()
+        if (c?.st === 'stopped') ctx.setLineDash([3, 3])
+        ctx.lineWidth = 0.9; ctx.strokeStyle = paint(col, (c ? 0.95 : 0.4) * grow * depth); ctx.stroke(); ctx.setLineDash([])
+        shape(top, lip)
+        ctx.fillStyle = paint(col, fa * 0.5 * grow * depth); ctx.fill()
+      }
+    }
+    drawBand(band.filter(s => s.z < 0))
+    drawPts(true)
+    ctx.beginPath(); ctx.arc(CX, CY, R, 0, 6.2832); ctx.lineWidth = 0.8; ctx.strokeStyle = paint(P.line, 0.35 * intro); ctx.stroke()
+    for (const [a, b, al, col] of front) seg(a, b, col, al, 0.9)
+    drawBand(band.filter(s => s.z >= 0))
+
+    // each shown command on its orbit: running flies with a trail, done drifts, failed flickers, stopped is hollow
+    if (intro >= 0.6) shown.forEach((c, i) => {
+      let a = 0.7 + i * 1.3
+      if (c.st === 'running') a += t * 0.7
+      else if (c.st === 'completed') a += t * 0.06
+      const p = orbitAt(i, a), col = stCol(c.st), hid = p[2] < 0 && Math.hypot(p[0] - CX, p[1] - CY) < R
+      if (c.st === 'running') for (let k = 1; k < 22; k++) seg(orbitAt(i, a - (k - 1) * 0.03), orbitAt(i, a - k * 0.03), P.hot, (1 - k / 22) * (hid ? 0.2 : 0.9), 1.4)
+      let al = hid ? 0.3 : 1
+      if (c.st === 'failed') al *= Math.sin(t * 17 + i) > 0.15 || Math.sin(t * 5.3) > 0.6 ? 1 : 0.25
+      const s = c.sel ? 5 : 3.5
+      ctx.beginPath(); ctx.moveTo(p[0], p[1] - s); ctx.lineTo(p[0] + s, p[1]); ctx.lineTo(p[0], p[1] + s); ctx.lineTo(p[0] - s, p[1]); ctx.closePath()
+      if (c.st !== 'stopped') { ctx.fillStyle = paint(col, 0.85 * al); ctx.fill() }
+      ctx.lineWidth = 1; ctx.strokeStyle = paint(col, al); ctx.stroke()
+    })
+
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.font = `300 11.5px ${mono}`; ctx.textBaseline = 'middle'
+    // labels on the right, each tied to its band segment by a leader (wide panels only)
+    const bw = Math.min(176, W - (CX + R * 1.7) - 12), lx = W - bw - 8
+    if (wide && bw >= 110) shown.forEach((c, i) => {
+      const s = band.find(b => b.c === c), f = clamp((t - 1 - i * 0.1) * 4)
+      if (!s || f <= 0) return
+      const y = H * 0.5 + (i - (shown.length - 1) / 2) * 30, mid = s.top[s.top.length >> 1], chars = Math.floor((bw - 26) / 7)
+      const col = c.sel ? P.hot : P.line
+      ctx.globalAlpha = f
+      ctx.lineWidth = 0.8; ctx.strokeStyle = paint(col, c.sel ? 0.9 : 0.45)
+      ctx.beginPath(); ctx.moveTo(mid[0], mid[1]); ctx.lineTo(lx - 28, y); ctx.lineTo(lx - 2, y); ctx.stroke()
+      ctx.fillStyle = paint(col, 0.9); ctx.fillRect(mid[0] - 1.5, mid[1] - 1.5, 3, 3)
+      ctx.strokeStyle = paint(col, c.sel ? 0.95 : 0.5); ctx.strokeRect(lx + 0.5, y - 10.5, bw, 21)
+      if (c.sel) { ctx.fillStyle = paint(P.hot, 0.14); ctx.fillRect(lx + 1, y - 10, bw - 1, 20) }
+      ctx.fillStyle = paint(stCol(c.st)); ctx.fillRect(lx + 7, y - 3, 6, 6)
+      const text = `${c.at} ${c.name}`, room = text.length > chars ? text.slice(0, chars - 1) + '…' : text
+      const typed = Math.floor(clamp((t - 1.1 - i * 0.1) * 2) * room.length)
+      ctx.fillStyle = paint(P.ink, 0.95); ctx.fillText(room.slice(0, typed), lx + 19, y + 0.5)
+      ctx.globalAlpha = 1
+    })
+    // the ring gauge on the left: ended of all (wide panels only)
+    if (wide) {
+      const gx = 58, gy = H * 0.5, gr = 40, n = cmds.length, done = cmds.filter(c => c.st === 'completed' || c.st === 'failed').length
+      const gf = clamp((intro - 0.4) * 2)
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.beginPath(); ctx.arc(gx, gy, gr, 0, 6.2832); ctx.lineWidth = 1; ctx.strokeStyle = paint(P.line, 0.3 * gf); ctx.stroke()
+      ctx.beginPath(); ctx.arc(gx, gy, gr - 9, 0, 6.2832); ctx.setLineDash([1.5, 3.5]); ctx.strokeStyle = paint(P.line, 0.45 * gf); ctx.stroke(); ctx.setLineDash([])
+      for (let k = 0; k < Math.max(1, n); k++) {
+        const c = cmds[k], a0 = -1.5708 + k / Math.max(1, n) * 6.2832 + 0.05, a1 = -1.5708 + (k + 1) / Math.max(1, n) * 6.2832 - 0.05
+        ctx.beginPath(); ctx.arc(gx, gy, gr - 4, a0, a0 + (a1 - a0) * gf); ctx.lineWidth = 5
+        ctx.strokeStyle = paint(c ? stCol(c.st) : P.line, c && (c.st === 'completed' || c.st === 'failed') ? 0.85 : 0.25); ctx.stroke()
+      }
+      const sweep = -1.5708 + ((t * 0.4) % 1) * 6.2832
+      ctx.beginPath(); ctx.arc(gx, gy, gr + 5, sweep, sweep + 0.6); ctx.lineWidth = 1.5; ctx.strokeStyle = paint(P.line, 0.6 * gf); ctx.stroke()
+      ctx.globalCompositeOperation = 'source-over'
+      ctx.textAlign = 'center'
+      ctx.font = `300 22px ${mono}`; ctx.fillStyle = paint(P.ink, gf); ctx.fillText(`${done}/${n}`, gx, gy - 2)
+      ctx.font = `300 11.5px ${mono}`; ctx.fillStyle = paint(P.dim, gf); ctx.fillText(ended, gx, gy + 17)
+      ctx.textAlign = 'left'
+    }
+  }
+
+  // live: every animation frame; still: one frame a second (the interval also restarts a live loop
+  // when the panel leaves the calm state)
+  let raf = 0, live = false
+  const loop = () => { if (!canvas.isConnected) { stop(); return } render(); if (isStill()) { live = false; return } raf = window.requestAnimationFrame(loop) }
+  const start = () => { if (!live) { live = true; raf = window.requestAnimationFrame(loop) } }
+  const tick = setInterval(() => { if (!canvas.isConnected) stop(); else if (isStill()) render(); else start() }, 1000)
+  const stop = () => { window.cancelAnimationFrame(raf); clearInterval(tick); live = false; probe.remove(); root.classList.remove('has-scene') }
+  canvas.swOrbitFrame = render
+  start()
+  return stop
+}
+
+function OrbitScene({ ended }) {
+  const ref = useRef(null)
+  useEffect(() => startOrbitScene(ref.current, { ended }), [ended])
+  return jsx('canvas', { className: 'sw-cmocv', ref, 'aria-hidden': 'true' })
+}
+
 
 function Orbit({ t, main, subs, selected, onSelect, flash, waitingOn, calm }) {
   const wings = orbitWings(subs)
@@ -2395,6 +2656,11 @@ function ProcView({ t, p, rows, now, storedId, onToast, onPick }) {
   return jsxs('div', {
     className: 'sw-cmgrid',
     children: [
+      // the ORBIT: every command of the list on a live globe; hidden when there is no 2D canvas
+      jsx(HudPanel, {
+        title: t('sw.hudCommands.orbit'), span: 6, className: 'sw-cmorb',
+        children: [jsx(OrbitScene, { ended: hudCaps(t('sw.hudCommands.ended')) }, 'scene')]
+      }, 'orbit'),
       jsx(HudPanel, {
         title: t('sw.hudCommands.console'), name: commandLine(p.command), span: 6, className: 'sw-hpx sw-cmcon', chip: hudChip(p.status, word),
         children: [
@@ -3939,6 +4205,9 @@ const CSS = `${TM_PALETTE}
 .sw-cmgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;min-width:0}
 .sw-hp[data-span="4"]{grid-column:span 4}
 .sw-cmcon .sw-hgrid{min-height:150px}
+.sw-cmorb:not(.has-scene){display:none}
+.sw-cmorb{position:relative;min-height:300px}
+.sw-cmocv{display:block;width:100%;height:300px;pointer-events:none}
 .sw-cmcon .sw-hgrid>.sw-crt,.sw-cmcon .sw-hgrid>.sw-cmerr,.sw-cmcon .sw-hgrid>.sw-cmnote{position:relative;z-index:1;margin:0 196px 0 0}
 .sw-page[data-theme=terminal] .sw-cmcon .sw-crt{margin-top:0;padding:8px 0;border:0;background:none}
 .sw-page[data-theme=terminal] .sw-cmcon .sw-crt[data-state=lost]{padding:10px 8px}

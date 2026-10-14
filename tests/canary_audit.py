@@ -33,6 +33,20 @@ PY = "dashboard/plugin_api.py"
 
 # (gate, file, old, new, what the mutation breaks)
 MUTATIONS = [
+    # ── 2.2.0 Commands orbit scene ──────────────────────────────────────────────
+    ("render", JS, "        children: [jsx(OrbitScene, { ended: hudCaps(t('sw.hudCommands.ended')) }, 'scene')]\n", "        children: []\n",
+     "the Commands ORBIT panel no longer mounts its canvas"),
+    ("render", JS, "clearInterval(tick); live = false; probe.remove(); root.classList.remove('has-scene') }", "clearInterval(tick); live = false; probe.remove() }",
+     "a stopped orbit scene leaves its empty panel showing"),
+    ("audit", JS, "const paint = (c, a = 1) => `color(srgb ${c[0]} ${c[1]} ${c[2]} / ${Math.max(0, Math.min(1, a))})`",
+     "const paint = (c, a = 1) => `rgba(${c[0] * 255},${c[1] * 255},${c[2] * 255},${a})`",
+     "the orbit scene writes a colour literal instead of the token's colour"),
+    ("render", JS, "const text = `${c.at} ${c.name}`, room = text.length > chars ? text.slice(0, chars - 1) + '…' : text",
+     "const text = `${c.name}`, room = text.length > chars ? text.slice(0, chars - 1) + '…' : text",
+     "the orbit labels drop the command's start time"),
+    ("render", JS, "n = cmds.length, done = cmds.filter(c => c.st === 'completed' || c.st === 'failed').length",
+     "n = cmds.length, done = cmds.filter(c => c.st === 'completed').length",
+     "the orbit gauge stops counting failed commands as ended"),
     # ── 2.1.0 station scene ─────────────────────────────────────────────────────
     ("render", JS, "      jsx(StationScene, {}, 'scene'),\n", "",
      "the FLEET orbit no longer mounts the live station canvas"),

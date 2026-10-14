@@ -467,6 +467,42 @@ check(q('.sw-tabn')?.textContent === '1' && q('.sw-tabn')?.getAttribute('aria-la
   box.remove()
   proto.getContext = real
 }
+// 21d. the Commands ORBIT scene with a 2D context: it shows the panel, paints in token colours only, labels
+// the commands from the tab's own list rows (start time and command, cut with an ellipsis) and counts the
+// ended ones; stopped, it hides the panel again and leaves no probe behind
+{
+  const calls = [], fills = [], texts = []
+  const fake = () => new Proxy({}, {
+    get: (o, k) => k === 'getImageData' ? () => ({ data: [51, 102, 204, 255] })
+      : k in o ? o[k] : (...a) => { calls.push(k); if (k === 'fill' || k === 'fillText') fills.push(o.fillStyle); if (k === 'fillText') texts.push(a[0]) },
+    set: (o, k, v) => { o[k] = v; return true }
+  })
+  const proto = window.HTMLCanvasElement.prototype, real = proto.getContext
+  proto.getContext = fake
+  const page = document.createElement('div')
+  page.className = 'sw-panel'
+  page.dataset.calm = 'true'
+  const row = (st, at, cmd, sel) => `<button class="sw-cmrow" data-st="${st}" aria-pressed="${sel}"><span class="sw-cmlt">${at}</span><code class="sw-cmc">${cmd}</code></button>`
+  page.innerHTML = `<div class="sw-cmds"><section class="sw-hp sw-cmorb"><canvas></canvas></section>
+    ${row('running', '22:18', 'npm run dev -- --port 5174 --host 0.0.0.0', 'false')}${row('failed', '22:00', 'node build.mjs', 'true')}
+    ${row('completed', '21:40', 'npm test', 'false')}${row('stopped', '21:30', 'sleep 999', 'false')}</div>`
+  document.body.appendChild(page)
+  const box = page.querySelector('.sw-cmorb'), canvas = box.querySelector('canvas')
+  Object.defineProperty(canvas, 'clientWidth', { value: 608 })
+  Object.defineProperty(canvas, 'clientHeight', { value: 300 })
+  const stop = mod.startOrbitScene(canvas, { ended: 'ENDED' })
+  canvas.swOrbitFrame()
+  const styles = fills.filter(f => typeof f === 'string')
+  check(box.classList.contains('has-scene') && calls.filter(c => c === 'lineTo').length > 1000 && calls.filter(c => c === 'fillRect').length > 1000
+    && styles.length && styles.every(f => /^color\(srgb [\d.]+ [\d.]+ [\d.]+ \/ [\d.]+\)$/.test(f)),
+    `the orbit scene shows its panel and paints the particle globe in token colours read through the canvas, never a literal (${calls.filter(c => c === 'fillRect').length} particles, ${styles[0]})`)
+  check(texts.includes('22:00 node build.mjs') && texts.includes('21:30 sleep 999') && texts.some(s => /^22:18 npm run dev .*…$/.test(s)) && texts.includes('2/4') && texts.includes('ENDED'),
+    `the labels come from the list rows, a long command cut with an ellipsis; the gauge counts the ended ones (${texts.join(' | ')})`)
+  stop()
+  check(!box.classList.contains('has-scene') && !box.querySelector('span[style*="visibility"]'), 'stopped, the orbit scene hides its panel again and leaves no probe behind')
+  page.remove()
+  proto.getContext = real
+}
 check(q('.sw-bign')?.textContent === '1' && q('.sw-big small')?.textContent === '/2'
   && qa('.sw-score .sw-seg i').map(i => i.dataset.st).join() === 'completed,failed',
   `the score counts finished subagents of all, one cell per subagent (${q('.sw-big')?.textContent})`)
@@ -678,6 +714,10 @@ check(q('.sw-cmcon')?.dataset.span === '6' && q('.sw-cmlp')?.dataset.span === '4
   && /\.sw-hp\[data-span="4"\]\{grid-column:span 4\}/.test([...document.querySelectorAll('style')].map(s => s.textContent).join(''))
   && q('.sw-cmlp .sw-hpt .sw-sr')?.textContent === 'Commands · 4' && q('.sw-cmcard .sw-hpt .sw-sr')?.textContent === 'Process',
   'the tab is a HUD: CONSOLE across the grid, COMMANDS (4 of 6 columns, counted) and PROCESS (2) below')
+check(q('.sw-cmgrid')?.firstElementChild === q('.sw-cmorb') && q('.sw-cmorb')?.dataset.span === '6' && q('.sw-cmorb .sw-hpt .sw-sr')?.textContent === 'Orbit'
+  && q('.sw-cmorb canvas.sw-cmocv')?.getAttribute('aria-hidden') === 'true' && !q('.sw-cmorb').classList.contains('has-scene')
+  && /\.sw-cmorb:not\(\.has-scene\)\{display:none\}/.test([...document.querySelectorAll('style')].map(s => s.textContent).join('')),
+  'an ORBIT panel leads the tab across the grid, its canvas hidden from screen readers; without a 2D context it stays hidden')
 check(pressed().length === 1 && pressed()[0] === prs()[0] && conTitle() === 'Console · npm run dev',
   `with none picked, the console shows the newest command (${conTitle()})`)
 check(q('.sw-cmcon .sw-cmnote')?.textContent === 'Still running — its output appears here when it finishes.' && !rest.some(p => p.startsWith('/process_output'))

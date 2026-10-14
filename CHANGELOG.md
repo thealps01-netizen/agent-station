@@ -3,6 +3,21 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 2.2.0 — 2026-10-14
+
+The Commands tab gets the FLEET station's treatment, from a draft the user approved on video.
+
+- A new ORBIT panel above the CONSOLE draws the chat's background commands live on a canvas as a
+  holographic globe: a see-through sphere of fine particles with thin meridians, outer arc bands with
+  tick scales, and a thick tilted band of segments round it, one segment per command in its status
+  colour (running pulses, failed flickers red, stopped is dashed; the selected one stands taller in the
+  running colour). Each command also rides its own thin orbit; a running one flies with a trail.
+- A column of labels names up to six commands (start time and command line, cut with an ellipsis),
+  each tied by a leader to its band segment; a ring gauge counts the ended commands. Below 520 px the
+  labels and gauge stay out and the globe is centred.
+- Everything is read from the tab's own list rows; colours from the theme's tokens. An earlier run or
+  reduced motion draws one still frame a second. Without a 2D canvas the panel stays hidden.
+
 ## 2.1.0 — 2026-10-14
 
 The FLEET station comes alive, from drafts the user approved on video.
