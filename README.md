@@ -1,11 +1,11 @@
 # Subagent Watch
 
 A Hermes **Desktop** plugin. A read-only page for the `delegate_task` workers of the focused chat, in
-a **Terminal** look laid out as a mission-control HUD (raised panels on hairlines, grey caps labels, one accent; every colour comes from the Hermes theme you picked). The main agent and each subagent
-are units whose sprite says what they are doing (editing, reading, running a command, waiting, done, failed, stopped); one focus panel
+a **Terminal** look laid out as a mission-control HUD (raised panels on hairlines, a light grey mono, one accent; every colour comes from the Hermes theme you picked). The agents are drawn as a wireframe
+space station: the main agent is its core, each subagent a wing whose cells say how it is doing (working, done, failed, waiting); one focus panel
 shows the selected agent — what it works on now, the files it changed and read, a subagent's task,
-model, answer and cost, with Copy answer and Open its chat. Earlier runs sit in a run picker; more
-than eight subagents turn into a grouped swarm. A Commands tab lists the chat's background shell
+model, answer and cost, with Copy answer and Open its chat. Earlier runs sit in a run picker; past
+six subagents the station keeps five wings for those that need eyes and one holding the rest. A Commands tab lists the chat's background shell
 commands (`terminal(background=true)`), running and finished. A Replay tab steps through the file
 edits the AI made after each of your requests, one edit at a time, as removed and added lines. A status-bar chip (and, with a pet on
 screen, a line in its bubble) shows the running batch's progress and cost while the page is closed.
@@ -62,7 +62,7 @@ python audit_static.py              # i18n, a11y, colours, silent catches, read-
 python contract_core.py             # everything read from the core still exists (--selftest)
 python release_gate.py              # version / changelog / installed copy rules each fire
 python canary_audit.py              # every mutation must turn its gate red
-node preview.mjs && <electron> shot.cjs preview.html preview.png   # 11 screens (incl. 380 px, the chip, a 40-agent swarm) + WCAG / overflow / overlap gate
+node preview.mjs && <electron> shot.cjs preview.html preview.png   # 12 screens (incl. 380 px, the chip, a 40-agent station) + WCAG / overflow / overlap gate
 ```
 
 A rule that has never failed is not evidence: `canary_audit.py`, `release_gate.py` and

@@ -4,10 +4,9 @@
  *
  *   Agents    one run at a time — the running one, else the last; the run picker opens earlier
  *             ones, calm, with "Back to now". A HUD: the FLEET schematic — the main agent (first and
- *             selected) wired through a callout per subagent to its node, each node's icon saying what
- *             it does now (editing, reading, running a command, waiting, done, failed, stopped, idle);
- *             past SWARM_AT subagents a swarm grouped by status, failed first by name — then time per
- *             agent, SPENT (cost, done / all), FILES, the selected AGENT, a LOG row per subagent, and
+ *             selected) as the core of an isometric station, each subagent a wing on it with a callout
+ *             (its name, how it is doing); past ORBIT_WINGS subagents five wings for those that need eyes
+ *             and one holding the rest — then time per agent, SPENT (cost, done / all), FILES, the selected AGENT, a LOG row per subagent, and
  *             one DETAIL focus panel for the selected agent: what it works on now, the files it changed and the ones it only
  *             read (from the backend's /files `who` / `editors`); a subagent's panel adds its task,
  *             model, answer, Copy answer (/output) and Open its chat.
@@ -19,8 +18,8 @@
  *   Commands  shell commands the agent started with terminal(background=true), running and
  *             finished, from the backend's /processes; a row opens its exit code, folder and the
  *             end of its output (/process_output).
- *   Look      Terminal: a CRT palette derived from the app theme's tokens (TM_PALETTE), ASCII sprites
- *             and [RUN] / [OK ] tags. THEMES and the read of a kept look in ctx.storage stay for a
+ *   Look      Terminal: a palette derived from the app theme's tokens (TM_PALETTE), a light mono and
+ *             [RUN] / [OK ] tags. THEMES and the read of a kept look in ctx.storage stay for a
  *             second look (nothing writes it today); any kept value an earlier version wrote (Cockpit, Dot matrix, Live
  *             map) reads as Terminal.
  *   Progress  the focused chat's running batch as a status-bar chip (finished/total, a bar, the
@@ -75,8 +74,6 @@ const FILE_TOOLS = new Set(['read_file', 'write_file', 'patch'])
 const TOUCH_LINGER_MS = 4000
 // A folder path longer than this is cut from the left (the end names it).
 const DIR_CHARS = 48
-// More subagents than this and the units turn into the grouped swarm.
-const SWARM_AT = 8
 // Rows a focus panel lists before "Show N more": changed files, files only read.
 const CHANGED_ROWS = 8
 // The only-read chips shown before '+ N more'.
@@ -164,10 +161,6 @@ const BUNDLES = {
         read: 'reading', write: 'writing', edit: 'editing', search: 'searching', run: 'running a command',
         code: 'running code', delegate: 'starting subagents', web: 'on the web', other: name => `using ${name}`
       },
-      swarm: {
-        failed: 'Failed', running: 'Working', queued: 'Waiting', completed: 'Done',
-        show: 'Show', hide: 'Hide', cell: (name, line) => `${name} — ${line}`
-      },
       focus: {
         mainLabel: 'Focus · main agent · this chat',
         subLabel: 'Focus · subagent',
@@ -227,16 +220,11 @@ const BUNDLES = {
       hudAgents: {
         fleet: run => (run ? `Fleet · ${run}` : 'Fleet'),
         done: (done, total) => `${done}/${total} done`,
-        runDone: 'run complete',
-        subsDone: 'subagents done',
-        running: 'running',
-        coDone: 'handed off',
-        coFailed: 'failed',
-        coRunning: 'working',
-        coQueued: 'waiting',
-        coStopped: 'stopped',
-        tools: (n, tokens) => [`${n} tool${n === 1 ? '' : 's'}`, tokens].filter(Boolean).join(' · '),
+        orbitMain: word => `main · ${word}`,
+        orbitMore: n => `+${n} more`,
+        orbitMoreLabel: (n, parts) => `${n} more subagents: ${parts}`,
         time: 'Time per agent',
+        timeMore: (n, done) => `+${n} more · ${done} done`,
         noTime: 'No subagent has run yet.',
         spent: 'Spent',
         tokens: 'tokens',
@@ -300,8 +288,7 @@ This edit failed` : path),
         failedNote: 'It was tried, not applied: the file did not change.',
         noLines: 'No lines changed',
         from: n => (n ? `from line ${n}` : 'next part'),
-        line: n => `line ${n}`,
-        typing: 'typing',
+        part: (added, removed) => (added && removed ? `${removed} line${removed === 1 ? '' : 's'} replaced` : added ? `${added} line${added === 1 ? '' : 's'} added` : `${removed} line${removed === 1 ? '' : 's'} removed`),
         removedSign: 'removed',
         addedSign: 'added',
         rest: n => `Show the rest (${n} more line${n === 1 ? '' : 's'})`,
@@ -621,17 +608,6 @@ export function storedUnits(batch) {
   }))
 }
 
-/** The swarm's groups, in the order they are drawn: failed (and stopped) first, then working, waiting, done. */
-export function swarmGroups(units) {
-  const of = { failed: [], running: [], queued: [], completed: [] }
-  for (const u of units) {
-    if (u.status === 'failed' || u.status === 'stopped') of.failed.push(u)
-    else if (of[u.status]) of[u.status].push(u)
-    else of.failed.push(u)
-  }
-  return of
-}
-
 // ── marks ────────────────────────────────────────────────────────────────────
 
 const svg = (children, cls) => jsx('svg', { viewBox: '0 0 24 24', className: cls, 'aria-hidden': 'true', children })
@@ -656,10 +632,6 @@ const ICON = {
 }
 // The Terminal look draws the same icon as a glyph inside an ASCII box.
 const GLYPH = { edit: '✎', read: '◉', run: '>_', think: '··', wait: '⧗', ok: '✓', bad: '✗', stop: '■', idle: '○' }
-export function sprite(icon) {
-  const g = GLYPH[icon] || GLYPH.idle
-  return `┌──┐\n│${g.length > 1 ? g : `${g} `}│\n└──┘`
-}
 // Status-bar marks (the chip): a filled disc for an end, a ring for running or waiting.
 const GLYPH_INK = 'var(--dt-background)'
 const MARKS = {
@@ -1110,179 +1082,194 @@ function unitLine(t, u) {
  * An agent as a node of the fleet schematic: its activity sprite, its name, its status tag and one
  * meta line (model · time; the main agent's state). The same node heads the swarm.
  */
-function Unit({ t, theme, u, selected, onSelect, flash, waitingOn, meta, time }) {
-  const icon = unitIcon(u)
-  const word = statusWord(t, u, waitingOn)
-  const tag = t(`sw.tag.${u.status === 'running' ? u.act || 'think' : u.status}`)
-  const goal = String(u.rec?.goal || '').trim()
-  const button = jsxs('button', {
-    type: 'button', className: `sw-unit${selected ? ' is-sel' : ''}${flash ? ` is-${flash}` : ''}`,
-    'data-st': u.status, 'data-icon': icon, 'data-main': u.main ? 'true' : undefined, 'data-batch': u.batch, 'data-node': u.key,
-    'aria-pressed': selected, 'aria-label': `${u.name}: ${word}`, onClick: () => onSelect(u.key),
+// ── the orbit: the agents hero ────────────────────────────────────────────────
+
+// The station is drawn in an isometric box of ORBIT_W × ORBIT_H; the labels sit in the same box as
+// percentages, so lines and labels meet at any width.
+const ORBIT_W = 666, ORBIT_H = 360, ORBIT_CX = 333, ORBIT_CY = 192, ORBIT_S = 0.74
+// At most six wings, three a side: past that the wings touch and the lines cross. Five go to the
+// agents that need eyes (failed, then working, then waiting), the sixth holds the rest.
+export const ORBIT_WINGS = 6
+const ORBIT_SLOTS = [[-170, 1], [-170, -1], [170, 1], [170, -1], [-92, 1], [92, -1]]
+// the group takes an outer slot (3), so its line never runs past the core
+const ORBIT_GROUP_SLOTS = [0, 1, 2, 4, 5, 3]
+const ORBIT_RANK = { failed: 0, running: 1, queued: 2, stopped: 3, completed: 3 }
+const ORBIT_COLS = 8, ORBIT_ROWS = 2
+
+/** The wings, in slot order: every subagent while they fit, else the five that need eyes and a group. */
+export function orbitWings(subs) {
+  if (subs.length <= ORBIT_WINGS) return subs.map((u, i) => ({ u, slot: i }))
+  const order = subs.map((u, i) => [u, i])
+    .sort((a, b) => (ORBIT_RANK[a[0].status] ?? 3) - (ORBIT_RANK[b[0].status] ?? 3) || a[1] - b[1])
+    .map(x => x[0])
+  return [
+    ...order.slice(0, ORBIT_WINGS - 1).map((u, i) => ({ u, slot: ORBIT_GROUP_SLOTS[i] })),
+    { rest: order.slice(ORBIT_WINGS - 1), slot: ORBIT_GROUP_SLOTS[ORBIT_WINGS - 1] }
+  ]
+}
+
+const iso = (x, y, z = 0) => [ORBIT_CX + (x - y) * 0.866 * ORBIT_S, ORBIT_CY + ((x + y) * 0.5 - z) * ORBIT_S]
+const ptxt = pts => pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ')
+const isoLine = (a, b, cls, key) => {
+  const [x1, y1] = iso(...a), [x2, y2] = iso(...b)
+  return jsx('line', { className: cls, x1: x1.toFixed(1), y1: y1.toFixed(1), x2: x2.toFixed(1), y2: y2.toFixed(1) }, key)
+}
+
+/** A wired cylinder along x: its shell, rings and six struts. */
+function cylinder(x0, x1, r, rings, key) {
+  const ring = x => Array.from({ length: 37 }, (_, k) => { const a = (k / 36) * Math.PI * 2; return iso(x, Math.cos(a) * r, Math.sin(a) * r) })
+  const A = ring(x0), B = ring(x1)
+  const out = [jsx('polygon', { className: 'sw-orcore', points: ptxt([...A, ...B.slice().reverse()]) }, 'shell')]
+  for (let i = 0; i <= rings; i++) out.push(jsx('polyline', { className: i === 0 || i === rings ? 'sw-orw1' : 'sw-orw2', points: ptxt(ring(x0 + ((x1 - x0) * i) / rings)) }, `r${i}`))
+  for (let k = 0; k < 6; k++) {
+    const a = (k / 6) * Math.PI * 2 + 0.3
+    out.push(isoLine([x0, Math.cos(a) * r, Math.sin(a) * r], [x1, Math.cos(a) * r, Math.sin(a) * r], 'sw-orw2', `s${k}`))
+  }
+  return jsx('g', { children: out }, key)
+}
+
+/** The truss the wings hang on. */
+function truss() {
+  const out = []
+  const h = 5
+  for (const z of [-h, h]) for (const x of [-h, h]) out.push(isoLine([x, -200, z], [x, 200, z], 'sw-orw2', `b${x}${z}`))
+  for (let y = -200; y < 200; y += 12) {
+    out.push(isoLine([-h, y, -h], [h, y + 12, h], 'sw-orw2', `d${y}`))
+    out.push(isoLine([h, y, -h], [h, y, h], 'sw-orw2', `v${y}`))
+  }
+  return jsx('g', { children: out }, 'truss')
+}
+
+/** One wing: 8 × 2 cells in a frame. Its cells say the state; a group's cells are its members. */
+function wing(w, flash, sel) {
+  const [y, side] = ORBIT_SLOTS[w.slot]
+  const half = 26, x0 = 16 * side, x1 = 116 * side
+  const st = w.rest ? 'group' : w.u.status
+  const cells = []
+  for (let c = 0; c < ORBIT_COLS; c++) {
+    for (let r = 0; r < ORBIT_ROWS; r++) {
+      const ax = x0 + ((x1 - x0) * c) / ORBIT_COLS, bx = x0 + ((x1 - x0) * (c + 1)) / ORBIT_COLS
+      const ay = y - half + (2 * half * r) / ORBIT_ROWS, by = y - half + (2 * half * (r + 1)) / ORBIT_ROWS
+      let k = ''
+      if (w.rest) k = w.rest[r * ORBIT_COLS + c] ? w.rest[r * ORBIT_COLS + c].status : 'none'
+      else if (st === 'completed') k = 'completed'
+      else if (st === 'failed') k = c < 3 ? 'failed' : ''
+      else if (st === 'running') k = 'running'
+      cells.push(jsx('polygon', {
+        className: 'sw-orc', 'data-k': k || undefined, style: { '--i': c },
+        points: ptxt([iso(ax, ay), iso(bx, ay), iso(bx, by), iso(ax, by)])
+      }, `${c}-${r}`))
+    }
+  }
+  return jsxs('g', {
+    className: `sw-orw${flash ? ` is-${flash}` : ''}${sel ? ' is-sel' : ''}`, 'data-st': st,
     children: [
-      jsx('pre', { className: 'sw-spr', 'aria-hidden': 'true', children: sprite(icon) }, 'v'),
-      jsxs('span', {
-        className: 'sw-ut',
-        children: [
-          jsx('span', { className: 'sw-un', children: `${u.main ? '★ ' : ''}${slugName(u.name)}` }, 'n'),
-          jsxs('span', {
-            className: 'sw-ul',
-            children: [
-              // Keyed by its text: a new status mounts anew, so the Terminal look types it again.
-              jsx('span', { className: 'sw-us', children: tag }, `s-${tag}`),
-              meta ? jsx('span', { className: 'sw-um', children: meta }, 'm') : null,
-              time ? jsx('span', { className: 'sw-ux', children: time }, 'x') : null
-            ]
-          }, 'l')
-        ]
-      }, 't')
+      isoLine([0, y, 0], [x0, y, 0], 'sw-orw1', 'arm'),
+      ...cells,
+      jsx('polygon', { className: 'sw-orf', points: ptxt([iso(x0, y - half), iso(x1, y - half), iso(x1, y + half), iso(x0, y + half)]) }, 'f')
     ]
-  })
-  return jsx(Tip, { label: [tipText(goal || u.name), tipText(unitLine(t, u))].filter(Boolean).join('\n'), children: button })
+  }, w.rest ? 'group' : w.u.key)
 }
 
-/** A swarm cell: a small unit, named by its tooltip and its accessible name. */
-function Cell({ t, theme, u, selected, onSelect }) {
-  const icon = unitIcon(u)
-  const label = t('sw.swarm.cell', u.name, unitLine(t, u))
-  return jsx(Tip, {
-    label,
-    children: jsx('button', {
-      type: 'button', className: `sw-cell${selected ? ' is-sel' : ''}`, 'data-st': u.status, 'data-icon': icon,
-      'aria-pressed': selected, 'aria-label': label, onClick: () => onSelect(u.key),
-      children: theme === 'terminal' ? jsx('span', { className: 'sw-glyph', 'aria-hidden': 'true', children: GLYPH[icon] }) : ICON[icon]()
-    })
-  })
+/** Where a wing's line lands: its corner nearest its label column, so the line never crosses the wing. */
+function wingPin(slot) {
+  const [y, side] = ORBIT_SLOTS[slot]
+  const c = [[16, y - 26], [16, y + 26], [116, y - 26], [116, y + 26]].map(([x, yy]) => iso(x * side, yy))
+  const left = c.reduce((n, p) => n + p[0], 0) / 4 < ORBIT_CX
+  return { left, pin: c.reduce((a, b) => ((left ? b[0] < a[0] : b[0] > a[0]) ? b : a)) }
 }
 
-/** A model as a node prints it: 'anthropic/claude-opus-5-5' -> 'opus-5-5'. */
-export function shortModel(model) {
-  return modelLabel(model).replace(/^claude-/, '')
-}
-
-/** The main node's meta line: its model when known, and what it does ('waiting on 3'). */
-function mainMeta(t, main, waitingOn) {
-  return [shortModel(main.rec?.model), statusWord(t, main, waitingOn)].filter(Boolean).join(' · ')
-}
-
-/** A subagent node's time: how long it ran ('' when it was stopped or has not started). */
-function unitTime(t, u) {
-  return u.status === 'stopped' ? '' : fmtDuration(u.duration, t)
-}
-
-// What a callout between the main agent and a subagent says about the hand-off.
-const CO_WORD = {
-  completed: 'sw.hudAgents.coDone', failed: 'sw.hudAgents.coFailed', running: 'sw.hudAgents.coRunning',
-  queued: 'sw.hudAgents.coQueued', stopped: 'sw.hudAgents.coStopped'
-}
-
-/** A subagent's tool calls and tokens, as a callout chip reads them: '6 tools · 9k'. */
-function unitWork(t, u) {
-  return t('sw.hudAgents.tools', Number(u.rec?.tool_calls ?? u.rec?.tool_count) || 0, fmtTokens(u.rec?.tokens, t))
-}
+const pct = (v, of) => `${((v / of) * 100).toFixed(3)}%`
 
 /**
- * The fleet hero: the main agent on the left, each subagent a node on the right, and between them a
- * callout per subagent (how the hand-off went, its tools and tokens) on leader lines: main -> spine ->
- * callout -> node. Narrow, the callouts and lines go and the nodes stack.
+ * The fleet hero: an isometric station. The core is the main agent (its box up top: what it does, how
+ * many subagents are done); each subagent is a wing with a callout — its name and how it is doing — on
+ * a leader line. A wing's cells carry its state: amber cells run along it while it works, it fills in
+ * the accent when done, a failure turns three cells red and shakes it once, a waiting wing is dashed.
+ * Narrow, the callouts drop under the station as a list.
  */
-function Fleet({ t, theme, main, subs, selected, onSelect, flash, waitingOn }) {
+function Orbit({ t, main, subs, selected, onSelect, flash, waitingOn, calm }) {
+  const wings = orbitWings(subs)
   const done = subs.filter(u => u.status === 'completed').length
-  const ended = subs.every(u => TERMINAL.has(u.status))
-  const pct = Math.round((100 * subs.filter(u => TERMINAL.has(u.status)).length) / subs.length)
-  const bars = Array.from({ length: 10 }, (_, k) => jsx('i', { className: k < Math.round(pct / 10) ? 'on' : undefined }, k))
-  // The leader lines are drawn by the grid itself (a lead after each box, a spine down the callouts), so they
-  // follow every layout, the static preview's too, and never need measuring.
-  const lead = key => jsx('span', { className: 'sw-flead', 'aria-hidden': 'true' }, key)
-  return jsxs('div', {
-    className: 'sw-hgrid sw-fleet', role: 'group', 'aria-label': t('sw.agents'), 'data-done': done,
-    style: { '--sw-rows': subs.length },
-    children: [
-      jsxs('div', {
-        className: 'sw-fmain',
+  const live = !calm && subs.some(u => u.status === 'running')
+  // callouts: a column each side, spread top to bottom in the order of their wings
+  const side = wings.map((w, i) => ({ w, i, ...wingPin(w.slot) }))
+  const place = list => list.sort((a, b) => a.pin[1] - b.pin[1]).map((o, k) => ({ ...o, ly: Math.round(list.length === 1 ? 190 : 96 + (k * 184) / (list.length - 1)) }))
+  const calls = [...place(side.filter(o => o.left)), ...place(side.filter(o => !o.left))].sort((a, b) => a.i - b.i)
+  // the main agent's box: wide enough for its longest state (★ MAIN · WAITING ON 12)
+  const core = iso(0, 0, 17), bx = 226, by = 40, bw = 214
+  const svgKids = [
+    truss(),
+    ...wings.map(w => wing(w, w.u ? flash.get(w.u.key) : null, w.u && selected === w.u.key)),
+    cylinder(-78, 78, 17, 6, 'body'),
+    cylinder(78, 104, 10, 2, 'cap1'),
+    cylinder(-104, -78, 10, 2, 'cap2'),
+    ...calls.flatMap(o => {
+      const ex = o.left ? 150 : ORBIT_W - 150, mx = ex + (o.left ? 14 : -14)
+      return [
+        jsx('path', { className: 'sw-orlead', d: `M${o.left ? 14 : ORBIT_W - 14},${o.ly} H${ex} H${mx} L${o.pin[0].toFixed(1)},${o.pin[1].toFixed(1)}` }, `l${o.i}`),
+        jsx('circle', { className: 'sw-orpin', cx: o.pin[0].toFixed(1), cy: o.pin[1].toFixed(1), r: 2.2 }, `p${o.i}`)
+      ]
+    }),
+    jsx('path', { className: 'sw-orlead', d: `M${bx + 24},${by + 18} V${by + 40} L${core[0].toFixed(1)},${core[1].toFixed(1)}` }, 'lmain'),
+    jsx('circle', { className: 'sw-orpin', cx: core[0].toFixed(1), cy: core[1].toFixed(1), r: 2.6 }, 'pmain'),
+    jsx('path', { className: `sw-orbox${selected === main.key ? ' is-sel' : ''}`, d: `M${bx},${by} h${bw - 10} l10,9 l-10,9 h-${bw - 10}z` }, 'box')
+  ]
+  const mainWord = statusWord(t, main, waitingOn)
+  const bars = Array.from({ length: 14 }, (_, k) => jsx('i', { className: subs.length && k < Math.round((14 * done) / subs.length) ? 'on' : undefined }, k))
+  const callout = o => {
+    const pos = { top: pct(o.ly, ORBIT_H), left: pct(o.left ? 14 : ORBIT_W - 150, ORBIT_W), width: pct(136, ORBIT_W) }
+    if (o.w.rest) {
+      const rest = o.w.rest
+      const counts = ['completed', 'running', 'queued', 'failed', 'stopped'].map(st => [st, rest.filter(u => u.status === st).length]).filter(([, n]) => n)
+      return jsxs('div', {
+        className: 'sw-orl is-grp', 'data-side': o.left ? 'l' : 'r', style: pos, role: 'img',
+        'aria-label': t('sw.hudAgents.orbitMoreLabel', rest.length, counts.map(([st, n]) => `${n} ${t(`sw.st.${st}`)}`).join(', ')),
         children: [
-          jsxs('div', {
-            className: 'sw-co sw-frun', 'aria-hidden': 'true',
-            children: [
-              jsx('span', { className: 'sw-col', children: hudCaps(t(!ended ? 'sw.hudAgents.running' : main.status === 'running' ? 'sw.hudAgents.subsDone' : 'sw.hudAgents.runDone')) }, 'l'),
-              jsxs('span', { className: 'sw-cop', children: [jsx('span', { className: 'sw-copn', children: `${pct}%` }, 'n'), jsx('span', { className: 'sw-copb', children: bars }, 'b')] }, 'p')
-            ]
-          }, 'run'),
-          jsx(Unit, { t, theme, u: main, selected: selected === main.key, onSelect, flash: flash.get(main.key), waitingOn, meta: mainMeta(t, main, waitingOn) }, 'main'),
-          lead('lead')
+          jsx('span', { className: 'sw-orn', 'aria-hidden': 'true', children: hudCaps(t('sw.hudAgents.orbitMore', rest.length)) }, 'n'),
+          jsx('span', { className: 'sw-orv', 'aria-hidden': 'true', children: counts.map(([st, n]) => jsx('span', { className: 'sw-orm', 'data-st': st, children: n }, st)) }, 'v')
         ]
-      }, 'm'),
-      ...subs.flatMap((u, k) => [
-        jsxs('div', {
-          className: 'sw-fco', 'data-to': u.key, 'data-st': u.status, 'aria-hidden': 'true', style: { gridRow: k + 1 },
-          'data-end': [k === 0 ? 'first' : '', k === subs.length - 1 ? 'last' : ''].filter(Boolean).join(' ') || undefined,
-          children: [
-            jsxs('div', {
-              className: 'sw-co',
-              children: [
-                jsx('span', { className: 'sw-col', children: hudCaps(t(CO_WORD[u.status] || 'sw.hudAgents.coRunning')) }, 'l'),
-                jsx('span', { className: 'sw-cov', 'data-st': u.status, children: unitWork(t, u) }, 'v')
-              ]
-            }, 'c'),
-            lead('lead')
-          ]
-        }, `co-${u.key}`),
-        jsx('div', {
-          className: 'sw-fnode', style: { gridRow: k + 1 },
-          children: jsx(Unit, { t, theme, u, selected: selected === u.key, onSelect, flash: flash.get(u.key), waitingOn, meta: shortModel(u.rec?.model), time: unitTime(t, u) })
-        }, u.key)
-      ])
-    ]
-  })
-}
-
-/** More than SWARM_AT subagents: the main agent, then groups — failed by name, working, waiting, done. */
-function Swarm({ t, theme, main, subs, selected, onSelect, flash, waitingOn }) {
-  const [shown, setShown] = useState(() => new Set())
-  const groups = swarmGroups(subs)
-  const fold = key => setShown(prev => {
-    const next = new Set(prev)
-    if (next.has(key)) next.delete(key)
-    else next.add(key)
-    return next
-  })
-  const head = (key, n, folds) => jsxs('div', {
-    className: 'sw-gh',
-    children: [
-      jsx('h3', { className: 'sw-k', children: [t(`sw.swarm.${key}`), ' ', jsx('em', { children: n }, 'n')] }, 'h'),
-      folds ? jsx('button', {
-        type: 'button', className: 'sw-fold sw-acc', 'aria-expanded': shown.has(key), onClick: () => fold(key),
-        children: t(shown.has(key) ? 'sw.swarm.hide' : 'sw.swarm.show')
-      }, 'f') : null
-    ]
-  })
-  const cells = list => jsx('div', {
-    className: 'sw-cellgrid',
-    children: list.map(u => jsx(Cell, { t, theme, u, selected: selected === u.key, onSelect }, u.key))
-  })
-  return jsxs('div', {
-    className: 'sw-swarm',
-    children: [
-      jsx('div', { className: 'sw-grp sw-gmain', children: jsx(Unit, { t, theme, u: main, selected: selected === main.key, onSelect, flash: null, waitingOn, meta: mainMeta(t, main, waitingOn) }) }, 'main'),
-      groups.failed.length ? jsxs('section', {
-        className: 'sw-grp', 'data-grp': 'failed',
+      }, 'group')
+    }
+    const u = o.w.u
+    const time = u.status === 'running' || u.status === 'completed' || u.status === 'failed' ? fmtDuration(u.duration, t) : ''
+    return jsx(Tip, {
+      label: [tipText(String(u.rec?.goal || '').trim() || u.name), tipText(unitLine(t, u))].filter(Boolean).join('\n'),
+      children: jsxs('button', {
+        type: 'button', className: `sw-orl${selected === u.key ? ' is-sel' : ''}${flash.get(u.key) ? ` is-${flash.get(u.key)}` : ''}`, 'data-side': o.left ? 'l' : 'r',
+        'data-st': u.status, 'data-icon': unitIcon(u), 'data-batch': u.batch, 'data-node': u.key, style: pos, 'aria-pressed': selected === u.key, 'aria-label': `${u.name}: ${statusWord(t, u, waitingOn)}`,
+        onClick: () => onSelect(u.key),
         children: [
-          head('failed', groups.failed.length, false),
-          ...groups.failed.map(u => jsxs('button', {
-            type: 'button', className: `sw-frow${selected === u.key ? ' is-sel' : ''}${flash.get(u.key) ? ` is-${flash.get(u.key)}` : ''}`,
-            'data-st': u.status, 'aria-pressed': selected === u.key, onClick: () => onSelect(u.key),
-            children: [
-              jsx('span', { className: 'sw-frn', children: theme === 'terminal' ? `${GLYPH.bad} ${slugName(u.name)}` : u.name }, 'n'),
-              jsx('span', { className: 'sw-frx', children: u.status === 'stopped' ? t('sw.st.stopped') : fmtDuration(u.duration, t) }, 'x')
-            ]
-          }, u.key))
+          jsx('span', { className: 'sw-orn', children: slugName(u.name) }, 'n'),
+          jsx('span', { className: 'sw-orv', children: [hudCaps(t(`sw.st.${u.status}`)), time ? ` · ${time}` : ''].join('') }, 'v')
         ]
-      }, 'failed') : null,
-      groups.running.length ? jsxs('section', { className: 'sw-grp', 'data-grp': 'running', children: [head('running', groups.running.length, false), cells(groups.running)] }, 'running') : null,
-      ...['queued', 'completed'].map(key => (groups[key].length ? jsxs('section', {
-        className: 'sw-grp', 'data-grp': key,
-        children: [head(key, groups[key].length, true), shown.has(key) ? cells(groups[key]) : null]
-      }, key) : null))
+      })
+    }, u.key)
+  }
+  return jsxs('div', {
+    className: 'sw-hgrid sw-orbit', role: 'group', 'aria-label': t('sw.agents'), 'data-done': done, 'data-live': live ? 'true' : undefined,
+    children: [
+      live ? jsx('div', { className: 'sw-orscan', 'aria-hidden': 'true' }, 'scan') : null,
+      jsx('svg', { className: 'sw-ors', viewBox: `0 0 ${ORBIT_W} ${ORBIT_H}`, preserveAspectRatio: 'xMidYMid meet', 'aria-hidden': 'true', children: svgKids }, 'svg'),
+      jsx(Tip, { label: [tipText(main.name), tipText(unitLine(t, main))].filter(Boolean).join('\n'), children: jsxs('button', {
+        type: 'button', className: `sw-ormain${selected === main.key ? ' is-sel' : ''}${flash.get(main.key) ? ` is-${flash.get(main.key)}` : ''}`,
+        'data-st': main.status, 'data-icon': unitIcon(main), 'data-main': 'true', 'data-node': main.key,
+        style: { top: pct(by, ORBIT_H), left: pct(bx, ORBIT_W), width: pct(bw, ORBIT_W) },
+        'aria-pressed': selected === main.key, 'aria-label': `${main.name}: ${mainWord}`, onClick: () => onSelect(main.key),
+        children: [
+          jsx('span', { className: 'sw-orn', children: `★ ${hudCaps(t('sw.hudAgents.orbitMain', mainWord))}` }, 'n'),
+          jsxs('span', {
+            className: 'sw-orp', 'aria-hidden': 'true',
+            children: [jsx('b', { children: `${done}/${subs.length}` }, 'n'), jsx('span', { className: 'sw-orbars', children: bars }, 'b')]
+          }, 'p')
+        ]
+      }) }, 'main'),
+      ...calls.map(callout),
+      subs.length ? null : jsx('p', { className: 'sw-nosub', children: t('sw.noSubagents') }, 'none'),
+      jsx('div', {
+        className: 'sw-orkey', 'aria-hidden': 'true',
+        children: ['running', 'completed', 'failed', 'queued'].map(st => jsx('span', { 'data-st': st, children: hudCaps(t(`sw.st.${st}`)) }, st))
+      }, 'key')
     ]
   })
 }
@@ -1338,12 +1325,17 @@ function Score({ t, subs }) {
 /** TIME PER AGENT: one track per subagent, its run time against the longest, in its status colour. */
 function FleetTimes({ t, subs }) {
   const top = Math.max(1, ...subs.map(u => (Number.isFinite(u.duration) ? u.duration : 0)))
+  // as many tracks as the station has wings: the agents that need eyes first, the rest counted below
+  const shown = subs.length > ORBIT_WINGS
+    ? subs.map((u, i) => [u, i]).sort((a, b) => (ORBIT_RANK[a[0].status] ?? 3) - (ORBIT_RANK[b[0].status] ?? 3) || a[1] - b[1]).slice(0, ORBIT_WINGS).map(x => x[0])
+    : subs
+  const rest = subs.filter(u => !shown.includes(u))
   return jsx(HudPanel, {
     title: t('sw.hudAgents.time'), span: 2, className: 'sw-htime',
     children: subs.length
       ? [jsx('div', {
-        className: 'sw-tlist', tabIndex: subs.length > 5 ? 0 : undefined, role: 'group', 'aria-label': t('sw.hudAgents.time'),
-        children: subs.map(u => jsxs('div', {
+        className: 'sw-tlist', role: 'group', 'aria-label': t('sw.hudAgents.time'),
+        children: shown.map(u => jsxs('div', {
         className: 'sw-tk', 'data-st': u.status,
         children: [
           jsxs('div', { className: 'sw-tkh', children: [jsx(OneLine, { text: slugName(u.name), className: 'sw-tkn' }, 'l'), jsx('b', { children: fmtDuration(u.duration, t) || '—' }, 'v')] }, 'h'),
@@ -1351,6 +1343,7 @@ function FleetTimes({ t, subs }) {
         ]
       }, u.key))
       }, 'l'),
+      rest.length ? jsx('p', { className: 'sw-tmore', children: hudCaps(t('sw.hudAgents.timeMore', rest.length, rest.filter(u => u.status === 'completed').length)) }, 'more') : null,
       // every track shares one scale, so it is drawn once under them
       jsxs('div', { className: 'sw-tks sw-tkax', 'aria-hidden': 'true', children: [jsx('span', { children: fmtDuration(0, t) }, 'a'), jsx('span', { children: fmtDuration(top, t) }, 'b')] }, 'ax')]
       : [jsx('p', { className: 'sw-hnote', children: t('sw.hudAgents.noTime') }, 'none')]
@@ -2153,53 +2146,121 @@ function TurnRow({ t, turn, now, selected, onPick }) {
   })
 }
 
-/** While Play runs, an edit plays out in order: each removed line is struck through and dims, each
- *  added line is typed in behind a cursor. One entry per diff row: null (not animated) or its delay
- *  and duration in ms and, for an added line, its length; `end` is when the last line is done. */
+/** While Play runs, an edit plays out in order: each removed line is struck through and dims, then
+ *  each added line is typed in behind a cursor, one after another on the same beat (0.9 s a line, as
+ *  in the draft the user picked; a long edit types faster so it stays near 9 s). One entry per diff
+ *  row: null (not animated) or its delay and duration in ms; `end` is when the last line is done. */
 export function typingPlan(rows) {
+  const adds = rows.filter(([tag]) => tag === '+').length
+  const rems = rows.filter(([tag]) => tag === '-').length
+  const beat = Math.max(250, Math.min(900, Math.round(9000 / Math.max(1, adds))))
+  const strike = Math.min(140, Math.round(1500 / Math.max(1, rems)))
   let at = 250
-  const plan = rows.map(([tag, text]) => {
-    if (tag === '-') { const p = { d: at, t: 260 }; at += 140; return p }
+  const plan = rows.map(([tag]) => {
+    if (tag === '-') { const p = { d: at, t: 260 }; at += strike; return p }
     if (tag !== '+') return null
-    const n = Math.max(1, [...String(text || ' ')].length)
-    const p = { d: at, t: Math.min(900, Math.max(160, n * 22)), n }
-    at += p.t + 60
+    const p = { d: at, t: beat }
+    at += beat
     return p
   })
   return { plan, end: at }
 }
 
-/** The file line number of diff row k: the hunk's start plus every kept or added row after it. */
-export function lineAt(lines, k) {
-  let n = null
-  for (let j = 0; j <= k && j < lines.length; j++) {
-    const [tag, text] = lines[j]
-    if (tag === '@') n = Number(text) || null
-    else if (n != null && j < k && tag !== '-') n++
-  }
-  return n
+/** The parts of an edit: the row of its header (h; null for a whole-file write, which has no hunk
+ *  header and is one part from line 1), its first changed row (k), the line it starts on and its +/−
+ *  counts. The header row says what the part did, so the code below it keeps the panel's full width. */
+export function diffParts(lines) {
+  const parts = []
+  lines.forEach(([tag, text], k) => {
+    if (tag === '@') parts.push({ h: k, k: null, at: Number(text) || null, add: 0, rem: 0 })
+    else if (tag === '+' || tag === '-') {
+      if (!parts.length) parts.push({ h: null, k: null, at: 1, add: 0, rem: 0 })
+      const p = parts.at(-1)
+      if (p.k == null) p.k = k
+      if (tag === '+') p.add++
+      else p.rem++
+    }
+  })
+  return parts.filter(p => p.k != null)
+}
+
+/** The gutter's line numbers: a removed row its old line, an added or kept row its new one. */
+export function diffNumbers(lines) {
+  let old = lines[0]?.[0] === '@' ? null : 1, now = old
+  return lines.map(([tag, text]) => {
+    if (tag === '@') { old = now = Number(text) || null; return null }
+    if (tag === '-') return old == null ? null : old++
+    const n = now
+    if (now != null) now++
+    if (tag !== '+' && old != null) old++
+    return n
+  })
 }
 
 /** How long Play stays on an edit: its typing plus a beat to read it, never less than PLAY_MS. */
-export const playHold = rows => Math.min(9000, Math.max(PLAY_MS, typingPlan(rows).end + 800))
+export const playHold = rows => Math.min(13000, Math.max(PLAY_MS, typingPlan(rows).end + 800))
 
-function DiffLines({ t, step, got, typing, cur, onCursor }) {
+/** An added line typed in letter by letter (Play), from `d` ms on, over `ms`. Done in script, not with
+ *  a CSS width: the code wraps, and a growing width would reflow a wrapped line instead of typing it. */
+function TypedText({ text, d, ms }) {
+  const chars = [...(text || ' ')]
+  const [n, setN] = useState(0)
+  useEffect(() => {
+    let k = 0, stop = null
+    const step = Math.max(8, ms / chars.length)
+    const next = () => { k += 1; setN(k); if (k < chars.length) stop = ctxRef.setTimeout(next, step) }
+    stop = ctxRef.setTimeout(next, d)
+    return () => stop?.()
+  }, [text, d, ms])
+  return jsx('span', { className: 'sw-rtext', children: chars.slice(0, n).join('') })
+}
+
+const stillMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+
+/** What one part of an edit did, on its header row: "2 lines replaced −2 +3". */
+function PartNote({ t, part, failed }) {
+  return jsxs('span', {
+    className: 'sw-rpart',
+    children: [
+      jsx('span', { children: t('sw.replay.part', part.add, part.rem) }, 'l'),
+      jsxs('span', {
+        className: 'sw-covs',
+        children: [
+          part.rem ? jsx('span', { className: 'sw-cov', 'data-st': 'failed', children: `−${part.rem}` }, 'r') : null,
+          part.add ? jsx('span', { className: 'sw-cov', 'data-st': failed ? 'failed' : 'completed', children: `+${part.add}` }, 'a') : null
+        ]
+      }, 'v')
+    ]
+  })
+}
+
+function DiffLines({ t, step, got, typing }) {
   const [all, setAll] = useState(false)
+  // while Play types: the added row being typed, which carries the cursor
+  const [cur, setCur] = useState(null)
   const box = useRef(null)
   const lines = got.data?.lines || []
   const shown = all ? lines : lines.slice(0, PEEK_LINES)
   const { plan } = typingPlan(shown)
-  // keep the line being typed in view
+  const nums = diffNumbers(shown)
+  const parts = diffParts(shown)
+  const partAt = new Map(parts.map(p => [p.h, p]))
+  const typeIn = typing && !stillMotion()
+  // move the cursor along and keep the line being typed in view
   useEffect(() => {
     const el = box.current
     if (!typing || !el) return undefined
     const stops = plan.map((p, k) => p && ctxRef.setTimeout(() => {
-      if (shown[k]?.[0] === '+') onCursor?.(k)
-      const row = el.children[k]
+      if (shown[k]?.[0] === '+') setCur(k)
+      const row = el.querySelector(`[data-k="${k}"]`)
       if (row && row.offsetTop + row.offsetHeight > el.scrollTop + el.clientHeight) el.scrollTop = row.offsetTop + row.offsetHeight - el.clientHeight + 24
     }, p.d)).filter(Boolean)
-    return () => { stops.forEach(stop => stop()); onCursor?.(null) }
+    return () => { stops.forEach(stop => stop()); setCur(null) }
   }, [typing, got.data, all])
+  const header = (key, from, part) => jsxs('div', {
+    className: 'sw-rl', 'data-tag': '@',
+    children: [jsx('span', { children: t('sw.replay.from', from) }, 'f'), part ? jsx(PartNote, { t, part, failed: step.failed }, 'p') : null]
+  }, key)
   if (got.loading) return jsxs('p', { className: 'sw-cmnote sw-cmwait', children: [jsx('span', { className: 'sw-spin', 'aria-hidden': 'true' }, 's'), t('sw.replay.reading')] })
   if (got.error) return jsx('p', { className: 'sw-cmnote sw-rbad', children: t('sw.err.withDetail', t('sw.err.replayStep'), got.error) })
   if (!lines.length) return null
@@ -2209,16 +2270,23 @@ function DiffLines({ t, step, got, typing, cur, onCursor }) {
     children: [
       jsx('div', {
         className: 'sw-rlines', ref: box, tabIndex: 0, role: 'group', 'aria-label': stepSummary(step, t), 'data-play': typing ? 'true' : undefined,
-        children: shown.map(([tag, text], i) => (tag === '@'
-          ? jsx('div', { className: 'sw-rl', 'data-tag': '@', 'data-h': i, children: jsx('span', { children: t('sw.replay.from', text) }) }, i)
+        children: [
+          // a whole-file write has no hunk header: its part still gets one, from line 1
+          partAt.has(null) ? header('top', 1, partAt.get(null)) : null,
+          ...shown.map(([tag, text], i) => (tag === '@'
+          ? header(i, text, partAt.get(i))
           : jsxs('div', {
-            className: 'sw-rl', 'data-tag': tag, 'data-h': cur === i ? `c${i}` : undefined,
-            style: typing && plan[i] ? { '--d': `${plan[i].d}ms`, '--t': `${plan[i].t}ms`, ...(plan[i].n ? { '--n': plan[i].n } : {}) } : undefined,
+            className: 'sw-rl', 'data-tag': tag, 'data-k': i, 'data-cur': cur === i ? 'true' : undefined,
+            style: typing && plan[i] ? { '--d': `${plan[i].d}ms`, '--t': `${plan[i].t}ms` } : undefined,
             children: [
+              jsx('span', { className: 'sw-rln', 'aria-hidden': 'true', children: nums[i] ?? '' }, 'n'),
               jsx('span', { className: 'sw-rsign', 'aria-label': tag === '+' ? t('sw.replay.addedSign') : tag === '-' ? t('sw.replay.removedSign') : undefined, children: tag === '+' ? '+' : tag === '-' ? '−' : ' ' }, 's'),
-              jsx('span', { className: 'sw-rtext', children: text || ' ' }, 'x')
+              typeIn && tag === '+' && plan[i]
+                ? jsx(TypedText, { text, d: plan[i].d, ms: plan[i].t }, 'x')
+                : jsx('span', { className: 'sw-rtext', children: text || ' ' }, 'x')
             ]
           }, i)))
+        ]
       }, 'l'),
       hidden ? jsx('div', { className: 'sw-rmore', children: jsx(IconButton, { label: t('sw.replay.rest', hidden), icon: ICON.chev.bind(null, true), onClick: () => setAll(true), text: true }) }, 'm') : null,
       got.data?.cut ? jsx('p', { className: 'sw-cmnote', children: t('sw.replay.notLoaded', got.data.cut) }, 'c') : null
@@ -2361,18 +2429,6 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
   const got = useReplayStep(storedId, step?.id)
   const marks = useRef(null)
   const log = useRef(null)
-  const hero = useRef(null)
-  const lines = got.data?.lines || []
-  const hunks = []
-  lines.slice(0, PEEK_LINES).forEach(([tag, text], k) => {
-    if (tag === '@') hunks.push({ k, text, add: 0, rem: 0 })
-    else if (hunks.length && tag === '+') hunks.at(-1).add++
-    else if (hunks.length && tag === '-') hunks.at(-1).rem++
-  })
-  // while Play types, the line being typed: the callout names its line number and its wire points at it
-  const [cur, setCur] = useState(null)
-  const curLine = cur == null ? null : lineAt(lines, cur)
-  const wires = useWires(hero, [i, turn.id, got.data, got.loading, cur])
   useEffect(() => { setHold(got.data && !step?.failed ? playHold((got.data.lines || []).slice(0, PEEK_LINES)) : PLAY_MS) }, [step?.id, got.data])
   useEffect(() => {
     for (const box of [marks.current, log.current]) {
@@ -2393,28 +2449,14 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
   const maxR = Math.max(1, ...steps.map(s => s.removed || 0))
   const maxS = Math.max(1, ...sizes)
   const go = k => { setPlaying(false); setIndex(k) }
-  const bars = n => Array.from({ length: n }, (_, k) => jsx('i', { className: k < Math.round(pct / 100 * n) ? 'on' : undefined }, k))
   return jsxs('div', {
     className: 'sw-rplay',
     children: [
       jsx(HudPanel, {
         title: t('sw.replay.diff'), name, span: 6, className: 'sw-hpx', chip: hudChip(st, step.failed ? t('sw.replay.notApplied') : t('sw.replay.applied')),
         children: [
-          jsxs('div', {
-            className: 'sw-hgrid', ref: hero,
-            children: [
-              jsx('svg', { className: 'sw-wires', 'aria-hidden': 'true', children: wires.map(([ax, ay, kx, bx, y], k) => jsxs('g', { children: [jsx('path', { d: `M${ax},${ay} H${kx} L${bx},${y}` }, 'p'), jsx('circle', { cx: bx, cy: y, r: 2.5 }, 'c')] }, k)) }, 'w'),
-              jsx(DiffLines, { t, step, got, typing: playing && !step.failed, cur, onCursor: setCur }, step.id),
-              jsxs('div', {
-                className: 'sw-cos', 'aria-hidden': 'true',
-                children: [
-                  jsxs('div', { className: 'sw-co', children: [jsx('span', { className: 'sw-col', children: hudCaps(playing ? t('sw.replay.replaying') : t('sw.replay.paused')) }, 'l'), jsxs('span', { className: 'sw-cop', children: [jsx('span', { className: 'sw-copn', children: `${pct}%` }, 'n'), jsx('span', { className: 'sw-copb', children: bars(10) }, 'b')] }, 'p')] }, 'st'),
-                  ...(curLine ? [jsxs('div', { className: 'sw-co is-cur', 'data-to': `c${cur}`, children: [jsx('span', { className: 'sw-col', children: hudCaps(t('sw.replay.line', curLine)) }, 'l'), jsx('span', { className: 'sw-cov', 'data-st': st, children: t('sw.replay.typing') }, 'v')] }, 'cur')] : []),
-                  ...hunks.slice(0, curLine ? 2 : 3).map(h => jsxs('div', { className: 'sw-co', 'data-to': h.k, children: [jsx('span', { className: 'sw-col', children: hudCaps(t('sw.replay.from', h.text)) }, 'l'), jsx('span', { className: 'sw-cov', 'data-st': st, children: `+${h.add} −${h.rem}` }, 'v')] }, h.k))
-                ]
-              }, 'co')
-            ]
-          }, 'hero'),
+          // the code takes the panel's full width and wraps: what each part did is on its header row
+          jsx('div', { className: 'sw-hgrid sw-rhero', children: jsx(DiffLines, { t, step, got, typing: playing && !step.failed }, step.id) }, 'hero'),
           step.failed ? jsxs('p', { className: 'sw-rfail', children: [jsx(OneLine, { text: t('sw.replay.failed', step.error) }, 'e'), jsx('span', { children: t('sw.replay.failedNote') }, 'n')] }, 'x') : null
         ]
       }, 'diff'),
@@ -2722,7 +2764,7 @@ export function Page() {
   // Runs after every render until the moved run is drawn, then hands the focus once to its selected unit.
   useEffect(() => {
     if (!refocus) return
-    const el = pageRef.current?.querySelector('button.sw-unit[aria-pressed=true], button.sw-cell[aria-pressed=true], button.sw-frow[aria-pressed=true]')
+    const el = pageRef.current?.querySelector('.sw-orbit button[data-node][aria-pressed=true]')
     if (!el) return
     el.focus()
     setRefocus(false)
@@ -2829,7 +2871,6 @@ export function Page() {
   const noChat = !storedId && !runtimeId
   const loading = !noChat && history.loading && !history.data && !live.batches.length
   const nothing = !isLive && !past.length && history.error && procs.error && (files.error || !files.data?.files?.length)
-  const swarm = subs.length > SWARM_AT
 
   let body
   if (noChat) {
@@ -2860,17 +2901,7 @@ export function Page() {
               title: t('sw.hudAgents.fleet', view ? t(view.kind === 'live' ? 'sw.run.current' : view.kind === 'last' ? 'sw.run.last' : 'sw.hudAgents.pastRun') : ''),
               span: 6, className: 'sw-hpx sw-hfleet',
               chip: subs.length ? hudChip(batchState(subs.map(u => u.status)), t('sw.hudAgents.done', subs.filter(u => u.status === 'completed').length, subs.length)) : null,
-              children: [swarm
-                ? jsx(Swarm, { t, theme, main, subs, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, `swarm-${view?.key || 'now'}`)
-                : subs.length
-                  ? jsx(Fleet, { t, theme, main, subs, selected: sel.key, onSelect: setSelected, flash, waitingOn: active }, `fleet-${view?.key || 'now'}`)
-                  : jsxs('div', {
-                    className: 'sw-solo',
-                    children: [
-                      jsx(Unit, { t, theme, u: main, selected: sel.key === main.key, onSelect: setSelected, flash: null, waitingOn: 0, meta: mainMeta(t, main, 0) }, 'u'),
-                      jsx('p', { className: 'sw-nosub', children: t('sw.noSubagents') }, 'p')
-                    ]
-                  }, 'solo')]
+              children: [jsx(Orbit, { t, main, subs, selected: sel.key, onSelect: setSelected, flash, waitingOn: active, calm }, `orbit-${view?.key || 'now'}`)]
             }, 'fleet'),
             jsx(FleetTimes, { t, subs }, 'time'),
             jsx(Score, { t, subs }, 'score'),
@@ -3216,23 +3247,23 @@ const CSS = `${TM_PALETTE}
 .sw-page [data-st=failed]{--c:var(--bad)}
 .sw-page [data-st=stopped],.sw-page [data-st=queued],.sw-page [data-st=idle]{--c:var(--idle)}
 .sw-panel{position:relative;container-type:inline-size;max-width:860px;margin:0 auto;padding:16px 18px 18px;color:var(--ink);background:var(--bg)}
-/* the HUD is scaled so its smallest text (11.5px) lands at 10px, the size the user picked */
-.sw-page[data-theme=terminal]{zoom:.8696;padding:8px;background:var(--hud-page)}
+/* the HUD is scaled so its smallest text (11.5px) lands at 11px, the size the user picked */
+.sw-page[data-theme=terminal]{zoom:.9566;padding:8px;background:var(--hud-page)}
 .sw-page[data-theme=terminal] .sw-panel{padding:8px 8px 12px;font:350 11.5px/1.5 var(--mono);font-variant-ligatures:none;-webkit-font-smoothing:antialiased;overflow:hidden}
 .sw-page :where(button){font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
 .sw-page button:focus-visible,.sw-page [tabindex]:focus-visible{outline:2px solid var(--a);outline-offset:2px}
 .sw-page button:disabled{opacity:.5;cursor:default}
-.sw-k{margin:0;font:600 11.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.sw-k{margin:0;font:600 11.5px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-k{font-size:11.5px;font-weight:400}
 .sw-cur{display:none}
 .sw-page[data-theme=terminal] .sw-cur{display:inline-block;width:8px;height:14px;margin-left:4px;vertical-align:-2px;background:var(--a);box-shadow:0 0 8px var(--a);animation:sw-blink 1.06s steps(1) infinite}
 /* header */
 .sw-hd{display:flex;align-items:center;gap:10px;min-width:0}
-.sw-ht{flex:none;margin:0;font:700 13px var(--mono);letter-spacing:.2em;text-transform:uppercase;white-space:nowrap}
-.sw-page[data-theme=terminal] .sw-ht{letter-spacing:.1em;color:var(--tm-hi)}
+.sw-ht{flex:none;margin:0;font:700 13px var(--mono);letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+.sw-page[data-theme=terminal] .sw-ht{letter-spacing:.04em;color:var(--tm-hi)}
 .sw-chatn{min-width:0;flex:0 1 auto;font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sw-page[data-theme=terminal] .sw-chatn{text-transform:lowercase}
-.sw-held{flex:none;font:600 11.5px var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:0 6px;color:var(--ink);background:color-mix(in srgb,var(--a) 22%,var(--bg));box-shadow:inset 0 0 0 1px var(--a)}
+.sw-held{flex:none;font:600 11.5px var(--mono);letter-spacing:.04em;text-transform:uppercase;padding:0 6px;color:var(--ink);background:color-mix(in srgb,var(--a) 22%,var(--bg));box-shadow:inset 0 0 0 1px var(--a)}
 .sw-page[data-theme=terminal] .sw-held{background:none;color:var(--run);letter-spacing:0}
 .sw-ib{display:inline-grid;place-items:center;width:26px;height:26px;color:var(--dim);box-shadow:inset 0 0 0 1px var(--line)}
 .sw-hd>.sw-ib{flex:none;margin-left:auto}
@@ -3240,7 +3271,7 @@ const CSS = `${TM_PALETTE}
 .sw-ib:hover{color:var(--ink);background:color-mix(in srgb,var(--a) 12%,transparent)}
 .sw-ib.is-pri{background:color-mix(in srgb,var(--a) 20%,transparent)}
 /* labelled buttons are cut-corner keys; the primary one is filled */
-.sw-ib.is-text{display:inline-flex;align-items:center;gap:7px;width:auto;height:auto;padding:7px 14px;font:12px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
+.sw-ib.is-text{display:inline-flex;align-items:center;gap:7px;width:auto;height:auto;padding:7px 14px;font:12px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--ink);
  background:color-mix(in srgb,var(--a) 12%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 60%,transparent);clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
 .sw-ib.is-text:hover{background:color-mix(in srgb,var(--a) 26%,transparent)}
 .sw-page .sw-ib.is-text:focus-visible{outline-color:var(--ink);outline-offset:-5px}
@@ -3250,14 +3281,14 @@ const CSS = `${TM_PALETTE}
 .sw-ibi{display:inline-flex;width:13px;height:13px}
 .sw-ibi svg{width:100%;height:100%}
 .sw-page[data-theme=terminal] .sw-ib{box-shadow:none;color:var(--a)}
-.sw-page[data-theme=terminal] .sw-ib.is-text{padding:2px 9px;gap:4px;clip-path:none;font-size:11.5px;letter-spacing:.12em;font-weight:400;color:var(--ink);background:none;box-shadow:inset 0 0 0 1px var(--hud-line2)}
+.sw-page[data-theme=terminal] .sw-ib.is-text{padding:2px 9px;gap:4px;clip-path:none;font-size:11.5px;letter-spacing:.04em;font-weight:400;color:var(--ink);background:none;box-shadow:inset 0 0 0 1px var(--hud-line2)}
 .sw-page[data-theme=terminal] .sw-ib.is-text:hover{color:var(--tm-hi);background:none;box-shadow:inset 0 0 0 1px var(--hud-teal-b)}
 .sw-page[data-theme=terminal] .sw-ib.is-text .sw-ibi{display:none}
 .sw-page[data-theme=terminal] .sw-ib.is-pri{background:none}
 .sw-page[data-theme=terminal] .sw-ib.is-text.is-pri{color:var(--a);background:var(--hud-teal-d);box-shadow:inset 0 0 0 1px var(--hud-teal-b)}
 /* tabs */
 .sw-tabs{display:flex;gap:18px;margin:12px 0;border-bottom:1px solid color-mix(in srgb,var(--a) 25%,transparent)}
-.sw-tab{display:inline-flex;align-items:center;gap:6px;padding:6px 0;margin-bottom:-1px;font:12px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);border-bottom:2px solid transparent!important}
+.sw-tab{display:inline-flex;align-items:center;gap:6px;padding:6px 0;margin-bottom:-1px;font:12px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--dim);border-bottom:2px solid transparent!important}
 .sw-tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--a)!important}
 .sw-tabn{padding:0 5px;font-size:11.5px;letter-spacing:0;background:var(--run);color:var(--bg)}
 .sw-page[data-theme=terminal] .sw-tabs{counter-reset:sw-tab;border-bottom-color:var(--line)}
@@ -3275,7 +3306,7 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-err{background:var(--bg);border:1px solid var(--tm-badline)}
 .sw-errt{font-weight:600}
 .sw-hint{display:flex;flex-direction:column;align-items:center;gap:4px;padding:26px 8px;text-align:center;color:var(--dim)}
-.sw-hint b{font:600 13px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink)}
+.sw-hint b{font:600 13px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--ink)}
 .sw-page[data-theme=terminal] .sw-hint{align-items:flex-start;text-align:left}
 .sw-page[data-theme=terminal] .sw-hint b{letter-spacing:0;text-transform:lowercase}
 .sw-page[data-theme=terminal] .sw-hint b::before{content:"> "}
@@ -3287,7 +3318,7 @@ const CSS = `${TM_PALETTE}
 /* run bar + picker */
 .sw-agents{position:relative}
 .sw-runb{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;color:var(--dim)}
-.sw-pick{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;color:var(--ink)!important;font:12px var(--mono)!important;letter-spacing:.06em;text-transform:uppercase;box-shadow:inset 0 0 0 1px var(--line)}
+.sw-pick{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;color:var(--ink)!important;font:12px var(--mono)!important;letter-spacing:.04em;text-transform:uppercase;box-shadow:inset 0 0 0 1px var(--line)}
 .sw-pickv{display:inline-flex;width:12px;height:12px}.sw-pickv svg{width:100%;height:100%}
 .sw-page[data-theme=terminal] .sw-pick{padding:0;box-shadow:none;text-transform:lowercase;letter-spacing:0}
 .sw-page[data-theme=terminal] .sw-pick::before{content:"run:";color:var(--tm-hi)}
@@ -3295,7 +3326,7 @@ const CSS = `${TM_PALETTE}
 .sw-runm{flex:1 1 0}
 .sw-pick{max-width:100%;min-width:0}
 .sw-pickn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sw-back{margin-left:auto;font:12px var(--mono)!important;letter-spacing:.08em;text-transform:uppercase;color:var(--ink)!important;padding:3px 8px!important;box-shadow:inset 0 0 0 1px var(--a)}
+.sw-back{margin-left:auto;font:12px var(--mono)!important;letter-spacing:.04em;text-transform:uppercase;color:var(--ink)!important;padding:3px 8px!important;box-shadow:inset 0 0 0 1px var(--a)}
 .sw-page[data-theme=terminal] .sw-back{box-shadow:none;text-transform:lowercase;letter-spacing:0;color:var(--a)!important;padding:0!important}
 .sw-page[data-theme=terminal] .sw-back::before{content:"[← "}.sw-page[data-theme=terminal] .sw-back::after{content:"]"}
 .sw-menu{position:absolute;z-index:8;left:0;top:calc(100% + 6px);width:min(380px,100%);padding:6px;background:var(--raised);color:var(--ink);
@@ -3310,7 +3341,7 @@ const CSS = `${TM_PALETTE}
 .sw-mini i{width:7px;height:7px;transform:skewX(-20deg);background:var(--c,var(--idle))}
 .sw-page[data-theme=terminal] .sw-mini{gap:0}
 .sw-page[data-theme=terminal] .sw-mini i{transform:none;width:8px;height:10px}
-.sw-more{display:block;margin:4px 0 0 14px;font:12px var(--mono)!important;letter-spacing:.06em;text-transform:uppercase;color:var(--ink)!important;text-decoration:underline;text-decoration-color:var(--a);text-underline-offset:3px}
+.sw-more{display:block;margin:4px 0 0 14px;font:12px var(--mono)!important;letter-spacing:.04em;text-transform:uppercase;color:var(--ink)!important;text-decoration:underline;text-decoration-color:var(--a);text-underline-offset:3px}
 .sw-more.sw-inl{display:inline;margin:0 0 0 6px}
 .sw-page[data-theme=terminal] .sw-more{text-transform:lowercase;letter-spacing:0;text-decoration:none;color:var(--a)!important}
 .sw-page[data-theme=terminal] .sw-more::before{content:"[+] "}
@@ -3328,43 +3359,10 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-seg{gap:0;height:12px}
 .sw-page[data-theme=terminal] .sw-seg i{transform:none}
 .sw-page[data-theme=terminal] .sw-money{font-size:14px;color:var(--tm-hi)}
-/* units: the agents as nodes (the fleet schematic, the swarm's head) */
-.sw-unit{width:96px;display:flex;flex-direction:column;align-items:center;gap:5px;text-align:center!important;padding:4px 0!important}
+/* the portrait's icon (the focus panel) */
 .sw-ic{position:relative;z-index:1;width:22px;height:22px;color:var(--ink);filter:drop-shadow(0 0 6px var(--c))}
 .sw-ic svg{width:100%;height:100%;display:block}
-.sw-un{max-width:100%;font-size:12.5px;font-weight:600;line-height:15px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
-.sw-us{font:11.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:color-mix(in srgb,var(--c) 55%,var(--ink));white-space:nowrap}
-.sw-unit.is-fail,.sw-frow.is-fail{animation:sw-shake .5s ease-in-out 2}
-.sw-unit:hover .sw-un{color:var(--ink)}
-/* units: Terminal sprites */
-.sw-page[data-theme=terminal] .sw-unit{width:auto;min-width:0;padding:8px 4px 6px!important;gap:2px;border:1px solid var(--line)}
-.sw-page[data-theme=terminal] .sw-unit.is-sel{border-color:var(--a);box-shadow:0 0 12px color-mix(in srgb,var(--a) 25%,transparent),inset 0 0 12px color-mix(in srgb,var(--a) 12%,transparent)}
-.sw-spr{margin:0;font:12px/1.05 var(--mono);white-space:pre;color:var(--c)}
-.sw-page[data-theme=terminal] .sw-un{margin-top:4px;font:11.5px/1.3 var(--mono);color:var(--tm-name)}
-.sw-page[data-theme=terminal] .sw-us{letter-spacing:0;color:var(--c);animation:sw-type .6s steps(6,end)}
-.sw-page[data-theme=terminal] .sw-unit[data-main][data-st=running] .sw-spr{animation:sw-breathe 2.8s ease-in-out infinite}
-.sw-solo{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 .sw-nosub{flex:1;min-width:160px;margin:0;color:var(--dim)}
-/* swarm */
-.sw-grp{margin-top:14px}
-.sw-gmain{display:flex;justify-content:flex-start}
-.sw-gh{display:flex;align-items:center;gap:8px;margin-bottom:7px}
-.sw-gh em{font-style:normal;color:var(--ink);letter-spacing:0}
-.sw-fold{margin-left:auto;font:11.5px var(--mono)!important;letter-spacing:.06em;text-transform:uppercase;color:var(--ink)!important;text-decoration:underline;text-decoration-color:var(--a);text-underline-offset:3px}
-.sw-cellgrid{display:flex;flex-wrap:wrap;gap:6px}
-.sw-cell{width:30px;height:33px;display:grid!important;place-items:center;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:color-mix(in srgb,var(--c) 70%,var(--bg))!important}
-.sw-cell::after{content:"";width:26px;height:29px;clip-path:inherit;background:color-mix(in srgb,var(--c) 14%,var(--bg));grid-area:1/1}
-.sw-cell svg,.sw-cell .sw-glyph{grid-area:1/1;width:14px;height:14px;z-index:1;color:var(--ink)}
-.sw-cell.is-sel{background:var(--ink)!important}
-.sw-page[data-theme=terminal] .sw-cell{clip-path:none;width:22px;height:22px;background:none!important;border:1px solid var(--line)}
-.sw-page[data-theme=terminal] .sw-cell::after{display:none}
-.sw-page[data-theme=terminal] .sw-cell .sw-glyph{width:auto;height:auto;font:12px/1 var(--mono);color:var(--c)}
-.sw-page[data-theme=terminal] .sw-cell.is-sel{border-color:var(--a);background:color-mix(in srgb,var(--a) 14%,transparent)!important}
-.sw-frow{display:flex;align-items:center;gap:10px;width:100%;padding:5px 10px!important;margin-bottom:4px;font-size:12.5px;border-left:3px solid var(--c)!important;background:color-mix(in srgb,var(--c) 8%,transparent)!important}
-.sw-frow.is-sel{box-shadow:inset 0 0 0 1px var(--a)}
-.sw-frn{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sw-frx{flex:none;font:11.5px var(--mono);color:var(--dim)}
-.sw-page[data-theme=terminal] .sw-frow{border-left:0!important;background:none!important;padding:0 0 0 12px!important;margin:0}
 /* focus panel */
 .sw-focus{position:relative;margin-top:18px;padding:14px 16px 16px;background:color-mix(in srgb,var(--a) 5%,var(--bg))}
 .sw-page[data-theme=terminal] .sw-focus{background:var(--bg);border:1px solid var(--line);padding:10px 12px 12px}
@@ -3383,8 +3381,8 @@ const CSS = `${TM_PALETTE}
 .sw-phx{position:absolute;inset:8px 10px;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:linear-gradient(160deg,color-mix(in srgb,var(--c) 55%,var(--bg)),var(--bg) 80%)}
 .sw-phx::after{content:"";position:absolute;inset:2px;clip-path:inherit;background:radial-gradient(circle at 50% 40%,color-mix(in srgb,var(--c) 22%,var(--bg)),var(--bg) 70%)}
 .sw-por .sw-ic{width:34px;height:34px;filter:drop-shadow(0 0 8px var(--c))}
-.sw-ptag{position:absolute;bottom:-6px;left:50%;z-index:2;transform:translateX(-50%);padding:1px 7px;font:700 11.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;white-space:nowrap;color:var(--ink);background:color-mix(in srgb,var(--c) 25%,var(--bg));box-shadow:inset 0 0 0 1px var(--c)}
-.sw-verb{font:12px var(--mono);letter-spacing:.18em;color:color-mix(in srgb,var(--c) 70%,var(--ink));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-ptag{position:absolute;bottom:-6px;left:50%;z-index:2;transform:translateX(-50%);padding:1px 7px;font:700 11.5px var(--mono);letter-spacing:.04em;text-transform:uppercase;white-space:nowrap;color:var(--ink);background:color-mix(in srgb,var(--c) 25%,var(--bg));box-shadow:inset 0 0 0 1px var(--c)}
+.sw-verb{font:12px var(--mono);letter-spacing:.04em;color:color-mix(in srgb,var(--c) 70%,var(--ink));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sw-page .sw-verb{animation:sw-type .6s steps(12,end)}
 .sw-head{display:flex;align-items:baseline;min-width:0;margin:2px 0 4px;font-size:18px;font-weight:600;line-height:1.3}
 .sw-headt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -3418,7 +3416,7 @@ const CSS = `${TM_PALETTE}
 .sw-tn[data-count]::before{content:counter(sw-n) / ""}
 .sw-tn[data-count]>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .sw-page .sw-tn[data-count]{animation:sw-count .9s ease-out}
-.sw-tl{display:block;font:11.5px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-tl{display:block;font:11.5px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sw-page[data-theme=terminal] .sw-tiles{display:flex;flex-wrap:wrap;gap:4px 20px;margin:12px 0 2px}
 .sw-page[data-theme=terminal] .sw-tile{display:flex;flex-direction:row-reverse;align-items:baseline;gap:6px;padding:0;background:none}
 .sw-page[data-theme=terminal] .sw-tile::before{display:none}
@@ -3465,7 +3463,7 @@ const CSS = `${TM_PALETTE}
 .sw-ft.is-now{--fc:var(--run);box-shadow:inset 0 0 0 1px var(--run),0 0 14px color-mix(in srgb,var(--run) 40%,transparent)}
 .sw-ft.is-now::after{content:"";position:absolute;top:0;bottom:0;left:-40%;width:40%;pointer-events:none;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--run) 28%,transparent),transparent)}
 .sw-page .sw-ft.is-now::after{animation:sw-sweep 1.4s ease-in-out .3s both}
-.sw-nowb{position:absolute;top:6px;right:8px;font:700 11.5px var(--mono);letter-spacing:.12em;color:color-mix(in srgb,var(--run) 75%,var(--ink))}
+.sw-nowb{position:absolute;top:6px;right:8px;font:700 11.5px var(--mono);letter-spacing:.04em;color:color-mix(in srgb,var(--run) 75%,var(--ink))}
 .sw-fn{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .sw-ft.is-now .sw-fn{padding-right:36px}
 .sw-ft .sw-fn{animation:none}
@@ -3476,7 +3474,7 @@ const CSS = `${TM_PALETTE}
 .sw-pips{display:flex;flex:none;gap:3px}
 .sw-pips i{width:8px;height:8px;background:color-mix(in srgb,var(--fc) 18%,transparent);transform:skewX(-20deg)}
 .sw-pips i.on{background:var(--fc);box-shadow:0 0 6px var(--fc)}
-.sw-fl{min-width:0;margin-left:auto;text-align:right;font:11.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-fl{min-width:0;margin-left:auto;text-align:right;font:11.5px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sw-ft[data-op=failed] .sw-fl{color:color-mix(in srgb,var(--bad) 55%,var(--ink))}
 .sw-page[data-theme=terminal] .sw-fsec{position:relative;margin-top:18px;padding:12px 10px 8px;border:1px solid var(--line)}
 .sw-page[data-theme=terminal] .sw-fsec>.sw-k,.sw-page[data-theme=terminal] .sw-fh{position:static;margin:0 0 6px;padding:0;background:none}
@@ -3519,18 +3517,18 @@ const CSS = `${TM_PALETTE}
 .sw-why{margin:0 0 12px;color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-why::before{content:"# "}
 .sw-cmc{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit}
-.sw-cmx{flex:none;font-size:11.5px;letter-spacing:.06em;color:var(--dim);white-space:nowrap}
+.sw-cmx{flex:none;font-size:11.5px;letter-spacing:.04em;color:var(--dim);white-space:nowrap}
 .sw-page .sw-spin{display:inline-block;width:11px;height:11px;flex:none;border-radius:50%;border:2px solid var(--run);border-right-color:transparent;animation:sw-rot 1s linear infinite;vertical-align:-1px;margin-right:6px}
 .sw-exit{display:grid;place-items:center;align-content:center;gap:2px;width:72px;height:80px;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:linear-gradient(160deg,color-mix(in srgb,var(--c) 50%,var(--bg)),var(--bg))}
 .sw-exit b{font:700 24px/1 var(--mono);color:var(--ink);text-shadow:0 0 12px var(--c)}
-.sw-exit span{font:11.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink)}
+.sw-exit span{font:11.5px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--ink)}
 .sw-radar{display:block;width:46px;height:46px;margin:4px auto 0;border-radius:50%;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--run) 50%,transparent);
  background:conic-gradient(from 40deg,color-mix(in srgb,var(--run) 60%,transparent),transparent 25%),radial-gradient(circle,transparent 60%,color-mix(in srgb,var(--run) 40%,transparent) 61% 63%,transparent 64%)}
 .sw-page .sw-radar{animation:sw-rot 2.4s linear infinite}
 .sw-cmnote{margin:8px 0 0;color:var(--dim)}
 .sw-crt{position:relative;margin-top:8px;overflow:hidden;font:12px/1.6 var(--mono);background:color-mix(in srgb,var(--a) 3%,var(--bg));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 25%,transparent)}
 .sw-crt::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,color-mix(in srgb,var(--bg) 45%,transparent) 0 1px,transparent 1px 3px)}
-.sw-crth{display:flex;justify-content:space-between;gap:10px;padding:4px 10px;font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);border-bottom:1px solid color-mix(in srgb,var(--a) 18%,transparent)}
+.sw-crth{display:flex;justify-content:space-between;gap:10px;padding:4px 10px;font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);border-bottom:1px solid color-mix(in srgb,var(--a) 18%,transparent)}
 .sw-out{margin:0;padding:4px 0;max-height:260px;overflow:auto;font:12px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
 .sw-ol{display:grid;grid-template-columns:34px minmax(0,1fr);padding-right:10px}
 .sw-ol::before{content:attr(data-n);padding-right:10px;text-align:right;color:var(--dim)}
@@ -3539,10 +3537,10 @@ const CSS = `${TM_PALETTE}
 .sw-page .sw-scan{animation:sw-scan 1.6s linear infinite}
 .sw-crt[data-state=lost]{display:flex;align-items:center;gap:12px;padding:12px}
 .sw-crt[data-state=lost] p{margin:0;color:var(--ink);overflow-wrap:anywhere}
-.sw-nosig{flex:none;font:700 12px var(--mono);letter-spacing:.2em;color:color-mix(in srgb,var(--bad) 65%,var(--ink))}
+.sw-nosig{flex:none;font:700 12px var(--mono);letter-spacing:.04em;color:color-mix(in srgb,var(--bad) 65%,var(--ink))}
 .sw-page .sw-nosig{animation:sw-pulse 1.6s ease-in-out infinite}
 .sw-cmerr .sw-btns{margin-top:10px}
-.sw-quiet{margin:0;padding:14px;text-align:center;font:12px var(--mono);letter-spacing:.2em;color:var(--dim)}
+.sw-quiet{margin:0;padding:14px;text-align:center;font:12px var(--mono);letter-spacing:.04em;color:var(--dim)}
 .sw-pu{margin:8px 0 0;color:var(--dim)}
 .sw-pu::before{content:"⚠ ";color:var(--run)}
 .sw-page[data-theme=terminal] .sw-exit{width:auto;height:auto;padding:4px 12px;clip-path:none;background:none;border:1px solid currentColor;color:color-mix(in srgb,var(--c) 80%,var(--ink));line-height:1.1}
@@ -3579,7 +3577,7 @@ const CSS = `${TM_PALETTE}
 .sw-cmrow{display:grid;grid-column:1/-1;grid-template-columns:subgrid;column-gap:14px;align-items:center;padding:2px 6px;white-space:nowrap}
 .sw-cmrow>*{grid-row:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sw-cmlt{color:var(--dim)}
-.sw-cmls{display:inline-flex;align-items:center;gap:7px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink)}
+.sw-cmls{display:inline-flex;align-items:center;gap:7px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink)}
 .sw-cmls::before{content:"";flex:none;width:6px;height:6px;background:var(--c)}
 .sw-cmrow .sw-cmc{color:var(--ink)}
 .sw-cmrow .sw-cmx{font-size:inherit;letter-spacing:0;text-align:right}
@@ -3633,7 +3631,6 @@ const CSS = `${TM_PALETTE}
 .sw-panel[data-calm] .sw-big{text-shadow:none}
 /* motion */
 @keyframes sw-rot{to{transform:rotate(360deg)}}
-@keyframes sw-breathe{50%{transform:scale(1.05);opacity:.86}}
 @keyframes sw-shake{20%{transform:translateX(-4px)}40%{transform:translateX(4px)}60%{transform:translateX(-3px)}80%{transform:translateX(2px)}}
 @keyframes sw-up{from{transform:translateY(60%);opacity:0}}
 @keyframes sw-slide{from{transform:translateX(-10px);opacity:0}}
@@ -3650,45 +3647,71 @@ const CSS = `${TM_PALETTE}
 /* the fleet schematic over a faint grid, then time per agent, spent, files, the agent, the log; status colour rides the marks */
 .sw-agrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;min-width:0}
 .sw-page[data-theme=terminal] .sw-agents .sw-runb{margin-bottom:8px;padding:7px 12px;background:var(--raised);box-shadow:inset 0 0 0 1px var(--line)}
-.sw-page[data-theme=terminal] .sw-agents .sw-pick{text-transform:uppercase;letter-spacing:.12em;color:var(--tm-hi)!important}
-.sw-page[data-theme=terminal] .sw-agents .sw-pick::before{color:var(--dim);letter-spacing:.14em}
-.sw-page[data-theme=terminal] .sw-agents .sw-back{text-transform:uppercase;letter-spacing:.12em}
+.sw-page[data-theme=terminal] .sw-agents .sw-pick{text-transform:uppercase;letter-spacing:.04em;color:var(--tm-hi)!important}
+.sw-page[data-theme=terminal] .sw-agents .sw-pick::before{color:var(--dim);letter-spacing:.04em}
+.sw-page[data-theme=terminal] .sw-agents .sw-back{text-transform:uppercase;letter-spacing:.04em}
 .sw-hnote{margin:0;color:var(--dim)}
-.sw-hgrid.sw-fleet{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) minmax(0,.8fr) minmax(0,1.15fr);grid-template-rows:repeat(var(--sw-rows,1),minmax(48px,auto));column-gap:34px;row-gap:6px;min-height:0;padding:6px 4px}
-.sw-fmain{grid-column:1;grid-row:1/-1;position:relative;display:flex;align-items:center;min-width:0;min-height:140px;padding:52px 0}
-.sw-frun{position:absolute;top:0;left:0}
-.sw-fmain>.sw-unit,.sw-fmain>:not(.sw-frun):not(.sw-flead){flex:0 1 250px;min-width:0}
-.sw-flead{position:relative;flex:1 1 0;min-width:10px;height:1px;background:var(--hud-wire)}
-.sw-fmain>.sw-flead{margin-right:-17px}
-.sw-fmain>.sw-flead::before{content:"";position:absolute;left:-3px;top:-2px;width:5px;height:5px;border-radius:50%;background:var(--hud-frame)}
-.sw-fco{grid-column:2;position:relative;display:flex;align-items:center;min-width:0}
-.sw-fco>.sw-co{position:relative;flex:0 1 auto;min-width:0}
-.sw-fco>.sw-co .sw-cov{position:absolute;top:calc(100% + 4px);left:0}
-.sw-fco>.sw-flead{margin-right:-34px}
-.sw-fco::before,.sw-fco::after{content:"";position:absolute;left:-17px;background:var(--hud-wire)}
-.sw-fco::before{top:-5px;bottom:-5px;width:1px}
-.sw-fco[data-end~=first]::before{top:50%}
-.sw-fco[data-end~=last]::before{bottom:50%}
-.sw-fco::after{top:50%;width:17px;height:1px}
-.sw-fnode{grid-column:3;position:relative;align-self:center;min-width:0;max-width:280px}
-.sw-fnode::before{content:"";position:absolute;z-index:1;left:-3px;top:calc(50% - 2px);width:5px;height:5px;border-radius:50%;background:var(--hud-frame)}
-.sw-page[data-theme=terminal] .sw-agents .sw-unit{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:0 9px;width:100%;min-width:0;padding:4px 9px!important;text-align:left!important;
- background:var(--hud-hero);border:1px solid var(--hud-node);box-shadow:inset 2px 0 0 var(--c)}
-.sw-page[data-theme=terminal] .sw-agents .sw-unit:hover{border-color:var(--hud-frame)}
-.sw-page[data-theme=terminal] .sw-agents .sw-unit.is-sel{border-color:var(--c);box-shadow:inset 2px 0 0 var(--c),0 0 14px color-mix(in srgb,var(--c) 32%,transparent),inset 0 0 14px color-mix(in srgb,var(--c) 10%,transparent)}
-.sw-panel[data-calm] .sw-agents .sw-unit.is-sel{box-shadow:inset 2px 0 0 var(--c)}
-.sw-page[data-theme=terminal] .sw-agents .sw-spr{font:11.5px/1 var(--mono)}
-.sw-ut{display:flex;flex-direction:column;gap:3px;min-width:0}
-.sw-page[data-theme=terminal] .sw-agents .sw-un{display:block;margin:0;font:400 12.5px/1.3 var(--mono);letter-spacing:.02em;color:var(--tm-hi);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sw-ul{display:flex;align-items:baseline;gap:8px;min-width:0;font-size:11.5px;line-height:1.3;white-space:nowrap}
-.sw-page[data-theme=terminal] .sw-agents .sw-us{flex:none;color:var(--ink)}
-.sw-um{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--dim)}
-.sw-ux{flex:none;margin-left:auto;color:var(--dim)}
-.sw-agents .sw-solo{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 8px}
-.sw-agents .sw-solo>:first-child{flex:0 1 240px}
-.sw-agents .sw-solo .sw-nosub{position:relative;z-index:1}
-.sw-page[data-theme=terminal] .sw-agents .sw-gmain .sw-unit{max-width:280px}
-.sw-hfleet .sw-swarm{position:relative;z-index:1}
+/* the orbit: an isometric station; its core is the main agent, each wing a subagent. Lines and labels
+   share the drawing's box (percentages of 666 × 360), so they meet at any width. Status colour rides the
+   cells, frames and marks; the words stay grey */
+.sw-orbit{position:relative;aspect-ratio:666/360;min-height:0;overflow:hidden;
+ --orw:color-mix(in srgb,var(--ui-text-primary) 58%,transparent);--orw2:color-mix(in srgb,var(--ui-text-primary) 30%,transparent)}
+.sw-ors{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.sw-orw1{fill:none;stroke:var(--orw);stroke-width:.8;stroke-linejoin:round}
+.sw-orw2{fill:none;stroke:var(--orw2);stroke-width:.6}
+.sw-orcore{fill:color-mix(in srgb,var(--raised) 75%,transparent)}
+.sw-orc{fill:transparent;stroke:var(--orw2);stroke-width:.5}
+.sw-orc[data-k=completed]{fill:color-mix(in srgb,var(--ok) 34%,transparent);stroke:color-mix(in srgb,var(--ok) 70%,transparent)}
+.sw-orc[data-k=failed]{fill:color-mix(in srgb,var(--bad) 30%,transparent);stroke:color-mix(in srgb,var(--bad) 75%,transparent)}
+.sw-orc[data-k=running]{fill:color-mix(in srgb,var(--run) 12%,transparent);stroke:color-mix(in srgb,var(--run) 40%,transparent)}
+.sw-orc[data-k=queued]{stroke:var(--orw);stroke-dasharray:2 2}
+.sw-orc[data-k=stopped]{stroke:var(--orw)}
+.sw-orc[data-k=none]{stroke:transparent}
+.sw-orf{fill:none;stroke:var(--orw);stroke-width:.9}
+.sw-orw[data-st=queued] .sw-orf{stroke:var(--orw2);stroke-dasharray:3 3}
+.sw-orw[data-st=group] .sw-orf{stroke:var(--orw2);stroke-dasharray:1 3}
+.sw-orw[data-st=failed] .sw-orf{stroke:color-mix(in srgb,var(--bad) 80%,transparent)}
+.sw-orw.is-sel .sw-orf{stroke:var(--a);stroke-width:1.4}
+.sw-orlead{fill:none;stroke:var(--orw);stroke-width:.7}
+.sw-orpin{fill:var(--raised);stroke:var(--ink);stroke-width:1}
+.sw-orbox{fill:var(--raised);stroke:var(--ink);stroke-width:.9}
+.sw-orbox.is-sel{stroke:var(--a);stroke-width:1.4}
+.sw-orl,.sw-ormain{position:absolute;z-index:1;min-width:0;padding:0!important}
+.sw-orl{display:flex;flex-direction:column;align-items:flex-start;gap:7px;margin-top:-17px}
+.sw-orl[data-side=r]{align-items:flex-end;text-align:right!important}
+.sw-orn{display:block;max-width:100%;height:14px;line-height:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.sw-orv{display:inline-flex;align-items:center;gap:6px;max-width:100%;height:15px;padding:0 6px;overflow:hidden;white-space:nowrap;color:var(--ink);
+ background:color-mix(in srgb,var(--c,var(--idle)) 12%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c,var(--idle)) 50%,transparent)}
+.sw-orl:not(.is-grp)>.sw-orv::before,.sw-orm::before{content:"";flex:none;width:5px;height:5px;background:var(--c)}
+.sw-orl.is-grp>.sw-orv{gap:10px;--c:var(--idle)}
+.sw-orm{display:inline-flex;align-items:center;gap:5px}
+.sw-orm[data-st=queued]::before{background:none;box-shadow:inset 0 0 0 1px var(--c)}
+.sw-orl:hover .sw-orn,.sw-ormain:hover .sw-orn,.sw-orl.is-sel .sw-orn{color:var(--tm-hi,var(--ink))}
+.sw-orl.is-sel>.sw-orv{box-shadow:inset 0 0 0 1px var(--a)}
+.sw-ormain{display:flex;flex-direction:column;gap:5px}
+.sw-ormain>.sw-orn{height:18px;line-height:18px;padding:0 14px 0 8px;color:var(--tm-hi,var(--ink))}
+.sw-orp{display:flex;align-items:center;gap:6px}
+.sw-orp>b{padding:0 4px;line-height:13px;font-weight:inherit;color:var(--tm-hi,var(--ink));background:color-mix(in srgb,var(--a) 14%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 50%,transparent)}
+.sw-orbars{display:flex;gap:2px}
+.sw-orbars i{width:3px;height:9px;background:color-mix(in srgb,var(--a) 22%,transparent)}
+.sw-orbars i.on{background:var(--a)}
+.sw-orscan{position:absolute;top:0;bottom:0;left:0;width:24%;pointer-events:none;
+ background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--a) 6%,transparent),transparent);animation:sw-orscan 5.5s linear infinite}
+.sw-orkey{position:absolute;right:12px;bottom:8px;display:flex;gap:12px;color:var(--dim);white-space:nowrap}
+.sw-orkey span{display:inline-flex;align-items:center;gap:5px}
+.sw-orkey span::before{content:"";width:7px;height:7px;background:color-mix(in srgb,var(--c) 45%,transparent);box-shadow:inset 0 0 0 1px var(--c)}
+.sw-orkey [data-st=queued]::before{background:none;box-shadow:none;outline:1px dashed var(--c);outline-offset:-1px}
+.sw-orbit .sw-nosub{position:absolute;left:14px;bottom:8px;max-width:48%;margin:0;color:var(--dim)}
+/* a working wing: an amber head runs along its cells; a done wing fills left to right, then its frame
+   flashes; a failed wing shakes once */
+@keyframes sw-orrun{0%{fill:color-mix(in srgb,var(--run) 62%,transparent);stroke:var(--run)}35%,100%{fill:color-mix(in srgb,var(--run) 12%,transparent);stroke:color-mix(in srgb,var(--run) 40%,transparent)}}
+@keyframes sw-orfill{from{fill:transparent;stroke:var(--orw2)}}
+@keyframes sw-orhot{to{stroke:var(--a);stroke-width:1.8}}
+@keyframes sw-orscan{from{transform:translateX(-100%)}to{transform:translateX(420%)}}
+.sw-orc[data-k=running]{animation:sw-orrun 1.6s linear infinite;animation-delay:calc(var(--i) * .2s - 1.6s)}
+.sw-orw.is-done .sw-orc[data-k=completed]{animation:sw-orfill .7s steps(1,end) backwards;animation-delay:calc(var(--i) * .07s)}
+.sw-orw.is-done .sw-orf{animation:sw-orhot .3s ease-out .6s 2 alternate}
+.sw-orw.is-fail{animation:sw-shake .5s ease-in-out}
 .sw-hspent .sw-spent{margin-bottom:12px}
 .sw-page[data-theme=terminal] .sw-score .sw-money{display:inline;font:250 28px/1 var(--mono);letter-spacing:-.03em;color:var(--tm-hi)}
 .sw-page[data-theme=terminal] .sw-score .sw-big{font:400 12.5px/1 var(--mono);text-shadow:none;color:var(--tm-hi);overflow:visible;letter-spacing:0}
@@ -3701,7 +3724,7 @@ const CSS = `${TM_PALETTE}
 .sw-tlist{max-height:340px;overflow-x:hidden;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--hud-node) transparent}
 .sw-htime .sw-tkh .sw-tkn{flex:0 1 auto;letter-spacing:.02em;color:var(--ink)}
 .sw-htime .sw-tkh b{flex:none}
-.sw-hfiles .sw-hrow{font-size:12.5px;letter-spacing:.1em}
+.sw-hfiles .sw-hrow{font-size:12.5px;letter-spacing:.04em}
 .sw-fcells{display:grid;grid-template-columns:repeat(auto-fill,minmax(18px,1fr));gap:4px;margin:12px 0 10px}
 .sw-fcells[data-big]{grid-template-columns:repeat(auto-fill,minmax(30px,1fr))}
 .sw-fcells>i{height:18px;background:var(--hud-teal-d);box-shadow:inset 0 0 0 1px var(--hud-teal)}
@@ -3709,7 +3732,7 @@ const CSS = `${TM_PALETTE}
 .sw-fcells>i[data-k=changed]{background:color-mix(in srgb,var(--a) 62%,var(--raised));box-shadow:none}
 .sw-fcells>i[data-k=failed]{background:color-mix(in srgb,var(--bad) 80%,var(--raised));box-shadow:none}
 .sw-fmore{grid-column:span 2;align-self:center;font-size:11.5px;color:var(--dim)}
-.sw-fleg{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11.5px;letter-spacing:.12em;color:var(--dim)}
+.sw-fleg{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11.5px;letter-spacing:.04em;color:var(--dim)}
 .sw-fleg>span{display:inline-flex;align-items:center;gap:6px}
 .sw-fleg>span::before{content:"";width:7px;height:7px;background:var(--hud-teal)}
 .sw-fleg>[data-k=changed]::before{background:var(--a)}
@@ -3734,12 +3757,14 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-hdetail .sw-fsec{padding:8px 0 0;border:0;border-top:1px solid var(--hud-line2)}
 .sw-page[data-theme=terminal] .sw-hdetail .sw-fsec>.sw-k,.sw-page[data-theme=terminal] .sw-hdetail .sw-fh{position:static;margin:0 0 6px;padding:0;background:none}
 @container (max-width:540px){
- .sw-hgrid.sw-fleet{grid-template-columns:minmax(0,1fr);grid-template-rows:none;row-gap:8px;padding:6px 0}
- .sw-fmain,.sw-fnode{grid-column:1;grid-row:auto!important;max-width:none}
- .sw-fmain{min-height:0;padding:0}
- .sw-fmain>:not(.sw-frun):not(.sw-flead){flex:1 1 auto}
- .sw-fleet .sw-fco,.sw-fleet .sw-frun,.sw-fmain>.sw-flead,.sw-fnode::before{display:none}
  .sw-hlog.sw-alog{grid-template-columns:max-content fit-content(12ch) minmax(0,1fr)}
+ /* narrow: the station stays, its callouts drop under it as a list */
+ .sw-orbit{aspect-ratio:auto;display:flex;flex-direction:column;gap:8px;padding-bottom:8px}
+ .sw-ors{position:relative;inset:auto;height:auto;aspect-ratio:666/360}
+ .sw-orlead,.sw-orpin,.sw-orbox,.sw-orkey{display:none}
+ .sw-orl,.sw-ormain,.sw-orbit .sw-nosub{position:static;width:auto!important;max-width:none;margin:0 8px;align-items:flex-start;text-align:left!important}
+ .sw-orl{flex-direction:row;align-items:center;justify-content:space-between;gap:10px}
+ .sw-ormain{order:-1}
 }
 /* replay: a HUD — a six-column grid of hairline panels, caps titles, one accent; status colour rides the marks */
 .sw-replay{display:flex;flex-direction:column;gap:12px;min-width:0}
@@ -3751,15 +3776,15 @@ const CSS = `${TM_PALETTE}
 .sw-hp[data-span="3"]{grid-column:span 3}
 .sw-hp[data-span="2"]{grid-column:span 2}
 .sw-hph{display:flex;align-items:center;gap:10px;min-width:0;min-height:18px;margin-bottom:12px}
-.sw-hpt{margin:0;min-width:0;font:400 11.5px var(--mono);letter-spacing:.14em;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw-hpt{margin:0;min-width:0;font:400 11.5px var(--mono);letter-spacing:.04em;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sw-hpn{letter-spacing:.02em;color:var(--ink)}
 .sw-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-.sw-hchip{flex:none;margin-left:auto;display:inline-flex;align-items:center;gap:6px;padding:1px 7px;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
+.sw-hchip{flex:none;margin-left:auto;display:inline-flex;align-items:center;gap:6px;padding:1px 7px;font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink);
  background:color-mix(in srgb,var(--c) 9%,var(--raised));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 32%,var(--raised))}
 .sw-hchip::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--c);box-shadow:0 0 6px var(--c)}
 .sw-tk{margin-bottom:14px}
 .sw-tk:last-child{margin-bottom:0}
-.sw-tkh{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;letter-spacing:.12em;color:var(--dim);white-space:nowrap}
+.sw-tkh{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;letter-spacing:.04em;color:var(--dim);white-space:nowrap}
 .sw-tkh b{font-weight:400;color:var(--ink);letter-spacing:0}
 .sw-tkb{position:relative;height:5px;margin:6px 0 4px;background:var(--hud-track,var(--line))}
 .sw-tkb>i{position:absolute;left:0;top:0;bottom:0;--k:var(--c,var(--a));background:linear-gradient(90deg,color-mix(in srgb,var(--k) 8%,var(--raised)),color-mix(in srgb,var(--k) 34%,var(--raised)))}
@@ -3777,7 +3802,7 @@ const CSS = `${TM_PALETTE}
 .sw-chd{fill:var(--a);stroke:var(--raised);stroke-width:2;vector-effect:non-scaling-stroke}
 .sw-chx{fill:var(--bad)}
 .sw-chax{display:flex;justify-content:space-between;margin-top:4px;font-size:11.5px;color:var(--dim)}
-.sw-hrow{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--tm-hi,var(--ink));white-space:nowrap}
+.sw-hrow{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--tm-hi,var(--ink));white-space:nowrap}
 .sw-hrow b{font-weight:400}
 .sw-rmarks{display:flex;gap:3px;height:30px;margin-top:10px;overflow:hidden}
 .sw-rmarks>span{display:flex;flex:1 1 0;min-width:3px}
@@ -3796,9 +3821,10 @@ const CSS = `${TM_PALETTE}
 .sw-wires path{fill:none;stroke:var(--hud-wire,var(--dim));stroke-width:1}
 .sw-wires circle{fill:var(--hud-frame,var(--ink))}
 .sw-hgrid>.sw-rdiff,.sw-hgrid>.sw-cmnote{position:relative;z-index:1;margin-right:196px}
+.sw-rhero.sw-hgrid>.sw-rdiff{margin-right:0}
 .sw-cos{position:absolute;top:10px;right:12px;z-index:3;display:flex;flex-direction:column;align-items:flex-start;gap:20px;width:170px}
 .sw-co{display:flex;flex-direction:column;align-items:flex-start;gap:4px;max-width:100%;white-space:nowrap}
-.sw-col{max-width:100%;overflow:hidden;text-overflow:ellipsis;padding:3px 9px;font-size:11.5px;letter-spacing:.14em;color:var(--tm-hi,var(--ink));background:var(--hud-hero,var(--raised));box-shadow:inset 0 0 0 1px var(--hud-frame,var(--ink))}
+.sw-col{max-width:100%;overflow:hidden;text-overflow:ellipsis;padding:3px 9px;font-size:11.5px;letter-spacing:.04em;color:var(--tm-hi,var(--ink));background:var(--hud-hero,var(--raised));box-shadow:inset 0 0 0 1px var(--hud-frame,var(--ink))}
 .sw-cov{padding:0 6px;font-size:11.5px;color:var(--ink);background:color-mix(in srgb,var(--c) 10%,var(--hud-hero,var(--raised)));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 40%,var(--hud-hero,var(--raised)))}
 .sw-cop{display:flex;align-items:center;gap:7px;font-size:11.5px}
 .sw-copn{padding:0 5px;color:var(--a);background:var(--hud-teal-d,var(--raised));box-shadow:inset 0 0 0 1px var(--hud-teal-b,var(--line))}
@@ -3842,12 +3868,11 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-rmark[data-at=now][data-failed=true]{filter:drop-shadow(0 0 4px var(--bad))}
 .sw-page[data-theme=terminal] .sw-rmark:hover{box-shadow:inset 0 -1px 0 var(--tm-hi)}
 .sw-page[data-theme=terminal] .sw-rbar .sw-btns{gap:6px 18px}
-.sw-page[data-theme=terminal] .sw-rbar .sw-ib.is-text{width:auto;height:auto;padding:2px 0;color:var(--a);background:none;box-shadow:none;letter-spacing:.12em;text-transform:uppercase}
+.sw-page[data-theme=terminal] .sw-rbar .sw-ib.is-text{width:auto;height:auto;padding:2px 0;color:var(--a);background:none;box-shadow:none;letter-spacing:.04em;text-transform:uppercase}
 .sw-page[data-theme=terminal] .sw-rbar .sw-ib.is-text:hover{color:var(--tm-hi);background:none;text-shadow:0 0 8px var(--tm-glow)}
 .sw-page[data-theme=terminal] .sw-rbar .sw-ib.is-text:disabled{color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-cov{color:var(--tm-hi);background:color-mix(in srgb,var(--c) 22%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 55%,transparent)}
 .sw-page[data-theme=terminal] .sw-copn{color:var(--tm-hi);background:color-mix(in srgb,var(--a) 26%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 60%,transparent)}
-.sw-page[data-theme=terminal] .sw-co.is-cur .sw-col{box-shadow:inset 0 0 0 1px var(--a),0 0 12px var(--tm-glow)}
 .sw-page[data-theme=terminal] .sw-wires path{filter:drop-shadow(0 0 2px var(--tm-glow))}
 .sw-page[data-theme=terminal] .sw-hchip::before{box-shadow:0 0 8px var(--c),0 0 2px var(--c)}
 .sw-page .sw-hchip[data-st=running]::before{animation:sw-pulse 1.6s ease-in-out infinite}
@@ -3864,11 +3889,16 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-fcells>i[data-k=changed],.sw-page[data-theme=terminal] .sw-copb i.on{box-shadow:0 0 8px var(--tm-glow)}
 .sw-page[data-theme=terminal] .sw-ht{text-shadow:0 0 12px var(--tm-glow)}
 /* one order for every tab: three type sizes (11.5 px text, 14 px names, 28 px numbers), two letter
-   spacings (.12em for caps labels, none for everything else), the strip under the title the same on each
+   spacings (.04em for caps labels, none for everything else), the strip under the title the same on each
    tab, a folded panel opening from its title row, the playback a full-width strip */
 .sw-page[data-theme=terminal] :is(.sw-chatn,.sw-meta,.sw-meta .sw-1l,.sw-leg,.sw-un,.sw-hrow,.sw-hrow b,.sw-big,.sw-big small,.sw-bign,.sw-tl,.sw-fn,.sw-tn,.sw-verb,.sw-pickn,.sw-note,.sw-fl,.sw-fnote,.sw-nowf,.sw-rtext,.sw-rsign,.sw-ol,.sw-task,.sw-ans,.sw-hdetail .sw-head.is-file){font-size:11.5px}
 .sw-page[data-theme=terminal] :is(.sw-ht,.sw-rname){font-size:14px;font-weight:600}
-.sw-page[data-theme=terminal] :is(.sw-tab,.sw-hptv,.sw-hpt .sw-sr,.sw-hchip,.sw-kv dt,.sw-col,.sw-k,.sw-hrow b,.sw-cmls span,.sw-crth,.sw-crth span,.sw-ib,.sw-tkh>span,.sw-fleg span,.sw-pickn,.sw-hle,.sw-rl>span:first-child,.sw-ht){letter-spacing:.12em}
+.sw-page[data-theme=terminal] :is(.sw-tab,.sw-hpt,.sw-hptv,.sw-hpt .sw-sr,.sw-hchip,.sw-kv dt,.sw-col,.sw-k,.sw-hrow,.sw-hrow b,.sw-cmls span,.sw-crth,.sw-crth span,.sw-ib,.sw-ib.is-text,.sw-tkh,.sw-tkh>span,.sw-fleg,.sw-fleg span,.sw-pickn,.sw-hle,.sw-rl>span:first-child,.sw-rl[data-tag="@"],.sw-ht,.sw-tmore,.sw-orkey,.sw-ormain .sw-orn,.sw-orv){letter-spacing:.04em}
+/* type, as in the reference: a light mono — Cascadia Mono where the system has it (Windows), else the
+   app's own mono — at one light weight; rank comes from size and grey, not from weight */
+.sw-page[data-theme=terminal]{--mono:"Cascadia Mono",var(--dt-font-mono,ui-monospace,Consolas,monospace)}
+.sw-page[data-theme=terminal] .sw-panel,.sw-page[data-theme=terminal] .sw-panel *{font-weight:300!important}
+.sw-tmore{margin:-4px 0 8px;color:var(--dim)}
 .sw-page[data-theme=terminal] :is(.sw-hpn,.sw-tkh .sw-1l,.sw-un,.sw-verb,.sw-rname,.sw-tl,.sw-tn){letter-spacing:0}
 .sw-page[data-theme=terminal] .sw-why{margin:0;padding:7px 12px;background:var(--raised);box-shadow:inset 0 0 0 1px var(--line);line-height:1.5}
 .sw-page[data-theme=terminal] .sw-runb{margin-bottom:8px;line-height:1.5}
@@ -3885,33 +3915,44 @@ const CSS = `${TM_PALETTE}
 .sw-hfold>summary:focus-visible{outline:1px solid var(--a);outline-offset:2px}
 
 .sw-rdiff{display:flex;flex-direction:column;gap:6px;min-width:0}
-.sw-rlines{max-height:300px;overflow:auto;padding:6px 0;font:12px/1.6 var(--mono);white-space:pre;scrollbar-width:thin;scrollbar-color:var(--hud-line2,var(--line)) transparent}
+.sw-rlines{max-height:300px;overflow:hidden auto;padding:6px 0;font:12px/1.6 var(--mono);white-space:pre-wrap;scrollbar-width:thin;scrollbar-color:var(--hud-line2,var(--line)) transparent}
 .sw-rdiff[data-failed=true] .sw-rlines{opacity:.7}
-.sw-rl{display:flex;min-width:max-content;padding-right:12px;color:var(--dim)}
+/* code wraps inside the panel (the user wants every line whole); a wrapped line continues under its text, not under the gutter */
+.sw-rl{display:flex;min-width:0;padding-right:10px;color:var(--dim)}
+.sw-rtext{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
 .sw-rsign{flex:none;width:24px;text-align:center;color:var(--dim)}
+.sw-rln{flex:none;width:5ch;padding-right:4px;text-align:right;color:var(--faint,var(--dim))}
+.sw-rl[data-tag="@"] .sw-rln{display:none}
+.sw-rl[data-tag="-"] .sw-rtext{text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--bad) 60%,transparent)}
 .sw-rl[data-tag="+"]{color:var(--tm-hi,var(--ink));background:color-mix(in srgb,var(--ok) 7%,transparent)}
 .sw-rl[data-tag="+"] .sw-rsign{color:var(--ok)}
 .sw-rl[data-tag="-"]{color:var(--dim);background:color-mix(in srgb,var(--bad) 8%,transparent)}
 .sw-rl[data-tag="-"] .sw-rsign{color:var(--bad)}
-.sw-page[data-theme=terminal] .sw-rl[data-tag="+"]{background:var(--hud-add)}
-.sw-page[data-theme=terminal] .sw-rl[data-tag="-"]{background:var(--hud-del)}
+.sw-page[data-theme=terminal] .sw-rl[data-tag="+"]{background:linear-gradient(90deg,var(--hud-add),transparent 70%)}
+.sw-page[data-theme=terminal] .sw-rl[data-tag="-"]{background:linear-gradient(90deg,var(--hud-del),transparent 70%)}
 .sw-page[data-theme=terminal] .sw-rl[data-tag="+"] .sw-rsign{color:var(--hud-add-ink)}
 .sw-page[data-theme=terminal] .sw-rl[data-tag="-"] .sw-rsign{color:var(--hud-del-ink)}
-.sw-rl[data-tag="@"]{align-items:center;gap:8px;margin:8px 0 3px;padding-left:6px;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase}
+.sw-rl[data-tag="@"]{align-items:center;gap:8px;margin:8px 0 3px;padding-left:6px;font-size:11.5px;letter-spacing:.04em;text-transform:uppercase}
 .sw-rl[data-tag="@"]:first-child{margin-top:0}
 .sw-rl[data-tag="@"]::before{content:"";flex:none;width:14px;height:1px;background:var(--a)}
 .sw-rl[data-tag="@"]::after{content:"";flex:1 0 40px;height:1px;background:var(--line)}
 .sw-rmore{display:flex}
-/* Play: in order each removed line strikes through and dims; each added line types in behind a mint cursor */
+/* Play: in order each removed line strikes through and dims; then each added line types in, letter by
+   letter, behind a block cursor that stays on the line being typed (data-cur). The text is an
+   inline-block: max-width does nothing on an inline span, and the line would show whole at once. */
 @keyframes sw-dim{to{opacity:.45}}
 @keyframes sw-strike{from{text-decoration-color:transparent}to{text-decoration-color:var(--bad)}}
 @keyframes sw-hide{from,to{visibility:hidden}}
-@keyframes sw-typew{from{max-width:0}to{max-width:calc(var(--n) * 1ch)}}
-@keyframes sw-caret{from,to{box-shadow:.6em 0 0 var(--a),.6em 0 10px var(--a)}}
 .sw-page .sw-rlines[data-play] .sw-rl[data-tag="-"]{animation:sw-dim var(--t) ease-out var(--d) both}
 .sw-page .sw-rlines[data-play] .sw-rl[data-tag="-"] .sw-rtext{text-decoration:line-through;animation:sw-strike var(--t) linear var(--d) both}
 .sw-page .sw-rlines[data-play] .sw-rl[data-tag="+"]{animation:sw-hide 1ms var(--d) backwards}
-.sw-page .sw-rlines[data-play] .sw-rl[data-tag="+"] .sw-rtext{overflow:hidden;animation:sw-typew var(--t) steps(var(--n),end) var(--d) backwards,sw-caret var(--t) linear var(--d) backwards}
+.sw-page .sw-rlines[data-play] .sw-rl[data-cur]{box-shadow:inset 2px 0 0 var(--a)}
+.sw-page .sw-rlines[data-play] .sw-rl[data-cur] .sw-rtext::after{content:"";display:inline-block;width:.55em;height:1.05em;margin-left:1px;vertical-align:-.2em;background:var(--a)}
+/* what a part of the edit did sits at the end of its header row, after the rule: 2 LINES REPLACED −2 +3 */
+.sw-rl[data-tag="@"]{white-space:nowrap}
+.sw-rl[data-tag="@"]::after{order:2}
+.sw-rpart{order:3;flex:none;display:flex;align-items:center;gap:8px;color:var(--ink)}
+.sw-covs{display:flex;gap:4px}
 .sw-rfail{display:flex;flex-direction:column;margin:10px 0 0;padding:4px 10px;color:var(--ink);background:color-mix(in srgb,var(--bad) 7%,transparent);box-shadow:inset 2px 0 0 var(--bad)}
 .sw-rfail>span:last-child{color:var(--dim)}
 .sw-rbad{color:var(--ink)}
@@ -3919,7 +3960,7 @@ const CSS = `${TM_PALETTE}
 .sw-rfile{display:flex;align-items:center;gap:10px;min-width:0;margin:-4px 0 10px}
 .sw-rname{flex:0 1 auto;min-width:0;font-size:14px;font-weight:600;letter-spacing:.04em;color:var(--tm-hi,var(--ink))}
 .sw-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);column-gap:14px;row-gap:5px;margin:0}
-.sw-kv>dt{font-size:11.5px;letter-spacing:.1em;line-height:1.8;color:var(--dim)}
+.sw-kv>dt{font-size:11.5px;letter-spacing:.04em;line-height:1.8;color:var(--dim)}
 .sw-kv>dd{min-width:0;margin:0;color:var(--ink)}
 .sw-rwhat{margin:0}
 .sw-rtlist,.sw-hlog{display:grid;align-content:start;overflow:hidden auto;scrollbar-width:thin;scrollbar-color:var(--hud-line2,var(--line)) transparent}
@@ -3932,7 +3973,7 @@ const CSS = `${TM_PALETTE}
 .sw-rask{grid-column:3;color:var(--ink)}
 .sw-hlt,.sw-hln{color:var(--dim)}
 .sw-hln{text-align:right}
-.sw-hle{display:inline-flex;align-items:center;gap:6px;letter-spacing:.06em;color:var(--ink)}
+.sw-hle{display:inline-flex;align-items:center;gap:6px;letter-spacing:.04em;color:var(--ink)}
 .sw-hle::before{content:"";flex:none;width:5px;height:5px;background:var(--c)}
 .sw-hlm{color:var(--ink)}
 .sw-rturn:hover,.sw-hlog>button:hover{background:color-mix(in srgb,var(--a) 6%,transparent)}
@@ -3941,7 +3982,7 @@ const CSS = `${TM_PALETTE}
 @container (max-width:540px){
  .sw-hp[data-span]{grid-column:span 6}
  .sw-cos,.sw-wires{display:none}
- .sw-hgrid>.sw-rdiff,.sw-hgrid>.sw-cmnote{margin-right:0}
+ .sw-hgrid>.sw-cmnote{margin-right:0}
  .sw-hlog{grid-template-columns:max-content minmax(0,1fr) max-content}
  .sw-hle{display:none}
  .sw-rtlist{grid-template-columns:max-content minmax(0,1fr)}

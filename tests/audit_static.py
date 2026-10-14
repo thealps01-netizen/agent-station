@@ -100,7 +100,6 @@ def check_i18n(js: str) -> None:
         "sw.act": {"edit", "read", "run", "think", "wait"},
         "sw.tag": (statuses - {"running"}) | {"idle", "edit", "read", "run", "think", "wait"},
         "sw.verb": {"read", "write", "edit", "search", "run", "code", "delegate", "web", "other"},
-        "sw.swarm": {"failed", "running", "queued", "completed"},
         "sw.file.op": {"active", "write", "delete", "read", "failed"},
         "sw.proc.status": {"running", "completed", "failed", "stopped"},
         "sw.proc.short": {"running", "completed", "failed", "stopped"},

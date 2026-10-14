@@ -19,24 +19,28 @@ still takes the theme's colours. Red marks only a failure, amber only something 
 - **HUD light and motion.** Panels carry accent corner ticks and power on one after another; time bars and
   the chart fill in, with glowing markers and a filled curve; the picked tab, big numbers and changed-file
   tiles glow faintly; the tabs sit on the title row; the playback strip is a band of ticks with text
-  PREVIOUS / PLAY / NEXT; callout chips are filled. While Play types, a LINE n callout and its wire follow the
-  line being typed, a scan line sweeps the diff, and a number that changes rolls in. Reduced motion stops all
-  of it.
+  PREVIOUS / PLAY / NEXT; callout chips are filled. While Play types, a scan line sweeps the diff and a
+  number that changes rolls in. Reduced motion stops all of it.
 - **One order on every tab.** Three type sizes (11.5 px text, 14 px names, 28 px numbers) and two letter
   spacings; the line under the title is the same strip on every tab (Replay's text shortened to one line);
   TIME PER AGENT draws its shared scale once instead of under every agent; the FILES legend stays on one
   line. DETAIL starts folded under its title row (click to open). The done count is no longer repeated in
   SPENT and the main agent card. Replay: PLAYBACK is a full-width strip under the diff, then LINES CHANGED,
   LINES SO FAR and FILE in one row, then the log; FILE no longer repeats the diff's file name and status.
-- **10 px text.** The HUD page is scaled (CSS zoom .8696) so its smallest text lands at 10 px, and the
+- **11 px text.** The HUD page is scaled (CSS zoom .9566) so its smallest text lands at 11 px, and the
   leader lines convert screen pixels back to the scaled page so they still meet their rows.
 - **Denser, like the draft.** 11.5 px body text, one 8 px gutter and no frame around the panels, tighter
   fleet nodes and smaller large numbers, no text glow. DETAIL sits on the same ground as the other panels,
   names its agent in its title instead of a second focus label, and has a smaller portrait.
-- **Play types the edit out.** Each removed line is struck through and dims, then each added line is
-  typed in behind a mint cursor, and the list follows the line being typed; Play stays on an edit until
-  it is done (1.5 s at least, 9 s at most). A failed edit was never applied, so it stands still. Reduced
-  motion shows every edit whole.
+- **Play types the edit out, as in the draft.** Each removed line is struck through and dims, then each
+  added line is typed in letter by letter, one line every 0.9 s (faster on a long edit, so it ends near
+  9 s), behind a block cursor with an accent bar on the line being typed; the list follows that line.
+  Play stays on an edit until it is done. A failed edit was never applied, so it stands still. Reduced
+  motion shows every edit whole. (The typing was a CSS width on an inline span, which does nothing: lines
+  showed whole at once. It is now done in script, so it also types wrapped lines.)
+- **Replay shows the code whole.** The diff takes the panel's full width and long lines wrap instead of
+  being cut off behind a callout column; each row has its line number. What a part of the edit did
+  ("2 LINES REPLACED −2 +3") sits on its FROM LINE header row, and a whole-file write gets one from line 1.
 - **Run text keeps its case in HUD titles.** A command or a file name next to a caps title
   (`CØNSØLE · python build.py`, `DIFF · plugin.js`) and the agent names in TIME PER AGENT read as typed;
   only our own labels are capitalised.
@@ -45,22 +49,28 @@ still takes the theme's colours. Red marks only a failure, amber only something 
 - A failed command's gauge says FAILED, not FINISHED; the fleet says SUBAGENTS DØNE, not RUN CØMPLETE,
   while the main agent still works; FILES groups its cells changed, failed, read; DETAIL's file
   sections use the HUD's caps headings instead of boxed frames.
-- **Replay is a HUD.** A six-column grid: your requests on top; the edit's lines on a faint grid with a
-  callout per part ("FROM LINE 12", "+1 −1") tied to its row by a leader line and a PAUSED / REPLAYING
-  gauge; LINES CHANGED (added, removed, this edit, each against the request's largest); LINES SO FAR
+- **Replay is a HUD.** A six-column grid: your requests on top; the edit's lines on a faint grid, each
+  part headed by where it starts and what it did; LINES CHANGED (added, removed, this edit, each against the request's largest); LINES SO FAR
   (applied lines up to this edit over the request's total, a curve with failed edits ticked in red);
   PLAYBACK (one cell per edit, Previous / Play / Next); FILE (name, folder, what changed, the request);
   LOG (every edit with its time, EDIT / WRITE / DELETE / MOVE / FAILED and its +/−; a row opens it).
   Below 540 px the panels stack and the callouts give way.
-- **Agents is a HUD.** FLEET: on a faint grid the main agent on the left and each subagent a node on the
-  right (name, [OK ] / [ERR] / [RUN] / [WAIT], model and time), a callout between them per subagent
-  (HANDED ØFF / FAILED / WORKING with its tools and tokens) on leader lines, and a RUN COMPLETE /
-  RUNNING gauge; the selected node glows in its status colour and a click selects it. Past 8 subagents
-  the hero holds the grouped swarm instead. Then TIME PER AGENT (each run time against the longest),
+- **Agents is a HUD.** FLEET is a wireframe space station drawn in isometric lines. Its core is the main
+  agent, with a box above it saying what it does and how many subagents are done. Each subagent is a wing
+  of 8 × 2 cells: amber cells run along it while it works, it fills in the accent when done (its frame
+  flashes once), three cells turn red and it shakes once when it fails, a waiting wing is dashed. A
+  callout per wing (name, state, time) sits in a column at each side on a leader line to the wing's
+  nearest corner; a click selects it. At most six wings fit, three a side, without touching: past six
+  subagents five wings go to those that need eyes (failed, then working, then waiting) and an outer sixth
+  holds the rest, its callout a coloured mark and count per state (+9 MØRE ■6 ■2 ⬚1). Below 540 px the
+  station stays and the callouts drop under it as a list. Then TIME PER AGENT (as many tracks as wings,
+  the rest counted) (each run time against the longest),
   SPENT (cost, tokens, tools, done n/N), FILES (a cell per file: changed, failed, only read), AGENT (the
   selected agent's model, time, tools · tokens · cost, task), LOG (a row per subagent; a row selects it)
   and DETAIL (the full focus panel: files worked on now, changed and read, the answer, its buttons).
-  Below 540 px the nodes stack and the callouts give way.
+- **Type as in the reference: a light grey mono.** Cascadia Mono Light where the system has it
+  (Windows 11), else the app's own mono, at one light weight everywhere; caps labels keep a slight
+  .04em letter spacing instead of .12em.
 - **Commands is a HUD.** CONSOLE across the grid: the picked command's output on the faint grid with
   line numbers, failing lines marked red, a FINISHED / RUNNING gauge and a FIRST ERROR callout tied by a
   leader line to that line; below it COMMANDS (one row per command: start time, a status square and

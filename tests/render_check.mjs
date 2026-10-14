@@ -50,7 +50,7 @@
  *  25. More than 8 subagents: the swarm (40-subagent fixture) — main agent on top, Failed by name,
  *      Working cells (tooltip, click selects), Waiting and Done collapsed behind Show; units wrap.
  *  26. Reduced motion stops every page animation; the motion moments exist (ring close, shake, count
- *      up, slide, breathe, retyped tag, cursor blink); text never below 11.5px (10px once the HUD's scale applies); focus rings; focusable
+ *      up, slide, breathe, retyped tag, cursor blink); text never below 11.5px (11px once the HUD's scale applies); focus rings; focusable
  *      tooltip triggers; reading tokens; a mounted live region.
  *
  * Removed in 1.7.0 with the features they locked: agent letters (agentLetters / baseLetters, the
@@ -345,8 +345,11 @@ check(mod.toolAct('patch') === 'edit' && mod.toolAct('write_file') === 'edit' &&
   && mod.toolAct('delegate_task') === 'wait' && mod.toolAct('mcp_x') === 'think',
   'a tool reads as edit pencil, read eye, run prompt, waiting on subagents, or plain working')
 {
-  const g = mod.swarmGroups(['failed', 'stopped', 'running', 'queued', 'completed', 'completed'].map((status, i) => ({ key: i, status })))
-  check(g.failed.length === 2 && g.running.length === 1 && g.queued.length === 1 && g.completed.length === 2, 'swarm groups: failed (with stopped), working, waiting, done')
+  const st = ['completed', 'failed', 'running', 'queued', 'completed', 'stopped', 'running', 'completed']
+  const w = mod.orbitWings(st.map((status, i) => ({ key: i, status })))
+  check(mod.orbitWings(st.slice(0, 6).map((status, i) => ({ key: i, status }))).map(x => x.slot).join() === '0,1,2,3,4,5' && w.length === mod.ORBIT_WINGS
+    && w.slice(0, 5).map(x => x.u.status).join() === 'failed,running,running,queued,completed' && w[5].rest.length === 3 && w.map(x => x.slot).join() === '0,1,2,4,5,3',
+    `the orbit: one wing a subagent while six fit; past that five for those that need eyes (failed, working, waiting) and an outer one holding the rest (${w.map(x => x.u?.status || `+${x.rest.length}`)})`)
 }
 {
   const files = [
@@ -358,8 +361,6 @@ check(mod.toolAct('patch') === 'edit' && mod.toolAct('write_file') === 'edit' &&
   check(w1.changed.map(f => f.key).join() === 'a' && w1.read.map(f => f.key).join() === 'b' && me.changed.map(f => f.key).join() === 'c' && me.read.map(f => f.key).join() === 'a',
     `an agent's files come from who/editors: changed by it, only read by it, a failed change nobody made is its own (${JSON.stringify([w1, me].map(x => [x.changed.length, x.read.length]))})`)
 }
-check(['edit', 'read', 'run', 'think', 'wait', 'ok', 'bad', 'stop', 'idle'].every(i => mod.sprite(i).split('\n').length === 3 && !/[A-Za-z]/.test(mod.sprite(i))),
-  'Terminal sprites are a three-line box with a glyph, never a letter')
 check(mod.slugName('Pact weapon marker') === 'pact-weapon-marker' && mod.commandLine('\n  npm test\nmore') === 'npm test',
   'Terminal names are slugs; a command row shows its first non-empty line')
 check(mod.shortTarget('D:\\Proj\\src\\a.py') === 'src/a.py' && mod.shortTarget('npm test\nmore') === 'npm test' && mod.shortTarget('a b/c') === 'a b/c',
@@ -386,8 +387,11 @@ await act(async () => { root.render(React.createElement(route.render)) })
 await tick(10)
 const q = s => host.querySelector(s)
 const qa = s => [...host.querySelectorAll(s)]
-const units = () => qa('.sw-agents button.sw-unit')
-const unitNamed = name => units().find(u => u.querySelector('.sw-un')?.textContent === name)
+// the orbit's agents: the main agent's box, then a callout per subagent (its name in .sw-orn)
+const NODE = '.sw-agents .sw-orbit button[data-node]'
+const units = () => qa(NODE)
+const uname = u => (u.dataset.main ? 'main' : u.querySelector('.sw-orn')?.textContent)
+const unitNamed = name => units().find(u => !u.dataset.main && uname(u) === name)
 const tab = id => q(`[role=tab][data-tab=${id}]`)
 const toTab = id => act(async () => { tab(id).click() })
 const refresh = async () => { await act(async () => { q('.sw-hd .sw-ib').click() }); await tick(10) }
@@ -403,18 +407,22 @@ check(tab('agents')?.getAttribute('aria-selected') === 'true' && tab('commands')
 check(q('.sw-tabn')?.textContent === '1' && q('.sw-tabn')?.getAttribute('aria-label') === '1 command running' && q('.sw-tabn')?.dataset.tip === '1 command running',
   `the Commands tab badge counts running commands, named by its tooltip (${q('.sw-tabn')?.textContent})`)
 
-// 21. units: the main agent first and selected, icons not letters, statuses never mislabelled
+// 21. the orbit: the main agent's box first and selected, a wing and a callout per subagent, statuses never mislabelled
 {
   const u = units()
-  check(u.length === 3 && u[0].dataset.main === 'true' && u[0].getAttribute('aria-pressed') === 'true' && u[0].querySelector('.sw-un')?.textContent === '★ main-agent',
-    `the main agent is the first unit, starred and selected (${u.map(x => x.getAttribute('aria-label'))})`)
-  check(u.slice(1).map(x => x.querySelector('.sw-un').textContent).join() === 'docs-writer,wiki-watchdog', 'then one unit per subagent of the last run')
-  check(u[1].dataset.st === 'completed' && u[1].dataset.icon === 'ok' && u[2].dataset.st === 'failed' && u[2].dataset.icon === 'bad',
-    'a done unit draws the check, a failed one the cross')
+  check(u.length === 3 && u[0].dataset.main === 'true' && u[0].getAttribute('aria-pressed') === 'true' && u[0].querySelector('.sw-orn')?.textContent === '★ MAIN · IDLE',
+    `the main agent is the station's box, first and selected, saying what it does (${u.map(x => x.getAttribute('aria-label'))})`)
+  check(u.slice(1).map(uname).join() === 'docs-writer,wiki-watchdog', 'then one callout per subagent of the last run')
+  check(u[1].dataset.st === 'completed' && u[1].dataset.icon === 'ok' && /^DØNE · \d/.test(u[1].querySelector('.sw-orv')?.textContent || '')
+    && u[2].dataset.st === 'failed' && /^FAILED/.test(u[2].querySelector('.sw-orv')?.textContent || ''),
+    `a done callout reads done with its time, a failed one failed (${u.slice(1).map(x => x.querySelector('.sw-orv')?.textContent)})`)
+  const wings = qa('.sw-orbit .sw-orw')
+  check(wings.map(w => w.dataset.st).join() === 'completed,failed' && wings[0].querySelectorAll('.sw-orc[data-k=completed]').length === 16
+    && wings[1].querySelectorAll('.sw-orc[data-k=failed]').length === 6 && q('.sw-orbit .sw-ors')?.getAttribute('aria-hidden') === 'true',
+    'a wing per subagent: a done wing filled, a failed wing with red cells; the drawing is hidden from screen readers')
   check(q('.sw-focus')?.dataset.kind === 'main', 'the focus panel shows the main agent by default')
-  check(u.every(x => x.querySelector('pre.sw-spr')?.textContent.split('\n').length >= 3) && !q('.sw-sig, .sw-orbl, .sw-letter')
-    && !qa('.sw-page *').some(e => !e.children.length && /^[A-Z]\d?$/.test(e.textContent.trim())),
-  'no letter badges anywhere: every unit is an ASCII sprite')
+  check(!q('.sw-sig, .sw-orbl, .sw-letter') && !qa('.sw-page *').some(e => !e.children.length && /^[A-Z]\d?$/.test(e.textContent.trim())),
+  'no letter badges anywhere')
 }
 check(q('.sw-bign')?.textContent === '1' && q('.sw-big small')?.textContent === '/2'
   && qa('.sw-score .sw-seg i').map(i => i.dataset.st).join() === 'completed,failed',
@@ -427,14 +435,18 @@ check(q('.sw-money')?.textContent === '~$0.08' && q('.sw-money')?.tabIndex === 0
   check(fleet?.querySelector('.sw-hpt .sw-sr')?.textContent === 'Fleet · Last run' && fleet.querySelector('.sw-hchip')?.textContent === '1/2 done'
     && fleet.querySelector('.sw-hchip')?.dataset.st === 'failed',
     `the fleet hero is titled with the run and chips how many are done, in the run's state (${fleet?.querySelector('.sw-hchip')?.textContent})`)
-  const cos = qa('.sw-fleet .sw-fco')
-  check(cos.map(c => c.querySelector('.sw-col')?.textContent).join() === 'HANDED ØFF,FAILED' && cos.every(c => c.getAttribute('aria-hidden') === 'true')
-    && cos.map(c => c.querySelector('.sw-cov')?.dataset.st).join() === 'completed,failed' && cos.every(c => /^\d+ tools?( · \d+k?)?$/.test(c.querySelector('.sw-cov')?.textContent || ''))
-    && q('.sw-frun .sw-col')?.textContent === 'RUN CØMPLETE' && q('.sw-frun .sw-copn')?.textContent === '100%' && qa('.sw-frun .sw-copb i.on').length === 10,
-    `a callout per subagent says how its hand-off went, with its tools and tokens; the run callout says it is complete (${cos.map(c => c.textContent).join(' | ')})`)
-  check(qa('.sw-fleet .sw-flead').length === 3 && qa('.sw-fleet .sw-flead').every(l => l.getAttribute('aria-hidden') === 'true')
-    && cos.map(c => c.dataset.end).join() === 'first,last' && q('.sw-fmain .sw-um')?.textContent === 'idle',
-    'leader lines: one from the main agent to the callout spine, one from each callout to its node; the spine runs first to last; the main node says its state')
+  check(qa('.sw-orbit .sw-orlead').length === 3 && qa('.sw-orbit .sw-orpin').length === 3 && q('.sw-ormain .sw-orp b')?.textContent === '1/2'
+    && qa('.sw-ormain .sw-orbars i.on').length === 7 && qa('.sw-ormain .sw-orbars i').length === 14 && q('.sw-ormain .sw-orp')?.getAttribute('aria-hidden') === 'true',
+    'a leader line and pin from each callout to its wing and from the main box to the core; the main box counts the done subagents')
+  check(qa('.sw-orl[data-side=l]').length + qa('.sw-orl[data-side=r]').length === 2 && qa('.sw-orl').every(l => /^\d+(\.\d+)?%$/.test(l.style.top) && /%$/.test(l.style.left)),
+    'callouts sit in the drawing\'s own box (percentages), a column each side')
+  {
+    // every leader line ends on a pin of its own (a wing's corner, the core), never short of it
+    const pins = qa('.sw-orbit .sw-orpin').map(c => `${c.getAttribute('cx')},${c.getAttribute('cy')}`)
+    const ends = qa('.sw-orbit .sw-orlead').map(p => /L([\d.]+,[\d.]+)$/.exec(p.getAttribute('d'))?.[1])
+    check(ends.length === 3 && ends.every((e, i) => e === pins[i]) && new Set(ends).size === ends.length,
+      `each leader line ends on its own pin (${ends.join(' ')} · pins ${pins.join(' ')})`)
+  }
   check(qa('.sw-htime .sw-tk').map(e => e.dataset.st).join() === 'completed,failed' && qa('.sw-htime .sw-tkn').map(e => e.textContent).join() === 'docs-writer,wiki-watchdog',
     'time per agent: one track per subagent, in its status colour')
   check(qa('.sw-htime .sw-tks').length === 1 && q('.sw-htime .sw-tks')?.classList.contains('sw-tkax') && !q('.sw-htime .sw-tk .sw-tks'),
@@ -445,14 +457,14 @@ check(q('.sw-money')?.textContent === '~$0.08' && q('.sw-money')?.tabIndex === 0
     'the done count is not repeated in SPENT or the main agent card (the fleet chip and the DONE cells carry it)')
   check(qa('.sw-alog > button').length === 2 && q('.sw-hagent .sw-rname')?.textContent === '★ main-agent' && q('.sw-hdetail .sw-focus')?.dataset.kind === 'main',
     'the log has a row per subagent; the agent card and the detail panel show the selected agent')
-  await act(async () => { qa('.sw-fnode .sw-unit')[1].click() })
-  check(q('.sw-focus')?.dataset.kind === 'sub' && qa('.sw-fnode .sw-unit')[1].getAttribute('aria-pressed') === 'true' && q('.sw-hagent .sw-rname')?.textContent === 'wiki-watchdog'
+  await act(async () => { units()[2].click() })
+  check(q('.sw-focus')?.dataset.kind === 'sub' && units()[2].getAttribute('aria-pressed') === 'true' && qa('.sw-orw')[1].classList.contains('is-sel') && q('.sw-hagent .sw-rname')?.textContent === 'wiki-watchdog'
     && q('.sw-hagent .sw-hchip')?.dataset.st === 'failed' && qa('.sw-alog > button').map(b => b.getAttribute('aria-pressed')).join() === 'false,true',
-    `a node click selects it: the detail panel, the agent card and its log row follow (${q('.sw-hagent .sw-rname')?.textContent})`)
+    `a callout click selects it: the detail panel, the agent card and its log row follow (${q('.sw-hagent .sw-rname')?.textContent})`)
   await act(async () => { qa('.sw-alog > button')[0].click() })
-  check(q('.sw-hagent .sw-rname')?.textContent === 'docs-writer' && qa('.sw-fnode .sw-unit')[0].getAttribute('aria-pressed') === 'true', 'a log row click selects its subagent')
-  await act(async () => { q('.sw-fmain .sw-unit').click() })
-  check(q('.sw-focus')?.dataset.kind === 'main', 'the main node selects the main agent again')
+  check(q('.sw-hagent .sw-rname')?.textContent === 'docs-writer' && units()[1].getAttribute('aria-pressed') === 'true', 'a log row click selects its subagent')
+  await act(async () => { q('.sw-ormain').click() })
+  check(q('.sw-focus')?.dataset.kind === 'main' && q('.sw-orbox')?.classList.contains('is-sel'), 'the main box selects the main agent again')
 }
 const css = q('style')?.textContent || ''
 check(/:is\(\.sw-ht,\.sw-rname\)\{font-size:14px/.test(css) && /\.sw-score \.sw-money\{display:inline;font:250 28px/.test(css) && /\.sw-page\[data-theme=terminal\] \.sw-why\{margin:0;padding:7px 12px;background:var\(--raised\)/.test(css),
@@ -468,9 +480,9 @@ check(qa('[data-tip]').filter(e => !e.closest('button')).every(e => e.tabIndex =
     for (const n of decl.match(/(?<![\d./])\d+(\.\d+)?px/g) || []) if (parseFloat(n) < 11.5) small.push(decl)
   }
   check(!small.length, `no text below 11.5px (${small.join(' | ')})`)
-  // the HUD page is scaled so its smallest text lands at the 10px the user picked, never under
+  // the HUD page is scaled so its smallest text lands at the 11px the user picked, never under
   const zoom = parseFloat(css.match(/\.sw-page\[data-theme=terminal\]\{zoom:([\d.]+);/)?.[1] || '1')
-  check(zoom < 1 && 11.5 * zoom >= 10 - 0.01, `the HUD is drawn at its picked scale and no text lands under 10px (zoom ${zoom} → ${(11.5 * zoom).toFixed(1)}px)`)
+  check(zoom < 1 && 11.5 * zoom >= 11 - 0.01, `the HUD is drawn at its picked scale and no text lands under 11px (zoom ${zoom} → ${(11.5 * zoom).toFixed(1)}px)`)
 }
 check(/--dim:var\(--ui-text-secondary\)/.test(css) && !/tertiary/.test(css.match(/\.sw-model\{[^}]*\}/)?.[0] || 'tertiary')
   && !/tertiary/.test(css.match(/\.sw-meta\{[^}]*\}/)?.[0] || 'tertiary'),
@@ -478,10 +490,7 @@ check(/--dim:var\(--ui-text-secondary\)/.test(css) && !/tertiary/.test(css.match
 check(q('.sw-live[role=status]') !== null && !q('.sw-live').textContent, 'the toast live region is mounted before any toast (so it is announced)')
 check(stub.calls.request.some(([m, p]) => m === 'subagent.list' && p.session_id === 'rt-1'), 'subagent.list asked with the focused runtime id')
 
-// 20. Terminal: ASCII sprites, status tags, the theme's tokens
-check(units().length === 3 && units().every(u => u.querySelector('pre.sw-spr'))
-  && units().map(u => u.querySelector('.sw-us').textContent).join() === '[IDLE],[OK ],[ERR]',
-  `Terminal draws ASCII sprite boxes with status tags (${units().map(u => u.querySelector('.sw-us')?.textContent)})`)
+// 20. Terminal: the theme's tokens
 {
   // Both palettes come from the app theme, so the panel follows the skin the user picked: the page mixes
   // the theme's foreground into its background for every neutral and takes the theme accent (held light
@@ -511,7 +520,7 @@ await act(async () => { q('.sw-pick').click() })
 }
 check(!q('.sw-menu') && q('.sw-panel')?.dataset.calm === 'true' && q('.sw-back')?.textContent === 'Back to now' && q('.sw-pick')?.textContent === 'alpha-panel +1' && !q('.sw-ld'),
   'an earlier run is shown calmly (no live glow) with Back to now')
-check(units().map(u => u.querySelector('.sw-un').textContent).join() === '★ main-agent,alpha-panel,beta-panel' && unitNamed('beta-panel')?.dataset.icon === 'stop'
+check(units().map(uname).join() === 'main,alpha-panel,beta-panel' && unitNamed('beta-panel')?.dataset.icon === 'stop'
   && !/\d+[smh]/.test(unitNamed('beta-panel')?.dataset.tip || ''),
   `its units: the main agent, then its subagents; a stopped one shows no duration (${unitNamed('beta-panel')?.dataset.tip})`)
 check(q('.sw-money')?.textContent === '~$1.50' && /1 in a subscription/.test(q('.sw-money')?.dataset.tip || ''), 'its score shows its own cost, a subscription worker counted apart')
@@ -741,8 +750,8 @@ stub.state.list['rt-1'] = [
 await tick(3100) // let one subagent.list poll reconcile the run (wire status -> status mapping)
 await emit('subagent.complete', 'rt-1', { subagent_id: 's2', status: 'error', summary: 'boom', duration_seconds: 12, cost_usd: 0.42 })
 check(unitNamed('two')?.classList.contains('is-fail'), 'a unit that fails plays the failure moment (it shakes red)')
-const liveNames = () => units().map(u => `${u.querySelector('.sw-un').textContent}=${u.dataset.st}`).join(',')
-check(liveNames() === '★ main-agent=running,one=running,one-a=running,two=failed,three=queued',
+const liveNames = () => units().map(u => `${uname(u)}=${u.dataset.st}`).join(',')
+check(liveNames() === 'main=running,one=running,one-a=running,two=failed,three=queued',
   `the live run: main agent first, a nested worker right after its parent, each in its own status (${liveNames()})`)
 check(q('.sw-pick')?.textContent === 'Current run' && q('.sw-ld') && !q('.sw-panel')?.dataset.calm, 'a live run is the current run, with its live mark')
 check(unitNamed('one')?.dataset.icon === 'run' && /running a command npm test/.test(unitNamed('one')?.dataset.tip || '') && unitNamed('three')?.dataset.icon === 'wait',
@@ -785,7 +794,7 @@ check(/Waiting on 3 subagents/.test(q('.sw-focus .sw-head')?.textContent || ''),
   ] }]
   await refresh()
   check(unitNamed('done-early')?.dataset.st === 'completed', 'a worker that finished before the rest stays in the live run, done')
-  check(units().filter(u => u.querySelector('.sw-un').textContent === 'one').length === 1, 'a live worker is not duplicated from state.db')
+  check(units().filter(u => uname(u) === 'one').length === 1, 'a live worker is not duplicated from state.db')
   await act(async () => { q('.sw-pick').click() })
   check(!qa('.sw-menu [role=menuitem]').some(i => i.textContent.includes('done-early')), 'that finished worker is not also an earlier run')
   await act(async () => { q('.sw-pick').click() })
@@ -802,7 +811,7 @@ check(/Waiting on 3 subagents/.test(q('.sw-focus .sw-head')?.textContent || ''),
 await emit('subagent.complete', 'rt-1', { subagent_id: 's3', status: 'completed', duration_seconds: 3 })
 check(unitNamed('three')?.classList.contains('is-done') && q('.sw-bign')?.textContent === '1', 'a unit that finishes plays the done moment and the score counts up')
 await tick(1500)
-check(!q('.sw-unit.is-done, .sw-unit.is-fail'), 'the moments end')
+check(!q('.sw-orl.is-done, .sw-orl.is-fail, .sw-orw.is-done, .sw-orw.is-fail'), 'the moments end')
 
 // 8. finishing the run reloads history; it stays as the last run
 const before = rest.filter(p => p.startsWith('/children')).length
@@ -948,7 +957,7 @@ stub.state.list['rt-4'] = []
 await emit('subagent.spawn_requested', 'rt-4', { subagent_id: 'q1', goal: "Queue 'qa-one'", task_index: 0 })
 await emit('subagent.spawn_requested', 'rt-4', { subagent_id: 'q2', goal: "Queue 'qa-two'", task_index: 1 })
 await pollNow()
-const subMarks = () => units().filter(u => !u.dataset.main).map(u => `${u.querySelector('.sw-un').textContent}=${u.dataset.st}`).sort().join(',')
+const subMarks = () => units().filter(u => !u.dataset.main).map(u => `${uname(u)}=${u.dataset.st}`).sort().join(',')
 check(subMarks() === 'qa-one=queued,qa-two=queued', `a queued worker subagent.list does not show yet stays queued (${subMarks()})`)
 await emit('subagent.start', 'rt-4', { subagent_id: 'q1', delegation_id: 'dq', goal: "Queue 'qa-one'", child_session_id: 'kq1' })
 await emit('subagent.start', 'rt-4', { subagent_id: 'q2', delegation_id: 'dq', goal: "Queue 'qa-two'", child_session_id: 'kq-empty' })
@@ -975,9 +984,9 @@ check(q('.sw-pick')?.textContent === 'Current run' && unitNamed('qa-two'), 'a fi
 await act(async () => { releaseHand() })
 await tick(20)
 {
-  const sel = q('.sw-agents button.sw-unit[aria-pressed=true]')
+  const sel = q(`${NODE}[aria-pressed=true]`)
   check(q('.sw-pick')?.textContent === 'Last run' && subMarks() === 'qa-one=completed,qa-two=completed', 'the finished run stays as the last run, from its stored copy')
-  check(sel?.querySelector('.sw-un')?.textContent === 'qa-two' && q('.sw-focus')?.dataset.kind === 'sub', 'the subagent that was selected stays selected')
+  check(sel && uname(sel) === 'qa-two' && q('.sw-focus')?.dataset.kind === 'sub', 'the subagent that was selected stays selected')
   check(!!sel && document.activeElement === sel, `focus follows the run to its selected unit (${document.activeElement?.className})`)
 }
 {
@@ -1013,15 +1022,17 @@ stub.state.listFails = false
 // 24. a chat with no subagents: the main agent alone, what subagents are, its files or none yet
 await act(async () => { stub.atoms.focusedSessionId.set('rt-e'); stub.atoms.focusedStoredSessionId.set('st-empty') })
 await tick(10)
-check(q('.sw-solo') && units().length === 1 && units()[0].dataset.main === 'true' && q('.sw-nosub')?.textContent === 'Subagents appear here when the main agent hands work off to a helper.',
+check(q('.sw-orbit') && !q('.sw-orw') && units().length === 1 && units()[0].dataset.main === 'true' && q('.sw-orbit .sw-nosub')?.textContent === 'Subagents appear here when the main agent hands work off to a helper.',
   'a chat with no subagents shows the main agent and says when subagents appear')
 check(q('.sw-focus')?.dataset.kind === 'main' && q('.sw-focus [data-sec=none] .sw-empty')?.textContent === 'No files read or changed in this chat yet.' && !q('.sw-runb'),
   'its focus panel says no files yet; there is no run to pick')
 check(q('.sw-score')?.getAttribute('aria-label') === 'No subagents yet', 'the score says there are none yet')
-// 25. more than SWARM_AT live subagents: the swarm, the main agent on top waiting on them
+// 25. more live subagents than wings: five wings and a group, the main agent waiting on them
 for (let i = 0; i < 12; i++) await emit('subagent.spawn_requested', 'rt-e', { subagent_id: `e${i}`, goal: `Spawn 'eq-${i}'`, task_index: i })
-check(q('.sw-swarm') && !q('.sw-fleet') && q('.sw-gmain .sw-unit')?.getAttribute('aria-label') === 'Main agent: waiting on 12',
-  `past 8 subagents the schematic gives way to the swarm, the main agent on top waiting on them (${q('.sw-gmain .sw-unit')?.getAttribute('aria-label')})`)
+check(qa('.sw-orw').length === 6 && qa('.sw-orl:not(.is-grp)').length === 5 && q('.sw-orl.is-grp')?.getAttribute('aria-label') === '7 more subagents: 7 waiting'
+  && q('.sw-orl.is-grp .sw-orn')?.textContent === '+7 MØRE' && q('.sw-ormain')?.getAttribute('aria-label') === 'Main agent: waiting on 12',
+  `past six subagents five wings and one holding the rest, the main agent waiting on them (${q('.sw-orl.is-grp')?.getAttribute('aria-label')} · ${q('.sw-ormain')?.getAttribute('aria-label')})`)
+check(qa('.sw-htime .sw-tk').length === 6 && q('.sw-htime .sw-tmore')?.textContent === '+6 MØRE · 0 DØNE', `time per agent: as many tracks as wings, the rest counted (${q('.sw-htime .sw-tmore')?.textContent})`)
 
 // empty chat
 await act(async () => { stub.atoms.focusedSessionId.set(null); stub.atoms.focusedStoredSessionId.set(null) })
@@ -1200,23 +1211,23 @@ await act(async () => { rowOf('b.py').click() })
 await tick(2)
 check(clip.at(-1) === 'D:\\Proj\\src\\b.py' && fq('.sw-toast')?.textContent === 'Path copied', `a row copies its full path (${fq('.sw-toast')?.textContent})`)
 {
-  const docs = [...fhost.querySelectorAll('.sw-agents button.sw-unit')].find(u => u.textContent.includes('docs-writer'))
+  const docs = [...fhost.querySelectorAll(NODE)].find(u => u.textContent.includes('docs-writer'))
   await act(async () => { docs.click() })
   check(fq('.sw-focus')?.dataset.kind === 'sub' && sec('changed').map(r => r.querySelector('.sw-fn').textContent).join() === 'a.py' && !sec('read').length
     && /changed 1 file/.test(fq('.sw-focus .sw-meta')?.textContent || ''),
   `a subagent's panel lists the files it changed, from /files who/editors (${fq('.sw-focus .sw-meta')?.textContent})`)
-  const watchdog = [...fhost.querySelectorAll('.sw-agents button.sw-unit')].find(u => u.textContent.includes('wiki-watchdog'))
+  const watchdog = [...fhost.querySelectorAll(NODE)].find(u => u.textContent.includes('wiki-watchdog'))
   await act(async () => { watchdog.click() })
   check(fq('.sw-focus .sw-verb')?.textContent === '✕ STOPPED WITH AN ERROR' && fq('.sw-focus .sw-ans')?.dataset.st === 'failed' && fq('.sw-focus .sw-tile[data-k=time]')?.dataset.tone === 'bad'
     && fq('.sw-focus .sw-head')?.textContent === "Watch the 'wiki-watchdog' panel",
   `a failed subagent: the verb says it stopped with an error, its answer and run time in red (${fq('.sw-focus .sw-verb')?.textContent})`)
-  await act(async () => { fhost.querySelector('.sw-agents button.sw-unit').click() })
+  await act(async () => { fhost.querySelector(NODE).click() })
 }
 // working on now (1.6.0's shimmer): the main agent's live file calls
 const filesReads = () => rest.filter(p => p === '/files?session_id=st-f').length
 const nowRows = () => fqa('.sw-focus .sw-fr.is-now')
 const nowNames = () => nowRows().map(r => r.querySelector('.sw-fn').textContent).join()
-const mainUnit = () => fhost.querySelector('.sw-agents button.sw-unit')
+const mainUnit = () => fhost.querySelector(NODE)
 await emit('tool.start', 'rt-other', { tool_id: 'x1', name: 'read_file', args: { path: 'D:\\Proj\\src\\b.py' } })
 check(!nowRows().length, "another chat's tool call is not this chat's work")
 await emit('tool.start', 'rt-f', { tool_id: 'm1', name: 'read_file', args: {}, preview: 'worker row' })
@@ -1270,26 +1281,26 @@ await tick(4100)
   const pageCss = mod.default && (fq('style')?.textContent || '')
   const animated = [...pageCss.matchAll(/([^{}]+)\{[^{}]*animation:(?!none)[^{}]*\}/g)].map(m => m[1].trim()).filter(s => !s.startsWith('@') && !/^\d|^from|^to/.test(s))
   check(/@media \(prefers-reduced-motion:reduce\)\{\.sw-page \*,\.sw-page \*::before,\.sw-page \*::after\{animation:none!important;transition:none!important\}\}/.test(pageCss)
-    && animated.length > 5 && animated.every(s => s.split(',').every(one => /^\.sw-(page|panel|unit|sk|ld|bign|nowf|fr|spr|frow)/.test(one.trim()) || /^\.sw-page /.test(one.trim()))),
+    && animated.length > 5 && animated.every(s => s.split(',').every(one => /^\.sw-(page|panel|sk|ld|bign|nowf|fr|or)/.test(one.trim()) || /^\.sw-page /.test(one.trim()))),
   `reduced motion stops every page animation (${animated.length} animated rules, all inside the page)`)
-  check(['sw-shake', 'sw-up', 'sw-slide', 'sw-breathe', 'sw-type', 'sw-blink', 'sw-count', 'sw-in', 'sw-sweep', 'sw-reveal', 'sw-scan'].every(k => new RegExp(`@keyframes ${k}\\{`).test(pageCss)),
-    'the moments exist: shake, count up, slide, breathe, retyped tag, cursor blink, tile count-up, cards in turn, NOW sweep, answer reveal, scan')
+  check(['sw-shake', 'sw-up', 'sw-slide', 'sw-orrun', 'sw-orfill', 'sw-orscan', 'sw-type', 'sw-blink', 'sw-count', 'sw-in', 'sw-sweep', 'sw-reveal', 'sw-scan'].every(k => new RegExp(`@keyframes ${k}\\{`).test(pageCss)),
+    'the moments exist: shake, count up, slide, a wing\'s running cells, its fill when done, the station scan, retyped tag, cursor blink, tile count-up, cards in turn, NOW sweep, answer reveal, scan')
   check(['.sw-page .sw-tn[data-count]', '.sw-page .sw-ft', '.sw-page .sw-ft.is-now::after', '.sw-page .sw-ans', '.sw-page .sw-scan', '.sw-page .sw-radar'].every(sel => animated.includes(sel))
     && /@property --sw-n\{syntax:"<integer>"/.test(pageCss),
     'a panel opening moves: numbers count up, cards appear in turn, a light sweeps the NOW card, the answer reveals — all inside the reduced-motion lock')
 }
 {
   const st = fq('style')?.textContent || ''
-  check(/\.sw-hgrid\.sw-fleet\{display:grid;min-height:0;grid-template-columns:minmax\(0,1fr\) minmax\(0,\.8fr\) minmax\(0,1\.15fr\)/.test(st)
-    && /@container \(max-width:540px\)\{\s*\.sw-hgrid\.sw-fleet\{grid-template-columns:minmax\(0,1fr\)/.test(st) && /\.sw-fleet \.sw-fco,\.sw-fleet \.sw-frun,\.sw-fmain>\.sw-flead,\.sw-fnode::before\{display:none\}/.test(st)
-    && /\.sw-fmain,\.sw-fnode\{grid-column:1;grid-row:auto!important;max-width:none\}/.test(st) && /\.sw-cellgrid\{display:flex;flex-wrap:wrap/.test(st),
-    'the fleet is a three-column schematic that stacks into one column without callouts when narrow; swarm cells wrap: nothing scrolls sideways')
-  const fleet = fhost.querySelector('.sw-agents .sw-fleet')
-  const nodes = fleet ? [...fleet.querySelectorAll('.sw-fnode .sw-unit')] : []
-  const cos = fleet ? [...fleet.querySelectorAll('.sw-fco[data-to]')] : []
-  check(nodes.length > 0 && cos.length === nodes.length && cos.every(co => co.querySelector('.sw-flead'))
-    && cos.every((co, i) => co.dataset.to === nodes[i].dataset.node) && fleet.querySelector('.sw-fmain .sw-unit')?.dataset.main === 'true',
-    `the schematic: the main agent on the left, a callout tied to each subagent node (${nodes.length} nodes, ${cos.length} callouts)`)
+  check(/\.sw-orbit\{position:relative;aspect-ratio:666\/360/.test(st) && /\.sw-ors\{position:absolute;inset:0;width:100%;height:100%/.test(st)
+    && /@container \(max-width:540px\)\{[^@]*\.sw-orlead,\.sw-orpin,\.sw-orbox,\.sw-orkey\{display:none\}/.test(st)
+    && /@container \(max-width:540px\)\{[^@]*\.sw-orl,\.sw-ormain,\.sw-orbit \.sw-nosub\{position:static/.test(st),
+    'the orbit keeps the drawing\'s proportions; narrow, the callouts drop under it as a list without lines: nothing scrolls sideways')
+  const orbit = fhost.querySelector('.sw-agents .sw-orbit')
+  const wings = orbit ? [...orbit.querySelectorAll('.sw-orw')] : []
+  const calls = orbit ? [...orbit.querySelectorAll('.sw-orl')] : []
+  check(wings.length > 0 && calls.length === wings.length && orbit.querySelectorAll('.sw-orlead').length === wings.length + 1
+    && orbit.querySelector('.sw-ormain')?.dataset.main === 'true',
+    `the orbit: the main agent's box, a callout and a line tied to each subagent's wing (${wings.length} wings, ${calls.length} callouts)`)
   check(/@container \(max-width:460px\)\{\.sw-page\[data-theme=terminal\] \.sw-panel \.sw-flist\{grid-template-columns:14px fit-content\(22ch\) 0 39px max-content 0 1fr;/.test(st)
     && !/@container \(max-width:460px\)\{\.sw-page\[data-theme=terminal\][^@]*\.sw-pips(?! i)[^{]*\{display:none/.test(st) && !/\.sw-panel \.sw-ft\{grid-template-columns/.test(st),
     'a narrow Terminal file row keeps its name, thinner blocks and label on the shared columns; the folder and NOW badge give way')
@@ -1312,28 +1323,29 @@ check(sec('read').length === 6 && fq('.sw-focus [data-sec=read] .sw-more')?.text
 await act(async () => { fq('.sw-focus [data-sec=read] .sw-more').click() })
 check(sec('read').length === 45 && !fq('.sw-focus [data-sec=read] .sw-more'), 'Show more lists every file')
 
-// 25. the 40-subagent swarm
+// 25. the 40-subagent orbit: five wings for those that need eyes, the sixth holds the rest
 await act(async () => { stub.atoms.focusedSessionId.set('rt-s'); stub.atoms.focusedStoredSessionId.set('st-swarm') })
 await tick(10)
-const grp = id => fq(`.sw-swarm [data-grp=${id}]`)
-check(fq('.sw-swarm') && fqa('.sw-swarm [data-grp]').map(g => g.dataset.grp).join() === 'failed,running,queued,completed' && fq('.sw-swarm > .sw-gmain .sw-unit')?.dataset.main === 'true',
-  `40 subagents: the main agent on top, then Failed, Working, Waiting, Done (${fqa('.sw-swarm [data-grp]').map(g => g.dataset.grp)})`)
-check([...grp('failed').querySelectorAll('.sw-frow .sw-frn')].map(e => e.textContent).join() === '✗ unit-00,✗ unit-01,✗ unit-02,✗ unit-03',
-  'failed (and stopped) subagents are listed by name')
-check(grp('running').querySelectorAll('.sw-cell').length === 6 && !grp('queued').querySelector('.sw-cell') && !grp('completed').querySelector('.sw-cell')
-  && grp('queued').querySelector('.sw-fold')?.getAttribute('aria-expanded') === 'false' && grp('completed').querySelector('.sw-fold')?.textContent === 'Show',
-  'working subagents are small cells; Waiting and Done start collapsed behind Show')
-check(fq('.sw-bign')?.textContent === '20' && fq('.sw-big small')?.textContent === '/40', 'the swarm score: 20 of 40')
 {
-  const cell = grp('running').querySelector('.sw-cell')
-  check(cell?.dataset.tip === 'unit-04 — working' && cell?.getAttribute('aria-label') === cell?.dataset.tip, `a cell's tooltip names it and its activity (${cell?.dataset.tip})`)
-  await act(async () => { cell.click() })
-  check(fq('.sw-focus')?.dataset.kind === 'sub' && fq('.sw-focus .sw-head')?.textContent === "Sweep 'unit-04'", 'a cell click selects it into the focus panel')
+  const shown = fqa('.sw-orl:not(.is-grp)')
+  check(fqa('.sw-orw').length === 6 && shown.length === 5 && shown.map(b => b.dataset.st).join() === 'failed,failed,failed,running,running'
+    && fq('.sw-ormain')?.dataset.main === 'true',
+    `40 subagents: six wings, the failed first, then working; a stopped one waits in the group (${shown.map(b => `${b.querySelector('.sw-orn')?.textContent}=${b.dataset.st}`)})`)
+  const g = fq('.sw-orl.is-grp')
+  const marks = g ? [...g.querySelectorAll('.sw-orm')].map(m => `${m.dataset.st}=${m.textContent}`).join() : ''
+  check(g?.querySelector('.sw-orn')?.textContent === '+35 MØRE' && marks === 'completed=20,running=4,queued=10,stopped=1' && g.getAttribute('aria-label') === '35 more subagents: 20 done, 4 working, 10 waiting, 1 stopped'
+    && fqa('.sw-orw[data-st=group] .sw-orc').filter(c => c.dataset.k && c.dataset.k !== 'none').length === 16,
+    `the group says how many it holds and a coloured mark with a count per state, never a word (${marks} · ${g?.getAttribute('aria-label')})`)
+  for (const side of ['l', 'r']) {
+    const tops = fqa(`.sw-orl[data-side=${side}]`).map(l => l.style.top)
+    check(tops.length === 3 && new Set(tops).size === 3, `the three callouts of the ${side === 'l' ? 'left' : 'right'} column each have their own row (${tops.join(' ')})`)
+  }
+  check(fq('.sw-orw[data-st=group]') === fqa('.sw-orw')[5] && fq('.sw-orl.is-grp')?.dataset.side === 'l', `the group takes the outer wing, its callout on the left (${fq('.sw-orl.is-grp')?.dataset.side})`)
+  check(fq('.sw-bign')?.textContent === '20' && fq('.sw-big small')?.textContent === '/40', 'the score: 20 of 40')
+  await act(async () => { shown[3].click() })
+  check(fq('.sw-focus')?.dataset.kind === 'sub' && fq('.sw-focus .sw-head')?.textContent === "Sweep 'unit-04'", 'a callout click selects it into the focus panel')
+  check(fqa('.sw-alog > button').length === 40, 'every subagent stays in the log, which the station does not replace')
 }
-await act(async () => { grp('completed').querySelector('.sw-fold').click() })
-check(grp('completed').querySelectorAll('.sw-cell').length === 20 && grp('completed').querySelector('.sw-fold')?.getAttribute('aria-expanded') === 'true', 'Show opens a group')
-check(fq('.sw-page')?.dataset.theme === 'terminal' && fqa('.sw-swarm .sw-cell .sw-glyph').length === 26 && !fqa('.sw-swarm .sw-cell svg').length,
-  'the Terminal swarm draws glyph cells')
 await act(async () => froot.unmount())
 
 // 20b. the kept look is read back from ctx.storage; a storage that fails or is missing falls back
@@ -1423,9 +1435,15 @@ mod.default.register(quietCtx({ storage: undefined }))
   // the HUD: requests + six panels; titles drawn in caps with Ø, read out as plain words
   check(qa('.sw-hp').length === 7 && qa('.sw-hpt').some(h => h.querySelector('[aria-hidden=true]')?.textContent === 'LINES SØ FAR' && h.querySelector('.sw-sr')?.textContent === 'Lines so far'),
     `replay HUD: requests and six panels, each title in caps on screen and in plain words for a screen reader (${qa('.sw-hp').length})`)
-  check(qa('.sw-co[data-to]').length === 1 && q('.sw-co[data-to] .sw-col')?.textContent === 'FRØM LINE 12' && q('.sw-co[data-to] .sw-cov')?.textContent === '+1 −1'
-    && q(`.sw-rl[data-h="${q('.sw-co[data-to]')?.dataset.to}"]`) !== null,
-    'replay HUD: each part of the edit gets a callout with where it starts and its +/− count, tied to its row')
+  {
+    const head = q('.sw-rlines .sw-rl[data-tag="@"]'), minus = q('.sw-rlines .sw-rl[data-tag="-"]')
+    check(qa('.sw-rpart').length === 1 && head?.querySelector('.sw-rpart>span')?.textContent === '1 line replaced' && qa('.sw-rpart .sw-cov').map(e => e.textContent).join() === '−1,+1'
+      && !q('.sw-replay .sw-cos') && !q('.sw-replay .sw-wires') && minus?.querySelector('.sw-rln')?.textContent === '13'
+      && mod.diffNumbers([['@', '12'], [' ', 'k'], ['-', 'o'], ['+', 'n'], [' ', 'z']]).join() === ',12,13,13,14',
+      `replay HUD: each part's header row says what it did (lines replaced) with its −/+ counts, no callout column beside the code; the gutter numbers each row (${head?.textContent})`)
+    check(/\.sw-rlines\{[^}]*white-space:pre-wrap/.test(css) && /\.sw-rl\{display:flex;min-width:0;/.test(css) && /\.sw-rhero\.sw-hgrid>\.sw-rdiff\{margin-right:0\}/.test(css),
+      'replay: the code takes the full width of the panel and wraps, so every line shows whole')
+  }
   check(q('.sw-hbig')?.textContent === '2/ 5', `replay HUD: lines so far counts applied edits only, a failed edit adds nothing (${q('.sw-hbig')?.textContent})`)
   check(qa('.sw-hlog>button').length === 3 && qa('.sw-hlog>button')[1].dataset.st === 'failed' && qa('.sw-hlog .sw-hle').map(e => e.textContent).join() === 'EDIT,FAILED,WRITE'
     && qa('.sw-hlog>button')[0].getAttribute('aria-current') === 'step',
@@ -1441,34 +1459,40 @@ mod.default.register(quietCtx({ storage: undefined }))
     `replay: Next shows the failed edit, why it failed, and the helper by name (${q('.sw-rwhat')?.textContent})`)
   await act(async () => { qa('.sw-rmark')[2].click() })
   await tick(20)
-  check(qa('.sw-rl').length === 40 && /Show the rest \(5 more lines\)/.test(q('.sw-rmore')?.textContent || '') && /7 more lines of this edit not loaded/.test(q('.sw-rdiff')?.textContent || ''),
-    'replay: a long edit shows 40 lines and Show the rest; lines the backend cut are counted')
+  check(qa('.sw-rl[data-k]').length === 40 && q('.sw-rl[data-tag="@"] .sw-rpart>span')?.textContent === '40 lines added' && /Show the rest \(5 more lines\)/.test(q('.sw-rmore')?.textContent || '') && /7 more lines of this edit not loaded/.test(q('.sw-rdiff')?.textContent || ''),
+    'replay: a long edit shows 40 lines and Show the rest; lines the backend cut are counted; a whole-file write still gets a header saying what it added')
   await act(async () => { q('.sw-rmore .sw-ib').click() })
-  check(qa('.sw-rl').length === 45, 'replay: Show the rest shows every line')
+  check(qa('.sw-rl[data-k]').length === 45, 'replay: Show the rest shows every line')
   await act(async () => { rows[1].click() })
   await tick(20)
   check(q('.sw-rof')?.textContent === 'Edit 1 of 1' && rows[1].getAttribute('aria-pressed') === 'true', 'replay: another request opens at its first edit')
   await act(async () => { rows[0].click() })
   await tick(20)
+  const fullPlus = q('.sw-rl[data-tag="+"] .sw-rtext')?.textContent || ''
   await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Play').click() })
   await tick(20)
   {
     const plus = q('.sw-rlines[data-play=true] .sw-rl[data-tag="+"]'), minus = q('.sw-rlines[data-play=true] .sw-rl[data-tag="-"]')
-    check(Number(plus?.style.getPropertyValue('--n')) === [...(plus?.querySelector('.sw-rtext')?.textContent || ' ')].length && /ms$/.test(plus?.style.getPropertyValue('--d') || '') && /ms$/.test(minus?.style.getPropertyValue('--t') || '')
+    check(plus?.querySelector('.sw-rtext')?.textContent === '' && fullPlus.length > 4 && /ms$/.test(plus?.style.getPropertyValue('--d') || '') && /ms$/.test(minus?.style.getPropertyValue('--t') || '')
       && parseFloat(minus.style.getPropertyValue('--d')) < parseFloat(plus.style.getPropertyValue('--d'))
-      && /\.sw-rlines\[data-play\] \.sw-rl\[data-tag="\+"\] \.sw-rtext\{[^}]*sw-typew[^}]*sw-caret/.test(css) && /\.sw-rlines\[data-play\] \.sw-rl\[data-tag="-"\] \.sw-rtext\{text-decoration:line-through;animation:sw-strike/.test(css),
+      && /\.sw-rlines\[data-play\] \.sw-rl\[data-cur\] \.sw-rtext::after\{content:"";[^}]*background:var\(--a\)/.test(css) && /\.sw-rlines\[data-play\] \.sw-rl\[data-tag="-"\] \.sw-rtext\{text-decoration:line-through;animation:sw-strike/.test(css),
       `replay: while Play runs the removed line is struck out first, then the added line is typed in behind a cursor (${qa('.sw-rlines .sw-rl').map(e => e.dataset.tag + (e.style.getPropertyValue('--d') || '·')).join(' ')})`)
     check(mod.wireScale(70, 100) === 0.7 && mod.wireScale(50, 0) === 1, 'leader lines convert screen pixels back to the scaled page (70 on screen / 100 laid out = 0.7)')
-    check(mod.playHold([['-', 'a'], ['+', 'b']]) === 1500 && mod.playHold(Array.from({ length: 30 }, () => ['+', 'x'.repeat(60)])) > 9000 - 1,
-      'replay: Play stays on an edit until its typing is done (1.5 s at least, 9 s at most)')
+    const long = mod.typingPlan(Array.from({ length: 30 }, () => ['+', 'x'.repeat(60)]))
+    check(mod.playHold([['+', 'b']]) === 1950 && mod.typingPlan([['+', 'a'], ['+', 'bb']]).plan[1].d === 1150 && long.plan[1].d - long.plan[0].d === 300 && mod.playHold(long.plan.map(() => ['+', 'x'])) <= 13000,
+      'replay: Play types an added line every 0.9 s as in the draft (faster on a long edit so it ends near 9 s) and stays until the typing is done')
   }
-  await tick(1600)
-  check(q('.sw-rof')?.textContent === 'Edit 1 of 3', `replay: Play stays on an edit whose typing outlasts 1.5 s (${q('.sw-rof')?.textContent})`)
+  await tick(700)
   {
-    const co = q('.sw-co.is-cur'), row = co && q(`.sw-rlines .sw-rl[data-h="${co.dataset.to}"]`)
-    check(co && /^LINE \d+$/.test(co.querySelector('.sw-col')?.textContent || '') && row?.dataset.tag === '+' && mod.lineAt([['@', '12'], [' ', 'k'], ['-', 'o'], ['+', 'n']], 3) === 13,
-      `replay: while Play types, a callout names the line being typed and its wire points at that row (${co?.querySelector('.sw-col')?.textContent})`)
+    const typed = q('.sw-rlines[data-play=true] .sw-rl[data-tag="+"] .sw-rtext')?.textContent || ''
+    check(typed.length > 0 && typed.length < fullPlus.length && fullPlus.startsWith(typed),
+      `replay: Play types an added line in letter by letter (${typed.length} of ${fullPlus.length} letters at 0.7 s)`)
+    const row = q('.sw-rl[data-cur]')
+    check(row?.dataset.tag === '+' && qa('.sw-rl[data-cur]').length === 1, 'replay: the row being typed carries the cursor, and only that row')
   }
+  await tick(900)
+  check(q('.sw-rof')?.textContent === 'Edit 1 of 3' && q('.sw-rl[data-tag="+"] .sw-rtext')?.textContent === fullPlus,
+    `replay: Play stays on an edit until its line is typed whole (${q('.sw-rof')?.textContent})`)
   await tick(600)
   check(q('.sw-rof')?.textContent === 'Edit 2 of 3', `replay: Play steps on by itself once the edit is typed (${q('.sw-rof')?.textContent})`)
   check(q('.sw-rlines') && !q('.sw-rlines[data-play]'), 'replay: Play does not type in a failed edit — it was never applied')

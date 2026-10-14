@@ -264,16 +264,16 @@ const TITLES = {
   6: "6 · The console's other states: running, unreadable, printed nothing (narrow)",
   7: '7 · A chat with no subagents yet — the main agent and its files',
   8: '8 · No chat selected · loading · several sources failing',
-  9: '9 · Narrow (380 px): the nodes stack, the callouts go; nothing scrolls sideways',
+  9: '9 · Narrow (380 px): the station stays, its callouts drop under it as a list; nothing scrolls sideways',
   10: '10 · The status-bar chip · the header "held" state after a click inside the page',
-  11: '11 · 40 subagents: the grouped swarm — failed by name, then working, waiting, done',
+  11: '11 · 40 subagents: five wings for those that need eyes, the sixth holds the rest',
   12: "12 · Replay tab — a request's edits one at a time: removed and added lines, a failed edit, narrow"
 }
 
 for (const look of LOOKS) {
   await frame(1, look, TITLES[1], { live: true })
   await frame(2, look, TITLES[2], { live: true }, async ({ qa, q }) => {
-    const failed = qa('.sw-agents button.sw-unit').find(u => u.dataset.st === 'failed')
+    const failed = qa('.sw-agents .sw-orbit button[data-node]').find(u => u.dataset.st === 'failed')
     await click(failed)
     await click(q('.sw-focus .sw-btns .sw-ib'))
     await tick(10)
@@ -282,7 +282,7 @@ for (const look of LOOKS) {
   await frame(4, look, TITLES[4], {}, async ({ q, qa }) => {
     await click(q('.sw-pick'))
     await click(qa('.sw-menu [role=menuitem]').at(-1))
-    await click(qa('.sw-agents button.sw-unit')[1])
+    await click(qa('.sw-agents .sw-orbit button[data-node]')[1])
   })
   await frame(5, look, TITLES[5], {}, async ({ q, qa }) => {
     await click(q('[role=tab][data-tab=commands]'))
@@ -368,8 +368,8 @@ for (const look of LOOKS) {
     for (let i = 0; i < 20; i++) await emit('subagent.complete', { subagent_id: `w${i}`, status: 'completed', duration_seconds: 60 + i, cost_usd: 0.05 })
     for (let i = 20; i < 23; i++) await emit('subagent.complete', { subagent_id: `w${i}`, status: 'error', summary: 'boom', duration_seconds: 30, cost_usd: 0.02 })
     for (let i = 23; i < 30; i++) await emit('subagent.tool', { subagent_id: `w${i}`, tool_name: ['patch', 'read_file', 'terminal'][i % 3], tool_preview: `src/${SWARM_NAMES[i]}.ts` })
-    const n = [...q('.sw-swarm')?.querySelectorAll('.sw-gh em') || []].reduce((s, e) => s + Number(e.textContent), 0)
-    if (n !== 40) problems.push(`11/${look}: the swarm groups hold ${n} subagents, not 40`)
+    const n = q('.sw-orbit').querySelectorAll('.sw-orl:not(.is-grp)').length + [...q('.sw-orl.is-grp')?.querySelectorAll('.sw-orm') || []].reduce((s, e) => s + Number(e.textContent), 0)
+    if (n !== 40) problems.push(`11/${look}: the orbit's wings and group hold ${n} subagents, not 40`)
   })
 }
 stub.state.listFails = false
