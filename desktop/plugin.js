@@ -3202,8 +3202,8 @@ const CSS = `${TM_PALETTE}
 .sw-page [data-st=failed]{--c:var(--bad)}
 .sw-page [data-st=stopped],.sw-page [data-st=queued],.sw-page [data-st=idle]{--c:var(--idle)}
 .sw-panel{position:relative;container-type:inline-size;max-width:860px;margin:0 auto;padding:16px 18px 18px;color:var(--ink);background:var(--bg)}
-/* the HUD is drawn at 80%: the user asked for a smaller panel, 70% read too small; 11.5px text lands at about 9px */
-.sw-page[data-theme=terminal]{zoom:.8;padding:8px;background:var(--hud-page)}
+/* the HUD is scaled so its smallest text (11.5px) lands at 11px, the size the user picked */
+.sw-page[data-theme=terminal]{zoom:.9565;padding:8px;background:var(--hud-page)}
 .sw-page[data-theme=terminal] .sw-panel{padding:8px 8px 12px;font:350 11.5px/1.5 var(--mono);font-variant-ligatures:none;-webkit-font-smoothing:antialiased;overflow:hidden}
 .sw-page :where(button){font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
 .sw-page button:focus-visible,.sw-page [tabindex]:focus-visible{outline:2px solid var(--a);outline-offset:2px}

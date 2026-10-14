@@ -568,8 +568,8 @@ MUTATIONS = [
      "the HUD accent ignores the theme accent"),
     ("render", JS, "export const wireScale = (onScreen, layout) => (layout ? onScreen / layout || 1 : 1)", "export const wireScale = (onScreen, layout) => 1",
      "leader lines ignore the page scale"),
-    ("render", JS, ".sw-page[data-theme=terminal]{zoom:.8;", ".sw-page[data-theme=terminal]{zoom:.5;",
-     "the HUD shrinks its text under 8px"),
+    ("render", JS, ".sw-page[data-theme=terminal]{zoom:.9565;", ".sw-page[data-theme=terminal]{zoom:.5;",
+     "the HUD shrinks its text under 11px"),
     # ── 2.0.0 commands HUD ──────────────────────────────────────────────────────────────────
     ("render", JS, "onPick: () => onPick(x.id)", "onPick: () => {}", "a command row does not pick its command"),
     ("render", JS, "className: 'sw-cmrow', 'data-st': p.status, 'aria-pressed': selected,", "className: 'sw-cmrow', 'data-st': p.status, 'aria-pressed': false,",
