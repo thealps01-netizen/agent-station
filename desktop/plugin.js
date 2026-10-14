@@ -2290,6 +2290,9 @@ function HudChart({ vals, at, failed }) {
 /** Leader lines from each `.sw-co[data-to]` callout in the hero to the row of `list` whose `attr`
  *  equals its data-to (only while that row is scrolled into view), measured from the laid-out page.
  *  Shared by the Replay diff (rows carry data-h) and any other HUD hero with the same shape. */
+/** The page's scale: a rect's width on screen over its layout width (1 where layout is unknown). */
+export const wireScale = (onScreen, layout) => (layout ? onScreen / layout || 1 : 1)
+
 function useWires(heroRef, deps, list = '.sw-rlines', attr = 'data-h') {
   const [wires, setWires] = useState('')
   useEffect(() => {
@@ -2297,6 +2300,8 @@ function useWires(heroRef, deps, list = '.sw-rlines', attr = 'data-h') {
     if (!hero || typeof hero.getBoundingClientRect !== 'function') return undefined
     const draw = () => {
       const box = hero.getBoundingClientRect()
+      // the page is scaled (CSS zoom): rects come back in screen pixels, the svg draws in the page's own
+      const k = wireScale(box.width, hero.offsetWidth)
       const rows = hero.querySelector(list)
       const view = rows ? rows.getBoundingClientRect() : box
       const out = []
@@ -2307,8 +2312,8 @@ function useWires(heroRef, deps, list = '.sw-rlines', attr = 'data-h') {
         const a = tag.getBoundingClientRect(), b = row.getBoundingClientRect()
         const by = b.top + b.height / 2
         if (by < view.top || by > view.bottom) continue
-        const ax = Math.round(a.left - box.left), ay = Math.round(a.top + a.height / 2 - box.top)
-        const bx = Math.round(view.right - box.left - 10), y = Math.round(by - box.top)
+        const ax = Math.round((a.left - box.left) / k), ay = Math.round((a.top + a.height / 2 - box.top) / k)
+        const bx = Math.round((view.right - box.left) / k - 10), y = Math.round((by - box.top) / k)
         out.push([ax, ay, ax - 18, bx, y])
       }
       const next = JSON.stringify(out)
@@ -2860,7 +2865,7 @@ export function Page() {
             jsx(FleetAgent, { t, u: sel, subs, files, waitingOn: active }, 'agent'),
             jsx(FleetLog, { t, subs, selected: sel.key, onSelect: setSelected, now }, 'log'),
             jsx(HudPanel, {
-              title: t('sw.hudAgents.detail'), span: 6, className: 'sw-hdetail',
+              title: t('sw.hudAgents.detail'), name: sel.main ? main.name : sel.name, span: 6, className: 'sw-hdetail',
               children: [sel.main
                 ? jsx(MainPanel, { t, theme, main, files, touching: calm ? new Map() : touching, tool: calm ? null : tool, waitingOn: active, onToast }, 'focus-main')
                 : jsx(SubPanel, { t, theme, u: sel, parentName, files, onToast }, `focus-${sel.key}`)]
@@ -3131,16 +3136,24 @@ function ProgressChip() {
   })
 }
 
-// Two palettes. The page wears the HUD palette the user picked from a mission-control reference:
-// black ground, near-black panels on hairlines, one mint accent with dark-teal tracks, grey caps labels.
-// It is fixed, so the page looks the same in every app theme; this block is the only place in the file
-// allowed to hold colour literals (audit_static.py hexColor). The status-bar chip sits in the app's own
-// bar and keeps the theme-derived palette: the accent is its ink, green / red / yellow its statuses.
+// Two palettes, both drawn from the app theme, so the panel changes with the skin the user picked.
+// The page keeps the HUD's structure (ground, raised panels on hairlines, grey caps labels, one accent with
+// its dim tracks): its neutrals are the theme's foreground mixed into its background, its accent is the
+// theme accent held light enough on a dark ground (dark enough on a light one) to read, and red / yellow
+// come from the theme's status colours. The status-bar chip sits in the
+// app's own bar and tints everything toward the accent. No colour literals anywhere (audit_static.py).
 const TM_PALETTE = `
-.sw-page[data-theme=terminal]{--tm-acc:#72f2d2;--tm-bg:#000;--tm-raised:#101010;--tm-ink:#c4c4c4;--tm-hi:#f2f2f2;--tm-name:#e2e2e2;--tm-dim:#8a8a8a;
- --tm-line:#232323;--tm-badline:#5a2a22;--tm-run:#e8c46a;--tm-bad:#f07a62;--tm-ok:#72f2d2;--tm-glow:#72f2d266;--tm-shade:#000;
- --hud-page:#000;--hud-hero:#0c0b0e;--hud-line2:#2e2e2e;--hud-grid:#161618;--hud-track:#1d1d1d;--hud-teal:#243e38;--hud-teal-b:#315046;--hud-teal-d:#142521;
- --hud-wire:#a9a9ab;--hud-frame:#bdbdbf;--hud-node:#3a3a3c}
+.sw-page[data-theme=terminal]{--hud-fg:var(--ui-base);--hud-bgc:var(--dt-background);
+ --tm-acc:light-dark(oklch(from var(--ui-accent) min(l,.5) c h),oklch(from var(--ui-accent) max(l,.76) c h));--tm-ok:var(--tm-acc);
+ --tm-bg:var(--hud-bgc);--tm-raised:color-mix(in srgb,var(--hud-fg) 4%,var(--hud-bgc));--tm-shade:var(--hud-bgc);
+ --tm-hi:var(--hud-fg);--tm-name:color-mix(in srgb,var(--hud-fg) 90%,var(--hud-bgc));--tm-ink:color-mix(in srgb,var(--hud-fg) 78%,var(--hud-bgc));
+ --tm-dim:color-mix(in srgb,var(--hud-fg) 58%,var(--hud-bgc));--tm-line:color-mix(in srgb,var(--hud-fg) 12%,var(--hud-bgc));
+ --tm-badline:color-mix(in srgb,var(--ui-red) 40%,var(--hud-bgc));--tm-run:color-mix(in srgb,var(--ui-yellow) 82%,var(--hud-fg));
+ --tm-bad:color-mix(in srgb,var(--ui-red) 82%,var(--hud-fg));--tm-glow:color-mix(in srgb,var(--tm-acc) 40%,transparent);
+ --hud-page:var(--hud-bgc);--hud-hero:color-mix(in srgb,var(--hud-fg) 2%,var(--hud-bgc));--hud-line2:color-mix(in srgb,var(--hud-fg) 16%,var(--hud-bgc));
+ --hud-grid:color-mix(in srgb,var(--hud-fg) 6%,var(--hud-bgc));--hud-track:color-mix(in srgb,var(--hud-fg) 10%,var(--hud-bgc));
+ --hud-teal:color-mix(in srgb,var(--tm-acc) 24%,var(--hud-bgc));--hud-teal-b:color-mix(in srgb,var(--tm-acc) 34%,var(--hud-bgc));--hud-teal-d:color-mix(in srgb,var(--tm-acc) 13%,var(--hud-bgc));
+ --hud-wire:color-mix(in srgb,var(--hud-fg) 62%,var(--hud-bgc));--hud-frame:color-mix(in srgb,var(--hud-fg) 72%,var(--hud-bgc));--hud-node:color-mix(in srgb,var(--hud-fg) 22%,var(--hud-bgc))}
 .sw-sbw[data-theme=terminal]{--tm-acc:color-mix(in srgb,var(--ui-accent) 70%,var(--ui-text-primary));
  --tm-bg:color-mix(in srgb,var(--ui-accent) 5%,var(--dt-background));--tm-raised:color-mix(in srgb,var(--ui-accent) 10%,var(--dt-background));
  --tm-ink:color-mix(in srgb,var(--ui-accent) 30%,var(--ui-text-primary));--tm-hi:color-mix(in srgb,var(--ui-accent) 12%,var(--ui-text-primary));
@@ -3189,8 +3202,9 @@ const CSS = `${TM_PALETTE}
 .sw-page [data-st=failed]{--c:var(--bad)}
 .sw-page [data-st=stopped],.sw-page [data-st=queued],.sw-page [data-st=idle]{--c:var(--idle)}
 .sw-panel{position:relative;container-type:inline-size;max-width:860px;margin:0 auto;padding:16px 18px 18px;color:var(--ink);background:var(--bg)}
-.sw-page[data-theme=terminal]{background:var(--hud-page)}
-.sw-page[data-theme=terminal] .sw-panel{font:350 12.5px/1.6 var(--mono);font-variant-ligatures:none;-webkit-font-smoothing:antialiased;overflow:hidden;box-shadow:inset 0 0 0 1px var(--line)}
+/* the HUD is drawn at 70%: the user asked for a 30% smaller panel; 11.5px text lands at about 8px */
+.sw-page[data-theme=terminal]{zoom:.7;padding:8px;background:var(--hud-page)}
+.sw-page[data-theme=terminal] .sw-panel{padding:8px 8px 12px;font:350 11.5px/1.5 var(--mono);font-variant-ligatures:none;-webkit-font-smoothing:antialiased;overflow:hidden}
 .sw-page :where(button){font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
 .sw-page button:focus-visible,.sw-page [tabindex]:focus-visible{outline:2px solid var(--a);outline-offset:2px}
 .sw-page button:disabled{opacity:.5;cursor:default}
@@ -3201,7 +3215,7 @@ const CSS = `${TM_PALETTE}
 /* header */
 .sw-hd{display:flex;align-items:center;gap:10px;min-width:0}
 .sw-ht{flex:none;margin:0;font:700 13px var(--mono);letter-spacing:.2em;text-transform:uppercase;white-space:nowrap}
-.sw-page[data-theme=terminal] .sw-ht{letter-spacing:0;color:var(--tm-hi);text-shadow:0 0 8px var(--tm-glow)}
+.sw-page[data-theme=terminal] .sw-ht{letter-spacing:.1em;color:var(--tm-hi)}
 .sw-chatn{min-width:0;flex:0 1 auto;font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sw-page[data-theme=terminal] .sw-chatn{text-transform:lowercase}
 .sw-held{flex:none;font:600 11.5px var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:0 6px;color:var(--ink);background:color-mix(in srgb,var(--a) 22%,var(--bg));box-shadow:inset 0 0 0 1px var(--a)}
@@ -3296,7 +3310,7 @@ const CSS = `${TM_PALETTE}
 .sw-seg i{flex:1;max-width:60px;transform:skewX(-20deg);background:var(--c,var(--idle))}
 .sw-spent{text-align:right}
 .sw-money{display:block;font:700 19px var(--mono)}
-.sw-page[data-theme=terminal] .sw-big{font-size:24px;text-shadow:0 0 8px var(--tm-glow);color:var(--tm-hi)}
+.sw-page[data-theme=terminal] .sw-big{font-size:20px;font-weight:300;text-shadow:none;color:var(--tm-hi)}
 .sw-page[data-theme=terminal] .sw-seg{gap:0;height:12px}
 .sw-page[data-theme=terminal] .sw-seg i{transform:none}
 .sw-page[data-theme=terminal] .sw-money{font-size:14px;color:var(--tm-hi)}
@@ -3373,7 +3387,7 @@ const CSS = `${TM_PALETTE}
 .sw-pg{display:grid;place-items:center;width:58px;height:52px;font:22px/1 var(--mono);color:var(--c);border:1px solid currentColor;box-shadow:inset 0 0 12px color-mix(in srgb,var(--c) 45%,transparent)}
 .sw-page[data-theme=terminal] .sw-ptag{position:static;transform:none;padding:0;background:none;box-shadow:none;font-weight:400;letter-spacing:0;color:var(--c)}
 .sw-page[data-theme=terminal] .sw-verb{letter-spacing:.04em;color:var(--c)}
-.sw-page[data-theme=terminal] .sw-head{font:600 15px/1.35 var(--mono);color:var(--tm-hi);text-shadow:0 0 8px var(--tm-glow)}
+.sw-page[data-theme=terminal] .sw-head{font:400 13px/1.35 var(--mono);color:var(--tm-hi);text-shadow:none}
 .sw-page[data-theme=terminal] .sw-head.is-file{font-size:16px}
 /* focus: stat tiles */
 @property --sw-n{syntax:"<integer>";inherits:false;initial-value:0}
@@ -3418,7 +3432,7 @@ const CSS = `${TM_PALETTE}
 .sw-ansm{display:inline-block;margin-top:6px}
 .sw-page[data-theme=terminal] .sw-ans{margin-top:18px;padding:12px 12px 8px;font-size:12.5px;background:color-mix(in srgb,var(--c) 10%,var(--bg));border:1px solid var(--c)}
 .sw-page[data-theme=terminal] .sw-ans::before,.sw-page[data-theme=terminal] .sw-ans::after,.sw-page[data-theme=terminal] .sw-sig{display:none}
-.sw-page[data-theme=terminal] .sw-ansh{position:absolute;top:-11px;left:10px;margin:0;padding:0 6px;background:var(--bg);color:color-mix(in srgb,var(--c) 70%,var(--ink))}
+.sw-page[data-theme=terminal] .sw-ansh{position:absolute;top:-11px;left:10px;margin:0;padding:0 6px;background:var(--bg);color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-ansh::before{content:">> "}
 /* focus: files */
 .sw-fsec{margin-top:16px}
@@ -3518,7 +3532,7 @@ const CSS = `${TM_PALETTE}
 .sw-pu{margin:8px 0 0;color:var(--dim)}
 .sw-pu::before{content:"⚠ ";color:var(--run)}
 .sw-page[data-theme=terminal] .sw-exit{width:auto;height:auto;padding:4px 12px;clip-path:none;background:none;border:1px solid currentColor;color:color-mix(in srgb,var(--c) 80%,var(--ink));line-height:1.1}
-.sw-page[data-theme=terminal] .sw-exit b{font-size:18px;color:inherit;text-shadow:0 0 8px var(--c)}
+.sw-page[data-theme=terminal] .sw-exit b{font-size:15px;color:inherit;text-shadow:none}
 .sw-page[data-theme=terminal] .sw-exit span{color:inherit;letter-spacing:0}
 .sw-page[data-theme=terminal] .sw-radar{width:auto;height:auto;margin:0;border-radius:0;background:none;box-shadow:none;font:20px/1 var(--mono);color:var(--run)}
 .sw-page[data-theme=terminal] .sw-radar::before{content:"◜"}
@@ -3626,7 +3640,7 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-agents .sw-pick::before{color:var(--dim);letter-spacing:.14em}
 .sw-page[data-theme=terminal] .sw-agents .sw-back{text-transform:uppercase;letter-spacing:.12em}
 .sw-hnote{margin:0;color:var(--dim)}
-.sw-hgrid.sw-fleet{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) minmax(0,.8fr) minmax(0,1.15fr);grid-template-rows:repeat(var(--sw-rows,1),minmax(62px,auto));column-gap:34px;row-gap:10px;min-height:0;padding:8px 4px}
+.sw-hgrid.sw-fleet{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) minmax(0,.8fr) minmax(0,1.15fr);grid-template-rows:repeat(var(--sw-rows,1),minmax(48px,auto));column-gap:34px;row-gap:6px;min-height:0;padding:6px 4px}
 .sw-fmain{grid-column:1;grid-row:1/-1;position:relative;display:flex;align-items:center;min-width:0;min-height:140px;padding:52px 0}
 .sw-frun{position:absolute;top:0;left:0}
 .sw-fmain>.sw-unit,.sw-fmain>:not(.sw-frun):not(.sw-flead){flex:0 1 250px;min-width:0}
@@ -3644,7 +3658,7 @@ const CSS = `${TM_PALETTE}
 .sw-fco::after{top:50%;width:17px;height:1px}
 .sw-fnode{grid-column:3;position:relative;align-self:center;min-width:0;max-width:280px}
 .sw-fnode::before{content:"";position:absolute;z-index:1;left:-3px;top:calc(50% - 2px);width:5px;height:5px;border-radius:50%;background:var(--hud-frame)}
-.sw-page[data-theme=terminal] .sw-agents .sw-unit{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:0 10px;width:100%;min-width:0;padding:6px 10px!important;text-align:left!important;
+.sw-page[data-theme=terminal] .sw-agents .sw-unit{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:0 9px;width:100%;min-width:0;padding:4px 9px!important;text-align:left!important;
  background:var(--hud-hero);border:1px solid var(--hud-node);box-shadow:inset 2px 0 0 var(--c)}
 .sw-page[data-theme=terminal] .sw-agents .sw-unit:hover{border-color:var(--hud-frame)}
 .sw-page[data-theme=terminal] .sw-agents .sw-unit.is-sel{border-color:var(--c);box-shadow:inset 2px 0 0 var(--c),0 0 14px color-mix(in srgb,var(--c) 32%,transparent),inset 0 0 14px color-mix(in srgb,var(--c) 10%,transparent)}
@@ -3692,11 +3706,18 @@ const CSS = `${TM_PALETTE}
 .sw-alog .sw-hle::before{display:inline-block;margin:0 7px 2px 0;vertical-align:middle}
 .sw-alog>button[aria-pressed=true]{background:var(--hud-teal-d);box-shadow:inset 2px 0 0 var(--c,var(--a))}
 .sw-alog>button[aria-pressed=true]>*{color:var(--tm-hi,var(--ink))}
-.sw-hp.sw-hdetail{background:var(--bg)}
 .sw-page[data-theme=terminal] .sw-hdetail .sw-focus{margin-top:0;padding:0;border:0;background:none}
+.sw-page[data-theme=terminal] .sw-hdetail .sw-por{width:42px}
+/* DETAIL says each thing once: the panel title names the agent, so the focus label above the hero goes */
+.sw-page[data-theme=terminal] .sw-hdetail .sw-ph{display:none}
+.sw-page[data-theme=terminal] .sw-hdetail .sw-fsec{margin-top:12px}
+/* on the NOW row's amber wash grey would fall under 4.5:1, so its folder and verb read in ink */
+.sw-page[data-theme=terminal] .sw-hdetail .sw-ft.is-now :is(.sw-fd,.sw-fl){color:var(--ink)}
+.sw-page[data-theme=terminal] .sw-hdetail .sw-pg{width:42px;height:38px;font-size:16px;box-shadow:none}
+.sw-page[data-theme=terminal] .sw-hdetail .sw-head.is-file{font-size:13px}
 /* inside DETAIL the file sections read like the HUD's own panels: a caps grey heading over a hairline,
    not the boxed sections with a title cut into the frame */
-.sw-page[data-theme=terminal] .sw-hdetail .sw-fsec{margin-top:16px;padding:8px 0 0;border:0;border-top:1px solid var(--hud-line2)}
+.sw-page[data-theme=terminal] .sw-hdetail .sw-fsec{padding:8px 0 0;border:0;border-top:1px solid var(--hud-line2)}
 .sw-page[data-theme=terminal] .sw-hdetail .sw-fsec>.sw-k,.sw-page[data-theme=terminal] .sw-hdetail .sw-fh{position:static;margin:0 0 6px;padding:0;background:none}
 @container (max-width:540px){
  .sw-hgrid.sw-fleet{grid-template-columns:minmax(0,1fr);grid-template-rows:none;row-gap:8px;padding:6px 0}
@@ -3730,7 +3751,7 @@ const CSS = `${TM_PALETTE}
 .sw-tkb>i{position:absolute;left:0;top:0;bottom:0;--k:var(--c,var(--a));background:linear-gradient(90deg,color-mix(in srgb,var(--k) 8%,var(--raised)),color-mix(in srgb,var(--k) 34%,var(--raised)))}
 .sw-tkb>i::after{content:"";position:absolute;right:-1px;top:-2px;bottom:-2px;width:2px;background:var(--k);box-shadow:0 0 6px var(--k)}
 .sw-tks{display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim)}
-.sw-hbig{display:flex;align-items:baseline;gap:6px;font-size:32px;line-height:1;font-weight:250;letter-spacing:-.03em;color:var(--tm-hi,var(--ink))}
+.sw-hbig{display:flex;align-items:baseline;gap:6px;font-size:28px;line-height:1;font-weight:250;letter-spacing:-.03em;color:var(--tm-hi,var(--ink))}
 .sw-hbig small{font-size:11.5px;font-weight:400;letter-spacing:0;color:var(--dim)}
 .sw-ch{display:block;width:100%;height:92px;margin-top:8px}
 .sw-chg{stroke:var(--hud-grid,var(--line));stroke-width:1;vector-effect:non-scaling-stroke}
@@ -3742,7 +3763,7 @@ const CSS = `${TM_PALETTE}
 .sw-chd{fill:var(--a);stroke:var(--raised);stroke-width:2;vector-effect:non-scaling-stroke}
 .sw-chx{fill:var(--bad)}
 .sw-chax{display:flex;justify-content:space-between;margin-top:4px;font-size:11.5px;color:var(--dim)}
-.sw-hrow{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--tm-hi,var(--ink));white-space:nowrap}
+.sw-hrow{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--tm-hi,var(--ink));white-space:nowrap}
 .sw-hrow b{font-weight:400}
 .sw-rmarks{display:flex;gap:3px;height:30px;margin-top:10px;overflow:hidden}
 .sw-rmarks>span{display:flex;flex:1 1 0;min-width:3px}
@@ -3799,7 +3820,7 @@ const CSS = `${TM_PALETTE}
 .sw-rbad{color:var(--ink)}
 .sw-rbad::after{content:"";display:inline-block;width:6px;height:6px;margin-left:6px;vertical-align:1px;background:var(--bad)}
 .sw-rfile{display:flex;align-items:center;gap:10px;min-width:0;margin:-4px 0 10px}
-.sw-rname{flex:0 1 auto;min-width:0;font-size:17px;font-weight:600;letter-spacing:.04em;color:var(--tm-hi,var(--ink))}
+.sw-rname{flex:0 1 auto;min-width:0;font-size:14px;font-weight:600;letter-spacing:.04em;color:var(--tm-hi,var(--ink))}
 .sw-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);column-gap:14px;row-gap:5px;margin:0}
 .sw-kv>dt{font-size:11.5px;letter-spacing:.1em;line-height:1.8;color:var(--dim)}
 .sw-kv>dd{min-width:0;margin:0;color:var(--ink)}

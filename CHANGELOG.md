@@ -12,6 +12,14 @@ still takes the theme's colours. Red marks only a failure, amber only something 
 
 ### Changed
 
+- **The HUD follows the Hermes theme.** Its ground, panels, hairlines and text are the theme's
+  foreground mixed into its background; its accent is the theme accent, held light enough to read on a
+  dark ground; red and amber are the theme's status colours. No colour is fixed any more.
+- **30% smaller.** The HUD page is drawn at 70% (CSS zoom); its 11.5 px text lands at about 8 px, and the
+  leader lines convert screen pixels back to the scaled page so they still meet their rows.
+- **Denser, like the draft.** 11.5 px body text, one 8 px gutter and no frame around the panels, tighter
+  fleet nodes and smaller large numbers, no text glow. DETAIL sits on the same ground as the other panels,
+  names its agent in its title instead of a second focus label, and has a smaller portrait.
 - **Play types the edit out.** Each removed line is struck through and dims, then each added line is
   typed in behind a mint cursor, and the list follows the line being typed; Play stays on an edit until
   it is done (1.5 s at least, 9 s at most). A failed edit was never applied, so it stands still. Reduced

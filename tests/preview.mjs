@@ -396,9 +396,9 @@ const styles = appCss
   : `app stylesheet NOT FOUND in ${DIST_ASSETS || '(no core found — set HERMES_AGENT_DIR)'} (the picture is unstyled)`
 if (!appCss) console.log(`warning: ${styles}`)
 
-// The seeds `applyTheme()` sets inline on <html> for the default dark skin; the compiled sheet
-// derives every --ui-* token from them.
-const DARK_SEEDS = ':root.dark { --theme-background-seed: #0d0d0e; --theme-sidebar-seed: #0a0a0b;'
+// The seeds `applyTheme()` sets inline on <html> for the default dark skin, and the colour scheme it sets
+// with them (light-dark() in the palette reads it); the compiled sheet derives every --ui-* token from them.
+const DARK_SEEDS = ':root.dark { color-scheme: dark; --theme-background-seed: #0d0d0e; --theme-sidebar-seed: #0a0a0b;'
   + ' --theme-card-seed: #161618; --theme-neutral-card: #161618; --theme-foreground: #f4f4f6; }'
 
 // One row per screen, one column per look, each frame in the order it was drawn.

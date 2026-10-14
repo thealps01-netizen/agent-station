@@ -17,7 +17,7 @@ Rules
                aria-hidden and the Tip is hover-only, so without it a screen reader hears nothing / a bare number
   hexColor     no hard-coded colour in the page's CSS or SVG — tokens only, so every skin follows; this
                covers hex and rgb()/rgba()/hsl() literals (a shadow in rgb(0 0 0/.22) ignores the skin too).
-               One exception: the page's fixed HUD palette, the `.sw-page` rule at the top of TM_PALETTE.
+               The HUD palette too: it is drawn from the app theme, so it has no exception.
   toneInk      no theme tone (--ui-red / green / yellow / blue) as the `color:` of text — the tone rides
                the mark, the text uses a reading token (tone red on the dark card measured 3.3:1 < 4.5)
   silentCatch  every `catch` in the page logs or surfaces the error; every `except` in the backend
@@ -146,20 +146,9 @@ def check_markup(js: str) -> None:
         report("iconLabel: IconButton no longer sets `aria-label` from its label")
 
 
-# The page's HUD palette (the user's mission-control reference, fixed on purpose so the page looks the
-# same in every app theme) is the one block allowed to hold colour literals: the `.sw-page` rule at the
-# top of TM_PALETTE, up to its closing brace. Everything else uses its tokens.
-HUD_PALETTE = re.compile(r"const TM_PALETTE = `\n\.sw-page\[data-theme=terminal\]\{[^}]*\}")
-
-
 def check_colors(js: str) -> None:
-    palette = HUD_PALETTE.search(js)
-    if not palette:
-        report("hexColor: the HUD palette block (TM_PALETTE's `.sw-page` rule) is gone — its literals have no home")
-    lo = js[:palette.start()].count("\n") + 1 if palette else 0
-    hi = lo + palette.group(0).count("\n") if palette else -1
     for line_no, line in enumerate(js.splitlines(), 1):
-        if line.lstrip().startswith(("//", "*")) or lo < line_no <= hi:
+        if line.lstrip().startswith(("//", "*")):
             continue
         for hex_value in re.findall(r"#[0-9a-fA-F]{3,8}\b", line):
             report(f"hexColor: line {line_no} hard-codes {hex_value} — use a theme token")

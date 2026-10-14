@@ -50,7 +50,7 @@
  *  25. More than 8 subagents: the swarm (40-subagent fixture) — main agent on top, Failed by name,
  *      Working cells (tooltip, click selects), Waiting and Done collapsed behind Show; units wrap.
  *  26. Reduced motion stops every page animation; the motion moments exist (ring close, shake, count
- *      up, slide, breathe, retyped tag, cursor blink); text never below 11.5px; focus rings; focusable
+ *      up, slide, breathe, retyped tag, cursor blink); text never below 11.5px (8px once the HUD's 70% scale applies); focus rings; focusable
  *      tooltip triggers; reading tokens; a mounted live region.
  *
  * Removed in 1.7.0 with the features they locked: agent letters (agentLetters / baseLetters, the
@@ -460,6 +460,9 @@ check(qa('[data-tip]').filter(e => !e.closest('button')).every(e => e.tabIndex =
     for (const n of decl.match(/(?<![\d./])\d+(\.\d+)?px/g) || []) if (parseFloat(n) < 11.5) small.push(decl)
   }
   check(!small.length, `no text below 11.5px (${small.join(' | ')})`)
+  // the HUD page is drawn at a scale the user picked (30% smaller); with it no text lands under 8px
+  const zoom = parseFloat(css.match(/\.sw-page\[data-theme=terminal\]\{zoom:([\d.]+);/)?.[1] || '1')
+  check(zoom >= 0.69 && 11.5 * zoom >= 8 - 0.05, `the HUD is drawn at its picked scale and no text lands under 8px (zoom ${zoom} → ${(11.5 * zoom).toFixed(1)}px)`)
 }
 check(/--dim:var\(--ui-text-secondary\)/.test(css) && !/tertiary/.test(css.match(/\.sw-model\{[^}]*\}/)?.[0] || 'tertiary')
   && !/tertiary/.test(css.match(/\.sw-meta\{[^}]*\}/)?.[0] || 'tertiary'),
@@ -472,14 +475,16 @@ check(units().length === 3 && units().every(u => u.querySelector('pre.sw-spr'))
   && units().map(u => u.querySelector('.sw-us').textContent).join() === '[IDLE],[OK ],[ERR]',
   `Terminal draws ASCII sprite boxes with status tags (${units().map(u => u.querySelector('.sw-us')?.textContent)})`)
 {
-  // The page wears the fixed HUD palette (black ground, one mint accent); its colour literals live in
-  // that one rule and nowhere else. The status-bar chip sits in the app's bar and keeps the theme's tokens.
-  const hud = css.match(/\.sw-page\[data-theme=terminal\]\{--tm-acc:[^}]*\}/)?.[0] || ''
+  // Both palettes come from the app theme, so the panel follows the skin the user picked: the page mixes
+  // the theme's foreground into its background for every neutral and takes the theme accent (held light
+  // enough to read); the status-bar chip tints toward the accent. No colour literal anywhere.
+  const hud = css.match(/\.sw-page\[data-theme=terminal\]\{--hud-fg:[^}]*\}/)?.[0] || ''
   const chip = css.match(/\.sw-sbw\[data-theme=terminal\]\{[^}]*\}/)?.[0] || ''
-  check(/\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-acc\)/.test(css) && /--tm-acc:#72f2d2/.test(hud) && /--tm-bg:#000/.test(hud) && /--tm-bad:#/.test(hud)
+  check(/\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-acc\)/.test(css) && /--hud-fg:var\(--ui-base\)/.test(hud) && /--hud-bgc:var\(--dt-background\)/.test(hud)
+    && /--tm-acc:light-dark\(oklch\(from var\(--ui-accent\)/.test(hud) && /--tm-bad:color-mix\(in srgb,var\(--ui-red\)/.test(hud) && /--tm-run:color-mix\(in srgb,var\(--ui-yellow\)/.test(hud)
     && /--tm-acc:color-mix\(in srgb,var\(--ui-accent\)/.test(chip) && /--tm-ok:color-mix\(in srgb,var\(--ui-green\)/.test(chip) && /--tm-bad:color-mix\(in srgb,var\(--ui-red\)/.test(chip)
-    && !/#[0-9a-f]{3,8}\b/i.test(css.replace(hud, '')),
-    'Terminal: the page wears the fixed HUD palette (literals only in its one rule); the status-bar chip keeps the theme tokens')
+    && !/#[0-9a-f]{3,8}\b/i.test(css),
+    'Terminal: the page and the status-bar chip both take their colours from the app theme — no literal anywhere')
 }
 
 // 22. the run picker: the last run now, earlier runs on demand, Back to now
@@ -1378,7 +1383,7 @@ mod.default.register(quietCtx({ storage: undefined }))
       { id: 't0', at: NOWS - 5000, files: 1, more_steps: 0, ask: 'x'.repeat(500), steps: [st('z#0', 'D:/Proj/z.py')] }
     ]
   }
-  const LINES = { 'a#0': [['@', '12'], [' ', 'keep'], ['-', 'old line'], ['+', 'new line']], 'b#0': [['-', 'p'], ['+', 'q']], 'c#0': Array.from({ length: 45 }, (_, i) => ['+', `line ${i}`]), 'z#0': [['+', 'z']] }
+  const LINES = { 'a#0': [['@', '12'], [' ', 'keep'], ['-', 'old line'], ['+', 'new line typed out one key at a time']], 'b#0': [['-', 'p'], ['+', 'q']], 'c#0': Array.from({ length: 45 }, (_, i) => ['+', `line ${i}`]), 'z#0': [['+', 'z']] }
   const replayCtx = quietCtx({
     rest: async path => {
       if (path.startsWith('/replay_step')) {
@@ -1440,11 +1445,14 @@ mod.default.register(quietCtx({ storage: undefined }))
       && parseFloat(minus.style.getPropertyValue('--d')) < parseFloat(plus.style.getPropertyValue('--d'))
       && /\.sw-rlines\[data-play\] \.sw-rl\[data-tag="\+"\] \.sw-rtext\{[^}]*sw-typew[^}]*sw-caret/.test(css) && /\.sw-rlines\[data-play\] \.sw-rl\[data-tag="-"\] \.sw-rtext\{text-decoration:line-through;animation:sw-strike/.test(css),
       `replay: while Play runs the removed line is struck out first, then the added line is typed in behind a cursor (${qa('.sw-rlines .sw-rl').map(e => e.dataset.tag + (e.style.getPropertyValue('--d') || '·')).join(' ')})`)
+    check(mod.wireScale(70, 100) === 0.7 && mod.wireScale(50, 0) === 1, 'leader lines convert screen pixels back to the scaled page (70 on screen / 100 laid out = 0.7)')
     check(mod.playHold([['-', 'a'], ['+', 'b']]) === 1500 && mod.playHold(Array.from({ length: 30 }, () => ['+', 'x'.repeat(60)])) > 9000 - 1,
       'replay: Play stays on an edit until its typing is done (1.5 s at least, 9 s at most)')
   }
   await tick(1600)
-  check(q('.sw-rof')?.textContent === 'Edit 2 of 3', `replay: Play steps on by itself (${q('.sw-rof')?.textContent})`)
+  check(q('.sw-rof')?.textContent === 'Edit 1 of 3', `replay: Play stays on an edit whose typing outlasts 1.5 s (${q('.sw-rof')?.textContent})`)
+  await tick(600)
+  check(q('.sw-rof')?.textContent === 'Edit 2 of 3', `replay: Play steps on by itself once the edit is typed (${q('.sw-rof')?.textContent})`)
   check(q('.sw-rlines') && !q('.sw-rlines[data-play]'), 'replay: Play does not type in a failed edit — it was never applied')
   await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Pause').click() })
   await tick(1600)
