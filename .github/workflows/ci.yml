@@ -29,7 +29,9 @@ jobs:
   gates:
     name: gates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # The canary step re-runs the gates once per mutation (277 at 2.0.0): it took ~17 min at 1.6.0 and
+    # passed 23 min at 2.0.0 before 25 cut it off. 60 leaves room; a hang still ends.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
