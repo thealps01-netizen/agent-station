@@ -541,6 +541,10 @@ MUTATIONS = [
      "yesterday's edit reads as a date"),
     ("render", JS, "      got.data?.cut ? jsx('p', { className: 'sw-cmnote', children: t('sw.replay.notLoaded', got.data.cut) }, 'c') : null", "      null",
      "lines the backend cut are not counted"),
+    ("render", JS, "jsx(DiffLines, { t, step, got, typing: playing }, step.id),", "jsx(DiffLines, { t, step, got, typing: false }, step.id),",
+     "Play shows each edit standing still: nothing is struck out or typed in"),
+    ("render", JS, "return ctxRef.setTimeout(() => setIndex(index + 1), hold)", "return ctxRef.setTimeout(() => setIndex(index + 1), PLAY_MS)",
+     "Play moves on before a long edit has finished typing"),
     # ── 2.0.0 the HUD ───────────────────────────────────────────────────────────────────────
     ("render", JS, "...hunks.slice(0, 3).map(h => ", "...[].map(h => ", "the diff's parts get no callouts"),
     ("render", JS, "const sizes = steps.map(s => (s.failed ? 0 :", "const sizes = steps.map(s => (false ? 0 :",

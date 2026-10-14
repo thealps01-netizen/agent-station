@@ -1432,9 +1432,19 @@ mod.default.register(quietCtx({ storage: undefined }))
   await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Play').click() })
   await tick(1600)
   check(q('.sw-rof')?.textContent === 'Edit 2 of 3', `replay: Play steps on by itself (${q('.sw-rof')?.textContent})`)
+  {
+    const plus = q('.sw-rlines[data-play=true] .sw-rl[data-tag="+"]'), minus = q('.sw-rlines[data-play=true] .sw-rl[data-tag="-"]')
+    check(plus?.style.getPropertyValue('--n') === '1' && /ms$/.test(plus?.style.getPropertyValue('--d') || '') && /ms$/.test(minus?.style.getPropertyValue('--t') || '')
+      && parseFloat(minus.style.getPropertyValue('--d')) < parseFloat(plus.style.getPropertyValue('--d'))
+      && /\.sw-rlines\[data-play\] \.sw-rl\[data-tag="\+"\] \.sw-rtext\{[^}]*sw-typew[^}]*sw-caret/.test(css) && /\.sw-rlines\[data-play\] \.sw-rl\[data-tag="-"\] \.sw-rtext\{text-decoration:line-through;animation:sw-strike/.test(css),
+      'replay: while Play runs the removed line is struck out first, then the added line is typed in behind a cursor')
+    check(mod.playHold([['-', 'a'], ['+', 'b']]) === 1500 && mod.playHold(Array.from({ length: 30 }, () => ['+', 'x'.repeat(60)])) > 9000 - 1,
+      'replay: Play stays on an edit until its typing is done (1.5 s at least, 9 s at most)')
+  }
   await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Pause').click() })
   await tick(1600)
   check(q('.sw-rof')?.textContent === 'Edit 2 of 3', 'replay: Pause stops it')
+  check(!q('.sw-rlines[data-play]'), 'replay: paused, the edit stands still and whole')
   await act(async () => { qa('.sw-hlog>button')[2].click() })
   await act(async () => { await new Promise(res => setTimeout(res, 20)) })
   check(q('.sw-rof')?.textContent === 'Edit 3 of 3' && qa('.sw-hlog>button')[2].getAttribute('aria-current') === 'step', `replay HUD: a log row opens its edit (${q('.sw-rof')?.textContent})`)

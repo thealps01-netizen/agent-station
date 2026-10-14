@@ -284,7 +284,7 @@ const BUNDLES = {
         next: 'Next edit',
         play: 'Play',
         pause: 'Pause',
-        playTip: 'Steps through the edits on its own, one every 1.5 seconds',
+        playTip: 'Plays the edits on its own: removed lines are struck out, added lines typed in, then the next edit',
         stepLabel: (i, name, failed) => `Edit ${i}: ${name}${failed ? ' (failed)' : ''}`,
         markTip: (path, failed) => (failed ? `${path}
 This edit failed` : path),
@@ -2150,23 +2150,55 @@ function TurnRow({ t, turn, now, selected, onPick }) {
   })
 }
 
-function DiffLines({ t, step, got }) {
+/** While Play runs, an edit plays out in order: each removed line is struck through and dims, each
+ *  added line is typed in behind a cursor. One entry per diff row: null (not animated) or its delay
+ *  and duration in ms and, for an added line, its length; `end` is when the last line is done. */
+export function typingPlan(rows) {
+  let at = 250
+  const plan = rows.map(([tag, text]) => {
+    if (tag === '-') { const p = { d: at, t: 260 }; at += 140; return p }
+    if (tag !== '+') return null
+    const n = Math.max(1, [...String(text || ' ')].length)
+    const p = { d: at, t: Math.min(900, Math.max(160, n * 22)), n }
+    at += p.t + 60
+    return p
+  })
+  return { plan, end: at }
+}
+
+/** How long Play stays on an edit: its typing plus a beat to read it, never less than PLAY_MS. */
+export const playHold = rows => Math.min(9000, Math.max(PLAY_MS, typingPlan(rows).end + 800))
+
+function DiffLines({ t, step, got, typing }) {
   const [all, setAll] = useState(false)
+  const box = useRef(null)
+  const lines = got.data?.lines || []
+  const shown = all ? lines : lines.slice(0, PEEK_LINES)
+  const { plan } = typingPlan(shown)
+  // keep the line being typed in view
+  useEffect(() => {
+    const el = box.current
+    if (!typing || !el) return undefined
+    const stops = plan.map((p, k) => p && ctxRef.setTimeout(() => {
+      const row = el.children[k]
+      if (row && row.offsetTop + row.offsetHeight > el.scrollTop + el.clientHeight) el.scrollTop = row.offsetTop + row.offsetHeight - el.clientHeight + 24
+    }, p.d)).filter(Boolean)
+    return () => stops.forEach(stop => stop())
+  }, [typing, got.data, all])
   if (got.loading) return jsxs('p', { className: 'sw-cmnote sw-cmwait', children: [jsx('span', { className: 'sw-spin', 'aria-hidden': 'true' }, 's'), t('sw.replay.reading')] })
   if (got.error) return jsx('p', { className: 'sw-cmnote sw-rbad', children: t('sw.err.withDetail', t('sw.err.replayStep'), got.error) })
-  const lines = got.data?.lines || []
   if (!lines.length) return null
-  const shown = all ? lines : lines.slice(0, PEEK_LINES)
   const hidden = lines.length - shown.length
   return jsxs('div', {
     className: 'sw-rdiff', 'data-failed': step.failed ? 'true' : undefined,
     children: [
       jsx('div', {
-        className: 'sw-rlines', tabIndex: 0, role: 'group', 'aria-label': stepSummary(step, t),
+        className: 'sw-rlines', ref: box, tabIndex: 0, role: 'group', 'aria-label': stepSummary(step, t), 'data-play': typing ? 'true' : undefined,
         children: shown.map(([tag, text], i) => (tag === '@'
           ? jsx('div', { className: 'sw-rl', 'data-tag': '@', 'data-h': i, children: jsx('span', { children: t('sw.replay.from', text) }) }, i)
           : jsxs('div', {
             className: 'sw-rl', 'data-tag': tag,
+            style: typing && plan[i] ? { '--d': `${plan[i].d}ms`, '--t': `${plan[i].t}ms`, ...(plan[i].n ? { '--n': plan[i].n } : {}) } : undefined,
             children: [
               jsx('span', { className: 'sw-rsign', 'aria-label': tag === '+' ? t('sw.replay.addedSign') : tag === '-' ? t('sw.replay.removedSign') : undefined, children: tag === '+' ? '+' : tag === '-' ? '−' : ' ' }, 's'),
               jsx('span', { className: 'sw-rtext', children: text || ' ' }, 'x')
@@ -2291,7 +2323,7 @@ function stepWord(s, t) {
   return t(`sw.replay.word.${s.kind === 'whole' || s.kind === 'delete' || s.kind === 'move' ? s.kind : 'edit'}`)
 }
 
-function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, setPlaying, onToast }) {
+function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, setPlaying, setHold, onToast }) {
   const steps = turn.steps
   const i = Math.min(index, steps.length - 1)
   const step = steps[i]
@@ -2307,6 +2339,7 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
     else if (hunks.length && tag === '-') hunks.at(-1).rem++
   })
   const wires = useWires(hero, [i, turn.id, got.data, got.loading])
+  useEffect(() => { setHold(got.data ? playHold((got.data.lines || []).slice(0, PEEK_LINES)) : PLAY_MS) }, [step?.id, got.data])
   useEffect(() => {
     for (const box of [marks.current, log.current]) {
       const el = box?.querySelector('[aria-current=step]')
@@ -2337,7 +2370,7 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
             className: 'sw-hgrid', ref: hero,
             children: [
               jsx('svg', { className: 'sw-wires', 'aria-hidden': 'true', children: wires.map(([ax, ay, kx, bx, y], k) => jsxs('g', { children: [jsx('path', { d: `M${ax},${ay} H${kx} L${bx},${y}` }, 'p'), jsx('circle', { cx: bx, cy: y, r: 2.5 }, 'c')] }, k)) }, 'w'),
-              jsx(DiffLines, { t, step, got }, step.id),
+              jsx(DiffLines, { t, step, got, typing: playing }, step.id),
               jsxs('div', {
                 className: 'sw-cos', 'aria-hidden': 'true',
                 children: [
@@ -2441,13 +2474,14 @@ function Replay({ t, replay, now, names, storedId, onToast }) {
   const [turnId, setTurnId] = useState(null)
   const [index, setIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
+  const [hold, setHold] = useState(PLAY_MS)
   const turn = turns.find(x => x.id === turnId) || turns[0]
   const count = turn ? turn.steps.length : 0
   useEffect(() => {
     if (!playing) return undefined
     if (index >= count - 1) { setPlaying(false); return undefined }
-    return ctxRef.setTimeout(() => setIndex(index + 1), PLAY_MS)
-  }, [playing, index, count])
+    return ctxRef.setTimeout(() => setIndex(index + 1), hold)
+  }, [playing, index, count, hold])
   const pick = id => { setTurnId(id); setIndex(0); setPlaying(false) }
   return jsxs('div', {
     className: 'sw-replay', role: 'tabpanel', id: 'sw-tab-replay', 'aria-labelledby': 'sw-tabb-replay',
@@ -2467,7 +2501,7 @@ function Replay({ t, replay, now, names, storedId, onToast }) {
                   replay.data.more_turns ? jsx('p', { className: 'sw-pu', children: t('sw.replay.olderTurns', replay.data.more_turns) }, 'o') : null
                 ]
               }, 'turns'),
-              jsx(Player, { t, turn, cwd: replay.data.cwd, now, names, storedId, index, setIndex, playing, setPlaying, onToast }, `play-${turn.id}`),
+              jsx(Player, { t, turn, cwd: replay.data.cwd, now, names, storedId, index, setIndex, playing, setPlaying, setHold, onToast }, `play-${turn.id}`),
               turn.more_steps ? jsx('p', { className: 'sw-pu', children: t('sw.replay.moreSteps', turn.more_steps) }, 'ms') : null
             ]
           }, 'g'),
@@ -3734,6 +3768,16 @@ const CSS = `${TM_PALETTE}
 .sw-rl[data-tag="@"]::before{content:"";flex:none;width:14px;height:1px;background:var(--a)}
 .sw-rl[data-tag="@"]::after{content:"";flex:1 0 40px;height:1px;background:var(--line)}
 .sw-rmore{display:flex}
+/* Play: in order each removed line strikes through and dims; each added line types in behind a mint cursor */
+@keyframes sw-dim{to{opacity:.45}}
+@keyframes sw-strike{from{text-decoration-color:transparent}to{text-decoration-color:var(--bad)}}
+@keyframes sw-hide{from,to{visibility:hidden}}
+@keyframes sw-typew{from{max-width:0}to{max-width:calc(var(--n) * 1ch)}}
+@keyframes sw-caret{from,to{box-shadow:.6em 0 0 var(--a),.6em 0 10px var(--a)}}
+.sw-page .sw-rlines[data-play] .sw-rl[data-tag="-"]{animation:sw-dim var(--t) ease-out var(--d) both}
+.sw-page .sw-rlines[data-play] .sw-rl[data-tag="-"] .sw-rtext{text-decoration:line-through;animation:sw-strike var(--t) linear var(--d) both}
+.sw-page .sw-rlines[data-play] .sw-rl[data-tag="+"]{animation:sw-hide 1ms var(--d) backwards}
+.sw-page .sw-rlines[data-play] .sw-rl[data-tag="+"] .sw-rtext{overflow:hidden;animation:sw-typew var(--t) steps(var(--n),end) var(--d) backwards,sw-caret var(--t) linear var(--d) backwards}
 .sw-rfail{display:flex;flex-direction:column;margin:10px 0 0;padding:4px 10px;color:var(--ink);background:color-mix(in srgb,var(--bad) 7%,transparent);box-shadow:inset 2px 0 0 var(--bad)}
 .sw-rfail>span:last-child{color:var(--dim)}
 .sw-rbad{color:var(--ink)}
