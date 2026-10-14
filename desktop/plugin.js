@@ -270,7 +270,7 @@ const BUNDLES = {
       },
       modelTip: (model, effort) => (effort ? `${model} · reasoning effort ${effort}` : model),
       replay: {
-        why: 'What the AI changed after each of your requests, edit by edit. Read-only. Changes made by scripts or commands are not shown.',
+        why: 'Each request\'s file edits, one at a time. Read-only; script and command changes are not shown.',
         requests: 'Your requests, newest first',
         beforeFirst: 'Before your first request',
         noText: '(a request with no text)',
@@ -300,6 +300,8 @@ This edit failed` : path),
         failedNote: 'It was tried, not applied: the file did not change.',
         noLines: 'No lines changed',
         from: n => (n ? `from line ${n}` : 'next part'),
+        line: n => `line ${n}`,
+        typing: 'typing',
         removedSign: 'removed',
         addedSign: 'added',
         rest: n => `Show the rest (${n} more line${n === 1 ? '' : 's'})`,
@@ -1309,8 +1311,7 @@ function Score({ t, subs }) {
         jsx(HudKV, {
           rows: [
             [t('sw.hudAgents.tokens'), fmtTokens(tokens, t) || '—'],
-            [t('sw.hudAgents.toolCalls'), String(tools)],
-            [t('sw.hudAgents.agents'), t('sw.hudAgents.agentsV', subs.length, done)]
+            [t('sw.hudAgents.toolCalls'), String(tools)]
           ]
         }, 'kv'),
         jsxs('div', {
@@ -1346,11 +1347,12 @@ function FleetTimes({ t, subs }) {
         className: 'sw-tk', 'data-st': u.status,
         children: [
           jsxs('div', { className: 'sw-tkh', children: [jsx(OneLine, { text: slugName(u.name), className: 'sw-tkn' }, 'l'), jsx('b', { children: fmtDuration(u.duration, t) || '—' }, 'v')] }, 'h'),
-          jsx('div', { className: 'sw-tkb', 'aria-hidden': 'true', children: jsx('i', { style: { width: `${Math.max(1.5, Math.min(100, ((u.duration || 0) / top) * 100)).toFixed(1)}%` } }) }, 'b'),
-          jsxs('div', { className: 'sw-tks', 'aria-hidden': 'true', children: [jsx('span', { children: fmtDuration(0, t) }, 'a'), jsx('span', { children: fmtDuration(top, t) }, 'b')] }, 's')
+          jsx('div', { className: 'sw-tkb', 'aria-hidden': 'true', children: jsx('i', { style: { width: `${Math.max(1.5, Math.min(100, ((u.duration || 0) / top) * 100)).toFixed(1)}%` } }) }, 'b')
         ]
       }, u.key))
-      }, 'l')]
+      }, 'l'),
+      // every track shares one scale, so it is drawn once under them
+      jsxs('div', { className: 'sw-tks sw-tkax', 'aria-hidden': 'true', children: [jsx('span', { children: fmtDuration(0, t) }, 'a'), jsx('span', { children: fmtDuration(top, t) }, 'b')] }, 'ax')]
       : [jsx('p', { className: 'sw-hnote', children: t('sw.hudAgents.noTime') }, 'none')]
   })
 }
@@ -1395,7 +1397,6 @@ function FleetAgent({ t, u, subs, files, waitingOn }) {
     const mine = agentFiles(files.data?.files, '')
     rows = [
       [t('sw.hudAgents.state'), statusWord(t, u, waitingOn)],
-      [t('sw.hudAgents.subagents'), t('sw.hudAgents.agentsV', subs.length, subs.filter(x => x.status === 'completed').length)],
       [t('sw.hudAgents.filesK'), t('sw.hudAgents.filesV', mine.changed.length, mine.read.length)]
     ]
   } else {
@@ -2168,10 +2169,21 @@ export function typingPlan(rows) {
   return { plan, end: at }
 }
 
+/** The file line number of diff row k: the hunk's start plus every kept or added row after it. */
+export function lineAt(lines, k) {
+  let n = null
+  for (let j = 0; j <= k && j < lines.length; j++) {
+    const [tag, text] = lines[j]
+    if (tag === '@') n = Number(text) || null
+    else if (n != null && j < k && tag !== '-') n++
+  }
+  return n
+}
+
 /** How long Play stays on an edit: its typing plus a beat to read it, never less than PLAY_MS. */
 export const playHold = rows => Math.min(9000, Math.max(PLAY_MS, typingPlan(rows).end + 800))
 
-function DiffLines({ t, step, got, typing }) {
+function DiffLines({ t, step, got, typing, cur, onCursor }) {
   const [all, setAll] = useState(false)
   const box = useRef(null)
   const lines = got.data?.lines || []
@@ -2182,10 +2194,11 @@ function DiffLines({ t, step, got, typing }) {
     const el = box.current
     if (!typing || !el) return undefined
     const stops = plan.map((p, k) => p && ctxRef.setTimeout(() => {
+      if (shown[k]?.[0] === '+') onCursor?.(k)
       const row = el.children[k]
       if (row && row.offsetTop + row.offsetHeight > el.scrollTop + el.clientHeight) el.scrollTop = row.offsetTop + row.offsetHeight - el.clientHeight + 24
     }, p.d)).filter(Boolean)
-    return () => stops.forEach(stop => stop())
+    return () => { stops.forEach(stop => stop()); onCursor?.(null) }
   }, [typing, got.data, all])
   if (got.loading) return jsxs('p', { className: 'sw-cmnote sw-cmwait', children: [jsx('span', { className: 'sw-spin', 'aria-hidden': 'true' }, 's'), t('sw.replay.reading')] })
   if (got.error) return jsx('p', { className: 'sw-cmnote sw-rbad', children: t('sw.err.withDetail', t('sw.err.replayStep'), got.error) })
@@ -2199,7 +2212,7 @@ function DiffLines({ t, step, got, typing }) {
         children: shown.map(([tag, text], i) => (tag === '@'
           ? jsx('div', { className: 'sw-rl', 'data-tag': '@', 'data-h': i, children: jsx('span', { children: t('sw.replay.from', text) }) }, i)
           : jsxs('div', {
-            className: 'sw-rl', 'data-tag': tag,
+            className: 'sw-rl', 'data-tag': tag, 'data-h': cur === i ? `c${i}` : undefined,
             style: typing && plan[i] ? { '--d': `${plan[i].d}ms`, '--t': `${plan[i].t}ms`, ...(plan[i].n ? { '--n': plan[i].n } : {}) } : undefined,
             children: [
               jsx('span', { className: 'sw-rsign', 'aria-label': tag === '+' ? t('sw.replay.addedSign') : tag === '-' ? t('sw.replay.removedSign') : undefined, children: tag === '+' ? '+' : tag === '-' ? '−' : ' ' }, 's'),
@@ -2220,12 +2233,13 @@ const hudCaps = text => String(text).toUpperCase().replace(/O/g, 'Ø')
 
 /** A HUD panel. `title` is our own label and reads in caps; `name` is text from the run (a command, a
  *  file) and keeps its case, so a path or a command reads as typed. */
-function HudPanel({ title, name, chip, span, className = '', children }) {
+function HudPanel({ title, name, chip, span, className = '', fold = false, children }) {
   const plain = name ? `${title} · ${name}` : title
-  return jsxs('section', {
-    className: `sw-hp ${className}`.trim(), 'data-span': span,
+  // fold: a details element, closed until its title row is clicked; the content stays in the DOM
+  return jsxs(fold ? 'details' : 'section', {
+    className: `sw-hp ${className}${fold ? ' sw-hfold' : ''}`.trim(), 'data-span': span,
     children: [
-      jsxs('div', {
+      jsxs(fold ? 'summary' : 'div', {
         className: 'sw-hph',
         children: [
           jsxs('h3', {
@@ -2282,6 +2296,7 @@ function HudChart({ vals, at, failed }) {
       jsx('path', { className: 'sw-chl', d }, 'l'),
       ...failed.map(k => jsx('rect', { className: 'sw-chx', x: xs[k] - 1, y: H - 5, width: 2, height: 5 }, `x${k}`)),
       jsx('line', { className: 'sw-chm', x1: xs[at], x2: xs[at], y1: 0, y2: H }, 'm'),
+      jsx('circle', { className: 'sw-chp', cx: xs[at], cy: ys[at], r: 4 }, 'p'),
       jsx('circle', { className: 'sw-chd', cx: xs[at], cy: ys[at], r: 4 }, 'c')
     ]
   })
@@ -2354,7 +2369,10 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
     else if (hunks.length && tag === '+') hunks.at(-1).add++
     else if (hunks.length && tag === '-') hunks.at(-1).rem++
   })
-  const wires = useWires(hero, [i, turn.id, got.data, got.loading])
+  // while Play types, the line being typed: the callout names its line number and its wire points at it
+  const [cur, setCur] = useState(null)
+  const curLine = cur == null ? null : lineAt(lines, cur)
+  const wires = useWires(hero, [i, turn.id, got.data, got.loading, cur])
   useEffect(() => { setHold(got.data && !step?.failed ? playHold((got.data.lines || []).slice(0, PEEK_LINES)) : PLAY_MS) }, [step?.id, got.data])
   useEffect(() => {
     for (const box of [marks.current, log.current]) {
@@ -2386,12 +2404,13 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
             className: 'sw-hgrid', ref: hero,
             children: [
               jsx('svg', { className: 'sw-wires', 'aria-hidden': 'true', children: wires.map(([ax, ay, kx, bx, y], k) => jsxs('g', { children: [jsx('path', { d: `M${ax},${ay} H${kx} L${bx},${y}` }, 'p'), jsx('circle', { cx: bx, cy: y, r: 2.5 }, 'c')] }, k)) }, 'w'),
-              jsx(DiffLines, { t, step, got, typing: playing && !step.failed }, step.id),
+              jsx(DiffLines, { t, step, got, typing: playing && !step.failed, cur, onCursor: setCur }, step.id),
               jsxs('div', {
                 className: 'sw-cos', 'aria-hidden': 'true',
                 children: [
                   jsxs('div', { className: 'sw-co', children: [jsx('span', { className: 'sw-col', children: hudCaps(playing ? t('sw.replay.replaying') : t('sw.replay.paused')) }, 'l'), jsxs('span', { className: 'sw-cop', children: [jsx('span', { className: 'sw-copn', children: `${pct}%` }, 'n'), jsx('span', { className: 'sw-copb', children: bars(10) }, 'b')] }, 'p')] }, 'st'),
-                  ...hunks.slice(0, 3).map(h => jsxs('div', { className: 'sw-co', 'data-to': h.k, children: [jsx('span', { className: 'sw-col', children: hudCaps(t('sw.replay.from', h.text)) }, 'l'), jsx('span', { className: 'sw-cov', 'data-st': st, children: `+${h.add} −${h.rem}` }, 'v')] }, h.k))
+                  ...(curLine ? [jsxs('div', { className: 'sw-co is-cur', 'data-to': `c${cur}`, children: [jsx('span', { className: 'sw-col', children: hudCaps(t('sw.replay.line', curLine)) }, 'l'), jsx('span', { className: 'sw-cov', 'data-st': st, children: t('sw.replay.typing') }, 'v')] }, 'cur')] : []),
+                  ...hunks.slice(0, curLine ? 2 : 3).map(h => jsxs('div', { className: 'sw-co', 'data-to': h.k, children: [jsx('span', { className: 'sw-col', children: hudCaps(t('sw.replay.from', h.text)) }, 'l'), jsx('span', { className: 'sw-cov', 'data-st': st, children: `+${h.add} −${h.rem}` }, 'v')] }, h.k))
                 ]
               }, 'co')
             ]
@@ -2400,23 +2419,7 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
         ]
       }, 'diff'),
       jsx(HudPanel, {
-        title: t('sw.replay.linesChanged'), span: 2,
-        children: [
-          jsx(HudTrack, { label: t('sw.replay.addedSign'), value: `+${step.added || 0}`, frac: (step.added || 0) / maxA, top: maxA, st: 'completed' }, 'a'),
-          jsx(HudTrack, { label: t('sw.replay.removedSign'), value: `−${step.removed || 0}`, frac: (step.removed || 0) / maxR, top: maxR, st: 'failed' }, 'r'),
-          jsx(HudTrack, { label: t('sw.replay.thisEdit'), value: t('sw.replay.lines', sizes[i]), frac: sizes[i] / maxS, top: t('sw.replay.max', maxS) }, 's')
-        ]
-      }, 'lines'),
-      jsx(HudPanel, {
-        title: t('sw.replay.soFar'), span: 2,
-        children: [
-          jsxs('div', { className: 'sw-hbig', children: [sums[i], jsx('small', { children: `/ ${all}` }, 's')] }, 'b'),
-          jsx(HudChart, { vals: sums, at: i, failed }, 'c'),
-          jsxs('div', { className: 'sw-chax', 'aria-hidden': 'true', children: [jsx('span', { children: '#1' }, 'a'), jsx('span', { children: `#${steps.length}` }, 'b')] }, 'x')
-        ]
-      }, 'sofar'),
-      jsx(HudPanel, {
-        title: playing ? t('sw.replay.replaying') : t('sw.replay.playback'), span: 2,
+        title: playing ? t('sw.replay.replaying') : t('sw.replay.playback'), span: 6, className: 'sw-rpb',
         children: [
           jsxs('div', { className: 'sw-hrow', children: [jsx('b', { className: 'sw-rof', 'aria-live': 'polite', children: t('sw.replay.of', i + 1, steps.length) }, 'of'), jsx('b', { 'aria-hidden': 'true', children: `${pct}%` }, 'p')] }, 'r'),
           jsx('div', {
@@ -2447,15 +2450,25 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
         ]
       }, 'play'),
       jsx(HudPanel, {
-        title: t('sw.replay.file'), span: 3, className: 'sw-rstep',
+        title: t('sw.replay.linesChanged'), span: 2,
         children: [
-          jsxs('div', {
-            className: 'sw-rfile',
-            children: [
-              jsx(Tip, { label: tipText(step.path), children: jsx('b', { className: 'sw-rname sw-1l', tabIndex: 0, children: name }) }, 'n'),
-              hudChip(st, step.failed ? t('sw.replay.notApplied') : t('sw.replay.applied'))
-            ]
-          }, 'f'),
+          jsx(HudTrack, { label: t('sw.replay.addedSign'), value: `+${step.added || 0}`, frac: (step.added || 0) / maxA, top: maxA, st: 'completed' }, 'a'),
+          jsx(HudTrack, { label: t('sw.replay.removedSign'), value: `−${step.removed || 0}`, frac: (step.removed || 0) / maxR, top: maxR, st: 'failed' }, 'r'),
+          jsx(HudTrack, { label: t('sw.replay.thisEdit'), value: t('sw.replay.lines', sizes[i]), frac: sizes[i] / maxS, top: t('sw.replay.max', maxS) }, 's')
+        ]
+      }, 'lines'),
+      jsx(HudPanel, {
+        title: t('sw.replay.soFar'), span: 2,
+        children: [
+          jsxs('div', { className: 'sw-hbig', children: [jsx('span', { className: 'sw-roll', children: sums[i] }, `n${sums[i]}`), jsx('small', { children: `/ ${all}` }, 's')] }, 'b'),
+          jsx(HudChart, { vals: sums, at: i, failed }, 'c'),
+          jsxs('div', { className: 'sw-chax', 'aria-hidden': 'true', children: [jsx('span', { children: '#1' }, 'a'), jsx('span', { children: `#${steps.length}` }, 'b')] }, 'x')
+        ]
+      }, 'sofar'),
+      jsx(HudPanel, {
+        title: t('sw.replay.file'), span: 2, className: 'sw-rstep',
+        children: [
+          // the file name and APPLIED are the DIFF title's; this panel adds where, what and why
           jsx(HudKV, {
             rows: [
               [t('sw.replay.folder'), dir ? jsx(OneLine, { text: dirLabel(dir, cwd, t), className: 'sw-rdir' }) : '—'],
@@ -2466,7 +2479,7 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
         ]
       }, `step-${step.id}`),
       jsx(HudPanel, {
-        title: t('sw.replay.log', steps.length), span: 3,
+        title: t('sw.replay.log', steps.length), span: 6,
         children: [jsx('div', {
           className: 'sw-hlog', ref: log,
           children: steps.map((s, k) => jsxs('button', {
@@ -2865,7 +2878,7 @@ export function Page() {
             jsx(FleetAgent, { t, u: sel, subs, files, waitingOn: active }, 'agent'),
             jsx(FleetLog, { t, subs, selected: sel.key, onSelect: setSelected, now }, 'log'),
             jsx(HudPanel, {
-              title: t('sw.hudAgents.detail'), name: sel.main ? main.name : sel.name, span: 6, className: 'sw-hdetail',
+              title: t('sw.hudAgents.detail'), name: sel.main ? main.name : sel.name, span: 6, className: 'sw-hdetail', fold: true,
               children: [sel.main
                 ? jsx(MainPanel, { t, theme, main, files, touching: calm ? new Map() : touching, tool: calm ? null : tool, waitingOn: active, onToast }, 'focus-main')
                 : jsx(SubPanel, { t, theme, u: sel, parentName, files, onToast }, `focus-${sel.key}`)]
@@ -3137,23 +3150,24 @@ function ProgressChip() {
 }
 
 // Two palettes, both drawn from the app theme, so the panel changes with the skin the user picked.
-// The page keeps the HUD's structure (ground, raised panels on hairlines, grey caps labels, one accent with
-// its dim tracks): its neutrals are the theme's foreground mixed into its background, its accent is the
-// theme accent held light enough on a dark ground (dark enough on a light one) to read, and red / yellow
-// come from the theme's status colours. The status-bar chip sits in the
-// app's own bar and tints everything toward the accent. No colour literals anywhere (audit_static.py).
+// The page uses the app's own tokens as they are: its ground is transparent (so the window's glass shows
+// through, as it does behind the chat), panels are the app's translucent card, hairlines its strokes,
+// text its text levels, the diff its diff colours, a picked row its active-row fill. The accent is the
+// theme accent, lifted only as far as it needs to read on a dark ground (pressed down on a light one);
+// red / yellow are the theme's status colours. The status-bar chip sits in the app's own bar and tints
+// everything toward the accent. No colour literals anywhere (audit_static.py).
 const TM_PALETTE = `
-.sw-page[data-theme=terminal]{--hud-fg:var(--ui-base);--hud-bgc:var(--dt-background);
- --tm-acc:light-dark(oklch(from var(--ui-accent) min(l,.5) c h),oklch(from var(--ui-accent) max(l,.76) c h));--tm-ok:var(--tm-acc);
- --tm-bg:var(--hud-bgc);--tm-raised:color-mix(in srgb,var(--hud-fg) 4%,var(--hud-bgc));--tm-shade:var(--hud-bgc);
- --tm-hi:var(--hud-fg);--tm-name:color-mix(in srgb,var(--hud-fg) 90%,var(--hud-bgc));--tm-ink:color-mix(in srgb,var(--hud-fg) 78%,var(--hud-bgc));
- --tm-dim:color-mix(in srgb,var(--hud-fg) 58%,var(--hud-bgc));--tm-line:color-mix(in srgb,var(--hud-fg) 12%,var(--hud-bgc));
- --tm-badline:color-mix(in srgb,var(--ui-red) 40%,var(--hud-bgc));--tm-run:color-mix(in srgb,var(--ui-yellow) 82%,var(--hud-fg));
- --tm-bad:color-mix(in srgb,var(--ui-red) 82%,var(--hud-fg));--tm-glow:color-mix(in srgb,var(--tm-acc) 40%,transparent);
- --hud-page:var(--hud-bgc);--hud-hero:color-mix(in srgb,var(--hud-fg) 2%,var(--hud-bgc));--hud-line2:color-mix(in srgb,var(--hud-fg) 16%,var(--hud-bgc));
- --hud-grid:color-mix(in srgb,var(--hud-fg) 6%,var(--hud-bgc));--hud-track:color-mix(in srgb,var(--hud-fg) 10%,var(--hud-bgc));
- --hud-teal:color-mix(in srgb,var(--tm-acc) 24%,var(--hud-bgc));--hud-teal-b:color-mix(in srgb,var(--tm-acc) 34%,var(--hud-bgc));--hud-teal-d:color-mix(in srgb,var(--tm-acc) 13%,var(--hud-bgc));
- --hud-wire:color-mix(in srgb,var(--hud-fg) 62%,var(--hud-bgc));--hud-frame:color-mix(in srgb,var(--hud-fg) 72%,var(--hud-bgc));--hud-node:color-mix(in srgb,var(--hud-fg) 22%,var(--hud-bgc))}
+.sw-page[data-theme=terminal]{--tm-acc:light-dark(oklch(from var(--ui-accent) min(l,.5) c h),oklch(from var(--ui-accent) max(l,.66) c h));--tm-ok:var(--tm-acc);
+ --tm-bg:transparent;--tm-raised:var(--ui-bg-card);--tm-shade:var(--ui-bg-chrome);
+ --tm-hi:var(--ui-text-primary);--tm-name:var(--ui-text-primary);--tm-ink:color-mix(in srgb,var(--ui-text-primary) 55%,var(--ui-text-secondary));
+ --tm-dim:var(--ui-text-secondary);--tm-line:var(--ui-stroke-tertiary);
+ --tm-badline:color-mix(in srgb,var(--ui-red) 40%,transparent);--tm-run:color-mix(in srgb,var(--ui-yellow) 82%,var(--ui-base));
+ --tm-bad:color-mix(in srgb,var(--ui-red) 82%,var(--ui-base));--tm-glow:color-mix(in srgb,var(--tm-acc) 40%,transparent);
+ --hud-page:transparent;--hud-hero:color-mix(in srgb,var(--ui-base) 2%,transparent);--hud-line2:var(--ui-stroke-secondary);
+ --hud-grid:var(--ui-stroke-quaternary);--hud-track:color-mix(in srgb,var(--ui-base) 8%,transparent);
+ --hud-teal:color-mix(in srgb,var(--tm-acc) 24%,transparent);--hud-teal-b:color-mix(in srgb,var(--tm-acc) 34%,transparent);--hud-teal-d:color-mix(in srgb,var(--tm-acc) 13%,transparent);
+ --hud-wire:var(--ui-text-tertiary);--hud-frame:var(--ui-text-secondary);--hud-node:var(--ui-stroke-primary);
+ --hud-add:var(--ui-diff-add-background);--hud-del:var(--ui-diff-remove-background);--hud-add-ink:var(--ui-diff-add-foreground);--hud-del-ink:var(--ui-diff-remove-foreground);--hud-pick:var(--ui-row-active-background)}
 .sw-sbw[data-theme=terminal]{--tm-acc:color-mix(in srgb,var(--ui-accent) 70%,var(--ui-text-primary));
  --tm-bg:color-mix(in srgb,var(--ui-accent) 5%,var(--dt-background));--tm-raised:color-mix(in srgb,var(--ui-accent) 10%,var(--dt-background));
  --tm-ink:color-mix(in srgb,var(--ui-accent) 30%,var(--ui-text-primary));--tm-hi:color-mix(in srgb,var(--ui-accent) 12%,var(--ui-text-primary));
@@ -3191,7 +3205,7 @@ const CHIP_CSS = `${TM_PALETTE}
 
 
 const CSS = `${TM_PALETTE}
-.sw-page{height:100%;min-height:0;overflow:auto;padding:16px 20px;font-size:12.5px;--mono:"Cascadia Mono",ui-monospace,Consolas,var(--dt-font-mono,monospace)}
+.sw-page{height:100%;min-height:0;overflow:auto;padding:16px 20px;font-size:12.5px;--mono:var(--dt-font-mono,"Cascadia Mono",ui-monospace,Consolas,monospace)}
 .sw-page:not([data-theme=terminal]){--a:var(--ui-accent);--ink:var(--ui-text-primary);--dim:var(--ui-text-secondary);--bg:var(--dt-background);
  --run:var(--a);--ok:var(--ink);--bad:var(--ui-red);--idle:var(--ui-text-tertiary);--line:color-mix(in srgb,var(--ink) 11%,transparent);
  --raised:color-mix(in srgb,var(--ink) 8%,var(--bg));--tile:color-mix(in srgb,var(--ink) 5%,var(--bg));--off:color-mix(in srgb,var(--ink) 16%,var(--bg))}
@@ -3432,7 +3446,7 @@ const CSS = `${TM_PALETTE}
 .sw-ansm{display:inline-block;margin-top:6px}
 .sw-page[data-theme=terminal] .sw-ans{margin-top:18px;padding:12px 12px 8px;font-size:12.5px;background:color-mix(in srgb,var(--c) 10%,var(--bg));border:1px solid var(--c)}
 .sw-page[data-theme=terminal] .sw-ans::before,.sw-page[data-theme=terminal] .sw-ans::after,.sw-page[data-theme=terminal] .sw-sig{display:none}
-.sw-page[data-theme=terminal] .sw-ansh{position:absolute;top:-11px;left:10px;margin:0;padding:0 6px;background:var(--bg);color:var(--dim)}
+.sw-page[data-theme=terminal] .sw-ansh{position:static;margin:0 0 6px;padding:0;background:none;color:var(--dim)}
 .sw-page[data-theme=terminal] .sw-ansh::before{content:">> "}
 /* focus: files */
 .sw-fsec{margin-top:16px}
@@ -3465,7 +3479,7 @@ const CSS = `${TM_PALETTE}
 .sw-fl{min-width:0;margin-left:auto;text-align:right;font:11.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sw-ft[data-op=failed] .sw-fl{color:color-mix(in srgb,var(--bad) 55%,var(--ink))}
 .sw-page[data-theme=terminal] .sw-fsec{position:relative;margin-top:18px;padding:12px 10px 8px;border:1px solid var(--line)}
-.sw-page[data-theme=terminal] .sw-fsec>.sw-k,.sw-page[data-theme=terminal] .sw-fh{position:absolute;top:-11px;left:10px;margin:0;padding:0 6px;background:var(--bg)}
+.sw-page[data-theme=terminal] .sw-fsec>.sw-k,.sw-page[data-theme=terminal] .sw-fh{position:static;margin:0 0 6px;padding:0;background:none}
 .sw-page[data-theme=terminal] .sw-fsec[data-sec=none]>.sw-k{position:static;padding:0}
 .sw-page[data-theme=terminal] .sw-fsec[data-sec=none]{border:0;padding:0}
 .sw-page[data-theme=terminal] .sw-fh{gap:0}
@@ -3538,7 +3552,7 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-radar::before{content:"◜"}
 .sw-page[data-theme=terminal] .sw-crt{grid-column:1/-1;margin-top:16px;overflow:visible;background:none;box-shadow:none;border:1px solid var(--line)}
 .sw-page[data-theme=terminal] .sw-crt::after{display:none}
-.sw-page[data-theme=terminal] .sw-crth{position:absolute;top:-11px;left:10px;padding:0 6px;border:0;background:var(--bg);font-size:11.5px}
+.sw-page[data-theme=terminal] .sw-crth{position:static;padding:0 0 6px;border:0;background:none;font-size:11.5px}
 .sw-page[data-theme=terminal] .sw-crt[data-state=output]{padding-top:6px}
 .sw-page[data-theme=terminal] .sw-ol::before{text-align:left;padding-left:8px}
 .sw-page[data-theme=terminal] .sw-scan{height:8px;margin:14px 10px 10px;background:linear-gradient(90deg,var(--a),var(--a)) 0 0/14% 100% no-repeat,repeating-linear-gradient(90deg,var(--line) 0 6px,transparent 6px 8px)}
@@ -3570,7 +3584,7 @@ const CSS = `${TM_PALETTE}
 .sw-cmrow .sw-cmc{color:var(--ink)}
 .sw-cmrow .sw-cmx{font-size:inherit;letter-spacing:0;text-align:right}
 .sw-cmrow:hover{background:color-mix(in srgb,var(--a) 6%,transparent)}
-.sw-cmrow[aria-pressed=true]{background:var(--hud-teal-d,var(--raised));box-shadow:inset 2px 0 0 var(--c,var(--a))}
+.sw-cmrow[aria-pressed=true]{background:var(--hud-pick,var(--raised));box-shadow:inset 2px 0 0 var(--c,var(--a))}
 .sw-cmrow[aria-pressed=true]>*{color:var(--tm-hi,var(--ink))}
 .sw-cmcard .sw-kv>dd{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .sw-cmkv{color:var(--ink)}
@@ -3676,7 +3690,7 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-agents .sw-gmain .sw-unit{max-width:280px}
 .sw-hfleet .sw-swarm{position:relative;z-index:1}
 .sw-hspent .sw-spent{margin-bottom:12px}
-.sw-page[data-theme=terminal] .sw-score .sw-money{display:inline;font:250 32px/1 var(--mono);letter-spacing:-.03em;color:var(--tm-hi)}
+.sw-page[data-theme=terminal] .sw-score .sw-money{display:inline;font:250 28px/1 var(--mono);letter-spacing:-.03em;color:var(--tm-hi)}
 .sw-page[data-theme=terminal] .sw-score .sw-big{font:400 12.5px/1 var(--mono);text-shadow:none;color:var(--tm-hi);overflow:visible;letter-spacing:0}
 .sw-page[data-theme=terminal] .sw-score .sw-big small{font-size:12.5px;color:var(--dim)}
 .sw-hspent .sw-score{display:block}
@@ -3704,7 +3718,7 @@ const CSS = `${TM_PALETTE}
 .sw-hlog.sw-alog{grid-template-columns:max-content fit-content(18ch) minmax(0,1fr)}
 .sw-alog .sw-hle{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw-alog .sw-hle::before{display:inline-block;margin:0 7px 2px 0;vertical-align:middle}
-.sw-alog>button[aria-pressed=true]{background:var(--hud-teal-d);box-shadow:inset 2px 0 0 var(--c,var(--a))}
+.sw-alog>button[aria-pressed=true]{background:var(--hud-pick);box-shadow:inset 2px 0 0 var(--c,var(--a))}
 .sw-alog>button[aria-pressed=true]>*{color:var(--tm-hi,var(--ink))}
 .sw-page[data-theme=terminal] .sw-hdetail .sw-focus{margin-top:0;padding:0;border:0;background:none}
 .sw-page[data-theme=terminal] .sw-hdetail .sw-por{width:42px}
@@ -3791,6 +3805,85 @@ const CSS = `${TM_PALETTE}
 .sw-copb{display:flex;gap:2px}
 .sw-copb i{width:3px;height:10px;background:var(--hud-teal,var(--line))}
 .sw-copb i.on{background:var(--a)}
+/* HUD light and motion: corner ticks on every panel, panels power on one after another, tracks and the
+   chart fill in, the picked callout and the playback ticks glow, and a number that changes rolls in */
+@keyframes sw-boot{from{opacity:0;transform:translateY(6px)}}
+@keyframes sw-grow{from{transform:scaleX(0)}}
+@keyframes sw-wipe{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+@keyframes sw-roll{from{opacity:0;transform:translateY(45%)}}
+@keyframes sw-sweep{from{background-position:0 -60%}to{background-position:0 160%}}
+@keyframes sw-ping{0%{r:4;opacity:1}70%{r:9;opacity:0}100%{r:9;opacity:0}}
+.sw-page[data-theme=terminal] .sw-panel{display:flex;flex-wrap:wrap;align-items:flex-end;column-gap:18px}
+.sw-page[data-theme=terminal] .sw-panel>*{flex:1 0 100%;min-width:0}
+.sw-page[data-theme=terminal] .sw-panel>.sw-hd{flex:1 1 260px;margin-bottom:12px}
+.sw-page[data-theme=terminal] .sw-panel>.sw-tabs{flex:0 0 auto;margin:0 0 12px}
+.sw-page[data-theme=terminal] .sw-hp::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.75;background:linear-gradient(var(--hud-frame),var(--hud-frame)) left top/9px 1px no-repeat,linear-gradient(var(--hud-frame),var(--hud-frame)) left top/1px 9px no-repeat,linear-gradient(var(--hud-frame),var(--hud-frame)) right top/9px 1px no-repeat,linear-gradient(var(--hud-frame),var(--hud-frame)) right top/1px 9px no-repeat,linear-gradient(var(--hud-frame),var(--hud-frame)) left bottom/9px 1px no-repeat,linear-gradient(var(--hud-frame),var(--hud-frame)) left bottom/1px 9px no-repeat,linear-gradient(var(--hud-frame),var(--hud-frame)) right bottom/9px 1px no-repeat,linear-gradient(var(--hud-frame),var(--hud-frame)) right bottom/1px 9px no-repeat}
+.sw-page .sw-hp{animation:sw-boot .5s cubic-bezier(.2,.7,.2,1) both}
+.sw-page .sw-hp:nth-child(2){animation-delay:.06s}
+.sw-page .sw-hp:nth-child(3){animation-delay:.12s}
+.sw-page .sw-hp:nth-child(4){animation-delay:.18s}
+.sw-page .sw-hp:nth-child(5){animation-delay:.24s}
+.sw-page .sw-hp:nth-child(n+6){animation-delay:.3s}
+.sw-page[data-theme=terminal] .sw-tkb>i{transform-origin:left;background:linear-gradient(90deg,color-mix(in srgb,var(--k) 6%,transparent),color-mix(in srgb,var(--k) 70%,transparent))}
+.sw-page[data-theme=terminal] .sw-tkb>i::after{width:2px;top:-3px;bottom:-3px;box-shadow:0 0 8px var(--k),0 0 2px var(--k)}
+.sw-page .sw-tkb>i{animation:sw-grow .9s cubic-bezier(.2,.7,.2,1) .15s both}
+.sw-page[data-theme=terminal] .sw-chs0{stop-color:var(--a);stop-opacity:.42}
+.sw-page[data-theme=terminal] .sw-chs1{stop-color:var(--a);stop-opacity:0}
+.sw-page[data-theme=terminal] .sw-chl{stroke-width:1.8;filter:drop-shadow(0 0 4px var(--tm-glow))}
+.sw-page[data-theme=terminal] .sw-chd{filter:drop-shadow(0 0 5px var(--a))}
+.sw-page .sw-ch{animation:sw-wipe 1.1s cubic-bezier(.3,.6,.2,1) .1s both}
+.sw-chp{fill:none;stroke:var(--a);stroke-width:1.2;vector-effect:non-scaling-stroke}
+.sw-page .sw-chp{animation:sw-ping 1.8s ease-out infinite}
+.sw-page[data-theme=terminal] .sw-rmarks{gap:4px;height:26px}
+.sw-page[data-theme=terminal] .sw-rmark{box-shadow:none;background:repeating-linear-gradient(90deg,var(--hud-teal-b) 0 2px,transparent 2px 5px)}
+.sw-page[data-theme=terminal] .sw-rmark[data-at=past]{background:repeating-linear-gradient(90deg,color-mix(in srgb,var(--a) 75%,transparent) 0 2px,transparent 2px 5px)}
+.sw-page[data-theme=terminal] .sw-rmark[data-at=now]{background:repeating-linear-gradient(90deg,var(--a) 0 2px,transparent 2px 5px);filter:drop-shadow(0 0 4px var(--a))}
+.sw-page[data-theme=terminal] .sw-rmark[data-failed=true]{background:repeating-linear-gradient(90deg,color-mix(in srgb,var(--bad) 75%,transparent) 0 2px,transparent 2px 5px)}
+.sw-page[data-theme=terminal] .sw-rmark[data-at=now][data-failed=true]{filter:drop-shadow(0 0 4px var(--bad))}
+.sw-page[data-theme=terminal] .sw-rmark:hover{box-shadow:inset 0 -1px 0 var(--tm-hi)}
+.sw-page[data-theme=terminal] .sw-rbar .sw-btns{gap:6px 18px}
+.sw-page[data-theme=terminal] .sw-rbar .sw-ib.is-text{width:auto;height:auto;padding:2px 0;color:var(--a);background:none;box-shadow:none;letter-spacing:.12em;text-transform:uppercase}
+.sw-page[data-theme=terminal] .sw-rbar .sw-ib.is-text:hover{color:var(--tm-hi);background:none;text-shadow:0 0 8px var(--tm-glow)}
+.sw-page[data-theme=terminal] .sw-rbar .sw-ib.is-text:disabled{color:var(--dim)}
+.sw-page[data-theme=terminal] .sw-cov{color:var(--tm-hi);background:color-mix(in srgb,var(--c) 22%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 55%,transparent)}
+.sw-page[data-theme=terminal] .sw-copn{color:var(--tm-hi);background:color-mix(in srgb,var(--a) 26%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--a) 60%,transparent)}
+.sw-page[data-theme=terminal] .sw-co.is-cur .sw-col{box-shadow:inset 0 0 0 1px var(--a),0 0 12px var(--tm-glow)}
+.sw-page[data-theme=terminal] .sw-wires path{filter:drop-shadow(0 0 2px var(--tm-glow))}
+.sw-page[data-theme=terminal] .sw-hchip::before{box-shadow:0 0 8px var(--c),0 0 2px var(--c)}
+.sw-page .sw-hchip[data-st=running]::before{animation:sw-pulse 1.6s ease-in-out infinite}
+.sw-page .sw-roll{display:inline-block;animation:sw-roll .45s cubic-bezier(.2,.7,.2,1) both}
+.sw-page .sw-hgrid:has(.sw-rlines[data-play])::after{content:"";position:absolute;inset:0;z-index:2;pointer-events:none;
+ background:linear-gradient(180deg,transparent,color-mix(in srgb,var(--a) 8%,transparent) 50%,transparent) no-repeat;background-size:100% 30%;animation:sw-sweep 2.6s linear infinite}
+/* the accent carries the light: corner ticks, the picked tab, the hero grids, the big numbers and the
+   filled tiles glow faintly in it, the way the draft lit its mint on black */
+.sw-page[data-theme=terminal]{--hud-tick:color-mix(in srgb,var(--a) 70%,transparent)}
+.sw-page[data-theme=terminal] .sw-hp::before{opacity:1;background:linear-gradient(var(--hud-tick),var(--hud-tick)) left top/10px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) left top/1px 10px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right top/10px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right top/1px 10px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) left bottom/10px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) left bottom/1px 10px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right bottom/10px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right bottom/1px 10px no-repeat}
+.sw-page[data-theme=terminal] .sw-hp:has(.sw-hgrid)::after{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(70% 60% at 30% 45%,color-mix(in srgb,var(--a) 9%,transparent),transparent 70%)}
+.sw-page[data-theme=terminal] .sw-tab[aria-selected=true]{text-shadow:0 0 10px var(--tm-glow);box-shadow:inset 0 -2px 0 var(--a),0 6px 12px -8px var(--a)}
+.sw-page[data-theme=terminal] .sw-big,.sw-page[data-theme=terminal] .sw-hbig{text-shadow:0 0 18px var(--tm-glow)}
+.sw-page[data-theme=terminal] .sw-fcells>i[data-k=changed],.sw-page[data-theme=terminal] .sw-copb i.on{box-shadow:0 0 8px var(--tm-glow)}
+.sw-page[data-theme=terminal] .sw-ht{text-shadow:0 0 12px var(--tm-glow)}
+/* one order for every tab: three type sizes (11.5 px text, 14 px names, 28 px numbers), two letter
+   spacings (.12em for caps labels, none for everything else), the strip under the title the same on each
+   tab, a folded panel opening from its title row, the playback a full-width strip */
+.sw-page[data-theme=terminal] :is(.sw-chatn,.sw-meta,.sw-meta .sw-1l,.sw-leg,.sw-un,.sw-hrow,.sw-hrow b,.sw-big,.sw-big small,.sw-bign,.sw-tl,.sw-fn,.sw-tn,.sw-verb,.sw-pickn,.sw-note,.sw-fl,.sw-fnote,.sw-nowf,.sw-rtext,.sw-rsign,.sw-ol,.sw-task,.sw-ans,.sw-hdetail .sw-head.is-file){font-size:11.5px}
+.sw-page[data-theme=terminal] :is(.sw-ht,.sw-rname){font-size:14px;font-weight:600}
+.sw-page[data-theme=terminal] :is(.sw-tab,.sw-hptv,.sw-hpt .sw-sr,.sw-hchip,.sw-kv dt,.sw-col,.sw-k,.sw-hrow b,.sw-cmls span,.sw-crth,.sw-crth span,.sw-ib,.sw-tkh>span,.sw-fleg span,.sw-pickn,.sw-hle,.sw-rl>span:first-child,.sw-ht){letter-spacing:.12em}
+.sw-page[data-theme=terminal] :is(.sw-hpn,.sw-tkh .sw-1l,.sw-un,.sw-verb,.sw-rname,.sw-tl,.sw-tn){letter-spacing:0}
+.sw-page[data-theme=terminal] .sw-why{margin:0;padding:7px 12px;background:var(--raised);box-shadow:inset 0 0 0 1px var(--line);line-height:1.5}
+.sw-page[data-theme=terminal] .sw-runb{margin-bottom:8px;line-height:1.5}
+.sw-page[data-theme=terminal] .sw-tk{margin-bottom:12px}
+.sw-page[data-theme=terminal] .sw-tkax{margin-top:-4px}
+.sw-page[data-theme=terminal] .sw-fleg{flex-wrap:nowrap;white-space:nowrap}
+.sw-page[data-theme=terminal] .sw-rpb .sw-btns{flex-wrap:nowrap}
+.sw-hfold>summary{cursor:pointer;list-style:none}
+.sw-hfold>summary::-webkit-details-marker{display:none}
+.sw-hfold>summary .sw-hpt::before{content:"";display:inline-block;width:5px;height:5px;margin:0 9px 2px 1px;border:solid var(--a);border-width:0 1.5px 1.5px 0;transform:rotate(-45deg);transition:transform .12s cubic-bezier(.2,0,.38,.9)}
+.sw-hfold[open]>summary .sw-hpt::before{transform:rotate(45deg)}
+.sw-hfold:not([open])>summary{margin-bottom:0}
+.sw-hfold>summary:hover .sw-hptv{color:var(--tm-hi,var(--ink))}
+.sw-hfold>summary:focus-visible{outline:1px solid var(--a);outline-offset:2px}
+
 .sw-rdiff{display:flex;flex-direction:column;gap:6px;min-width:0}
 .sw-rlines{max-height:300px;overflow:auto;padding:6px 0;font:12px/1.6 var(--mono);white-space:pre;scrollbar-width:thin;scrollbar-color:var(--hud-line2,var(--line)) transparent}
 .sw-rdiff[data-failed=true] .sw-rlines{opacity:.7}
@@ -3800,6 +3893,10 @@ const CSS = `${TM_PALETTE}
 .sw-rl[data-tag="+"] .sw-rsign{color:var(--ok)}
 .sw-rl[data-tag="-"]{color:var(--dim);background:color-mix(in srgb,var(--bad) 8%,transparent)}
 .sw-rl[data-tag="-"] .sw-rsign{color:var(--bad)}
+.sw-page[data-theme=terminal] .sw-rl[data-tag="+"]{background:var(--hud-add)}
+.sw-page[data-theme=terminal] .sw-rl[data-tag="-"]{background:var(--hud-del)}
+.sw-page[data-theme=terminal] .sw-rl[data-tag="+"] .sw-rsign{color:var(--hud-add-ink)}
+.sw-page[data-theme=terminal] .sw-rl[data-tag="-"] .sw-rsign{color:var(--hud-del-ink)}
 .sw-rl[data-tag="@"]{align-items:center;gap:8px;margin:8px 0 3px;padding-left:6px;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase}
 .sw-rl[data-tag="@"]:first-child{margin-top:0}
 .sw-rl[data-tag="@"]::before{content:"";flex:none;width:14px;height:1px;background:var(--a)}
@@ -3839,7 +3936,7 @@ const CSS = `${TM_PALETTE}
 .sw-hle::before{content:"";flex:none;width:5px;height:5px;background:var(--c)}
 .sw-hlm{color:var(--ink)}
 .sw-rturn:hover,.sw-hlog>button:hover{background:color-mix(in srgb,var(--a) 6%,transparent)}
-.sw-rturn[aria-pressed=true],.sw-hlog>button[aria-current=step]{background:var(--hud-teal-d,var(--raised));box-shadow:inset 2px 0 0 var(--c,var(--a))}
+.sw-rturn[aria-pressed=true],.sw-hlog>button[aria-current=step]{background:var(--hud-pick,var(--raised));box-shadow:inset 2px 0 0 var(--c,var(--a))}
 .sw-rturn[aria-pressed=true]>*,.sw-hlog>button[aria-current=step]>*{color:var(--tm-hi,var(--ink))}
 @container (max-width:540px){
  .sw-hp[data-span]{grid-column:span 6}

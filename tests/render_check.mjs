@@ -437,6 +437,12 @@ check(q('.sw-money')?.textContent === '~$0.08' && q('.sw-money')?.tabIndex === 0
     'leader lines: one from the main agent to the callout spine, one from each callout to its node; the spine runs first to last; the main node says its state')
   check(qa('.sw-htime .sw-tk').map(e => e.dataset.st).join() === 'completed,failed' && qa('.sw-htime .sw-tkn').map(e => e.textContent).join() === 'docs-writer,wiki-watchdog',
     'time per agent: one track per subagent, in its status colour')
+  check(qa('.sw-htime .sw-tks').length === 1 && q('.sw-htime .sw-tks')?.classList.contains('sw-tkax') && !q('.sw-htime .sw-tk .sw-tks'),
+    'time per agent: the tracks share one scale, drawn once under them')
+  check(q('.sw-hdetail')?.tagName === 'DETAILS' && !q('.sw-hdetail').open && q('.sw-hdetail > summary.sw-hph .sw-hpt') && q('.sw-hdetail .sw-focus'),
+    'the detail panel starts folded under its title row and keeps its content in the page')
+  check(!qa('.sw-hspent .sw-kv dt').some(d => /agents/i.test(d.textContent)) && !qa('.sw-hagent .sw-kv dt').some(d => /subagents/i.test(d.textContent)),
+    'the done count is not repeated in SPENT or the main agent card (the fleet chip and the DONE cells carry it)')
   check(qa('.sw-alog > button').length === 2 && q('.sw-hagent .sw-rname')?.textContent === '★ main-agent' && q('.sw-hdetail .sw-focus')?.dataset.kind === 'main',
     'the log has a row per subagent; the agent card and the detail panel show the selected agent')
   await act(async () => { qa('.sw-fnode .sw-unit')[1].click() })
@@ -449,6 +455,8 @@ check(q('.sw-money')?.textContent === '~$0.08' && q('.sw-money')?.tabIndex === 0
   check(q('.sw-focus')?.dataset.kind === 'main', 'the main node selects the main agent again')
 }
 const css = q('style')?.textContent || ''
+check(/:is\(\.sw-ht,\.sw-rname\)\{font-size:14px/.test(css) && /\.sw-score \.sw-money\{display:inline;font:250 28px/.test(css) && /\.sw-page\[data-theme=terminal\] \.sw-why\{margin:0;padding:7px 12px;background:var\(--raised\)/.test(css),
+  'HUD type: 11.5 px text, 14 px names, 28 px numbers; the line under the title is a strip like the run bar on every tab')
 check(/\.sw-page button:focus-visible[^{]*\{[^}]*outline:2px/.test(css), 'buttons draw a visible focus ring (the app removes every ring)')
 check(/\.sw-toast\{width:max-content;max-width:min\(360px,calc\(100cqw - 40px\)\)/.test(css),
   'a toast is as wide as its text up to 360px (its region is shrink-wrapped: a % width wraps one word a line)')
@@ -478,13 +486,13 @@ check(units().length === 3 && units().every(u => u.querySelector('pre.sw-spr'))
   // Both palettes come from the app theme, so the panel follows the skin the user picked: the page mixes
   // the theme's foreground into its background for every neutral and takes the theme accent (held light
   // enough to read); the status-bar chip tints toward the accent. No colour literal anywhere.
-  const hud = css.match(/\.sw-page\[data-theme=terminal\]\{--hud-fg:[^}]*\}/)?.[0] || ''
+  const hud = css.match(/\.sw-page\[data-theme=terminal\]\{--tm-acc:light-dark[^}]*\}/)?.[0] || ''
   const chip = css.match(/\.sw-sbw\[data-theme=terminal\]\{[^}]*\}/)?.[0] || ''
-  check(/\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-acc\)/.test(css) && /--hud-fg:var\(--ui-base\)/.test(hud) && /--hud-bgc:var\(--dt-background\)/.test(hud)
+  check(/\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-acc\)/.test(css) && /--tm-bg:transparent;--tm-raised:var\(--ui-bg-card\)/.test(hud) && /--tm-line:var\(--ui-stroke-tertiary\)/.test(hud) && /--hud-add:var\(--ui-diff-add-background\)/.test(hud)
     && /--tm-acc:light-dark\(oklch\(from var\(--ui-accent\)/.test(hud) && /--tm-bad:color-mix\(in srgb,var\(--ui-red\)/.test(hud) && /--tm-run:color-mix\(in srgb,var\(--ui-yellow\)/.test(hud)
     && /--tm-acc:color-mix\(in srgb,var\(--ui-accent\)/.test(chip) && /--tm-ok:color-mix\(in srgb,var\(--ui-green\)/.test(chip) && /--tm-bad:color-mix\(in srgb,var\(--ui-red\)/.test(chip)
     && !/#[0-9a-f]{3,8}\b/i.test(css),
-    'Terminal: the page and the status-bar chip both take their colours from the app theme — no literal anywhere')
+    'Terminal: the page uses the app tokens as they are (see-through ground for the glass, translucent card, strokes, diff colours) and the chip tints from them — no literal anywhere')
 }
 
 // 22. the run picker: the last run now, earlier runs on demand, Back to now
@@ -1422,6 +1430,11 @@ mod.default.register(quietCtx({ storage: undefined }))
   check(qa('.sw-hlog>button').length === 3 && qa('.sw-hlog>button')[1].dataset.st === 'failed' && qa('.sw-hlog .sw-hle').map(e => e.textContent).join() === 'EDIT,FAILED,WRITE'
     && qa('.sw-hlog>button')[0].getAttribute('aria-current') === 'step',
     `replay HUD: the log lists every edit with what it was, the current one marked (${qa('.sw-hlog .sw-hle').map(e => e.textContent)})`)
+  {
+    const order = qa('.sw-replay .sw-hp').map(p => p.classList.contains('sw-rpb') ? 'play' : p.classList.contains('sw-rstep') ? 'file' : p.querySelector('.sw-hlog') ? 'log' : p.classList.contains('sw-hpx') ? 'diff' : p.classList.contains('sw-rturns') ? 'turns' : 'x')
+    check(/diff,play,x,x,file,log$/.test(order.join()) && q('.sw-rpb')?.dataset.span === '6' && q('.sw-hlog')?.closest('.sw-hp')?.dataset.span === '6' && !q('.sw-rstep .sw-rname'),
+      `replay: the playback is a full-width strip under the diff, then lines / so far / file, then the log; the file panel does not repeat the diff's name (${order})`)
+  }
   await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Next edit').click() })
   await tick(20)
   check(q('.sw-rof')?.textContent === 'Edit 2 of 3' && /This edit failed: no match/.test(q('.sw-rfail')?.textContent || '') && /by helper: docs-writer/.test(q('.sw-rwhat')?.textContent || ''),
@@ -1451,6 +1464,11 @@ mod.default.register(quietCtx({ storage: undefined }))
   }
   await tick(1600)
   check(q('.sw-rof')?.textContent === 'Edit 1 of 3', `replay: Play stays on an edit whose typing outlasts 1.5 s (${q('.sw-rof')?.textContent})`)
+  {
+    const co = q('.sw-co.is-cur'), row = co && q(`.sw-rlines .sw-rl[data-h="${co.dataset.to}"]`)
+    check(co && /^LINE \d+$/.test(co.querySelector('.sw-col')?.textContent || '') && row?.dataset.tag === '+' && mod.lineAt([['@', '12'], [' ', 'k'], ['-', 'o'], ['+', 'n']], 3) === 13,
+      `replay: while Play types, a callout names the line being typed and its wire points at that row (${co?.querySelector('.sw-col')?.textContent})`)
+  }
   await tick(600)
   check(q('.sw-rof')?.textContent === 'Edit 2 of 3', `replay: Play steps on by itself once the edit is typed (${q('.sw-rof')?.textContent})`)
   check(q('.sw-rlines') && !q('.sw-rlines[data-play]'), 'replay: Play does not type in a failed edit — it was never applied')

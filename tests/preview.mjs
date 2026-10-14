@@ -428,7 +428,8 @@ body{padding:16px 18px 28px}
 .swp-wrap.is-bar{width:auto}
 .swp-bar{height:24px;display:flex;align-items:center;justify-content:flex-end;padding:0 8px;background:var(--ui-bg-sidebar);font-size:11.5px}
 .swp-label{font-size:12px;color:var(--ui-text-secondary);margin:0 0 6px}
-.swp-frame{border:1px solid var(--ui-stroke-primary);border-radius:10px;overflow:hidden;background:var(--ui-bg-primary)}
+/* a frame stands in for the pane, which sits on the app shell's --ui-bg-chrome (controller.tsx data-contrib-shell) */
+.swp-frame{border:1px solid var(--ui-stroke-primary);border-radius:10px;overflow:hidden;background:var(--ui-bg-chrome)}
 .swp-frame .sw-page{height:auto}
 </style>
 </head>

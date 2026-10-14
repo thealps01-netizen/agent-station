@@ -12,9 +12,22 @@ still takes the theme's colours. Red marks only a failure, amber only something 
 
 ### Changed
 
-- **The HUD follows the Hermes theme.** Its ground, panels, hairlines and text are the theme's
-  foreground mixed into its background; its accent is the theme accent, held light enough to read on a
-  dark ground; red and amber are the theme's status colours. No colour is fixed any more.
+- **The HUD follows the Hermes theme.** It uses the app's own tokens as they are: a see-through ground
+  (the window's glass shows through, as behind the chat), the app's translucent card for panels, its
+  strokes, text levels, diff colours, active-row fill and mono font. The accent is the theme accent, held
+  light enough to read on a dark ground; red and amber are the theme's status colours. No colour is fixed.
+- **HUD light and motion.** Panels carry accent corner ticks and power on one after another; time bars and
+  the chart fill in, with glowing markers and a filled curve; the picked tab, big numbers and changed-file
+  tiles glow faintly; the tabs sit on the title row; the playback strip is a band of ticks with text
+  PREVIOUS / PLAY / NEXT; callout chips are filled. While Play types, a LINE n callout and its wire follow the
+  line being typed, a scan line sweeps the diff, and a number that changes rolls in. Reduced motion stops all
+  of it.
+- **One order on every tab.** Three type sizes (11.5 px text, 14 px names, 28 px numbers) and two letter
+  spacings; the line under the title is the same strip on every tab (Replay's text shortened to one line);
+  TIME PER AGENT draws its shared scale once instead of under every agent; the FILES legend stays on one
+  line. DETAIL starts folded under its title row (click to open). The done count is no longer repeated in
+  SPENT and the main agent card. Replay: PLAYBACK is a full-width strip under the diff, then LINES CHANGED,
+  LINES SO FAR and FILE in one row, then the log; FILE no longer repeats the diff's file name and status.
 - **10 px text.** The HUD page is scaled (CSS zoom .8696) so its smallest text lands at 10 px, and the
   leader lines convert screen pixels back to the scaled page so they still meet their rows.
 - **Denser, like the draft.** 11.5 px body text, one 8 px gutter and no frame around the panels, tighter
