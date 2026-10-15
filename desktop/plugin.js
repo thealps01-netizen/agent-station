@@ -324,7 +324,11 @@ This edit failed` : path),
         running: 'Running',
         stopped: 'Stopped',
         firstError: 'First error',
-        line: n => `Line ${n}`
+        line: n => `Line ${n}`,
+        orbit: 'Orbit',
+        orbitLabel: 'Background commands in orbit',
+        orbitMain: n => n ? `orbit · ${n} in flight` : 'orbit · parked',
+        teleLink: 'link', teleOrbits: 'orbits', teleEnded: 'ended'
       },
       file: {
         op: {
@@ -1536,6 +1540,322 @@ function StationScene() {
   return jsx('canvas', { className: 'sw-orcv', ref, 'aria-hidden': 'true' })
 }
 
+/** The Commands tab's ORBIT, drawn live in the FLEET station's style (its camera, thin glowing lines in
+ * depth buckets, stars, ping, construction intro, chamfered frame, leader lines): a wireframe planet turns
+ * at the centre (latitude rings, meridians, continents, an equator band, a halo); every command shown has
+ * its own inclined orbit and is a small wireframe satellite on it. Running flies its orbit with a trail
+ * and a pulse, finished is parked and lit, failed flickers red on a dashed red orbit, stopped is a dashed
+ * outline, frozen. Each callout's leader runs to a node pin on its orbit on the callout's side, so lines
+ * never cross the planet; the selected command's satellite gets the FLEET brackets. State is read from
+ * the panel's own DOM, colours from the page's tokens. Reduced motion draws one still frame, refreshed
+ * once a second. window.__swStationClock, when set, drives the clock (frame-exact recordings). */
+export function startCmdOrbitScene(canvas) {
+  const root = canvas?.closest('.sw-orbit')
+  const ctx = canvas?.getContext?.('2d')
+  const swatch = document.createElement('canvas').getContext?.('2d', { willReadFrequently: true })
+  if (!root || !ctx || !swatch) return () => {}
+  root.classList.add('has-scene')
+  const still = root.dataset.calm === 'true' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  const probe = document.createElement('span')
+  probe.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden;visibility:hidden'
+  root.appendChild(probe)
+  // a token resolved to sRGB 0..1 by painting it: works for any colour syntax the theme uses
+  const tok = v => {
+    probe.style.color = `var(${v})`
+    swatch.clearRect(0, 0, 1, 1); swatch.fillStyle = window.getComputedStyle(probe).color; swatch.fillRect(0, 0, 1, 1)
+    const d = swatch.getImageData(0, 0, 1, 1).data
+    return [d[0] / 255, d[1] / 255, d[2] / 255]
+  }
+  let P
+  const readPal = () => { P = { line: tok('--a'), hot: tok('--run'), ok: tok('--ok'), bad: tok('--bad'), idle: tok('--idle'), bg: tok('--bg') } }
+  const paint = (c, a = 1) => `color(srgb ${c[0]} ${c[1]} ${c[2]} / ${Math.max(0, Math.min(1, a))})`
+  const stCol = st => ({ running: P.hot, completed: P.ok, failed: P.bad, queued: P.idle, stopped: P.idle })[st] || P.line
+  const clamp = x => Math.max(0, Math.min(1, x))
+
+  // ── camera: the station's ──
+  const TILT = 0.64, ROLL = -0.24
+  let W = 0, H = 0, dpr = 1, U = 1, CX = 0, CY = 0, yaw = 0
+  const cam = ([x, y, z]) => {
+    const cy0 = Math.cos(yaw), sy0 = Math.sin(yaw)
+    const x1 = x * cy0 + z * sy0, z1 = -x * sy0 + z * cy0
+    const ct = Math.cos(TILT), st = Math.sin(TILT)
+    const y2 = y * ct - z1 * st, z2 = y * st + z1 * ct
+    const cr = Math.cos(ROLL), sr = Math.sin(ROLL)
+    return [x1 * cr - y2 * sr, x1 * sr + y2 * cr, z2]
+  }
+  const proj = p => { const c = cam(p), k = U * 900 / (900 - c[2]); return [CX + c[0] * k, CY - c[1] * k, c[2]] }
+  const resize = () => {
+    const w = canvas.clientWidth, h = canvas.clientHeight, d = Math.min(2, window.devicePixelRatio || 1)
+    if (w === W && h === H && d === dpr) return false
+    W = w; H = h; dpr = d; canvas.width = Math.round(w * d); canvas.height = Math.round(h * d)
+    U = Math.min(W / 666, H / 360); CX = W * 0.5; CY = H * 0.58
+    return true
+  }
+
+  // ── model ──
+  const PR = 74   // planet radius
+  const pt = (r, y, a) => [r * Math.cos(a), y, r * Math.sin(a)]
+  // an orbit: radius, inclination about x, node (turn about y)
+  const orbitDef = i => ({ r: 118 + i * 16, inc: [0.22, -0.3, 0.38, -0.16, 0.5, -0.44][i % 6], node: [0.4, 2.1, 4.0, 1.2, 3.1, 5.2][i % 6] })
+  const onOrbit = (o, a, dr = 0, dy = 0) => {
+    let [x, y, z] = [(o.r + dr) * Math.cos(a), dy, (o.r + dr) * Math.sin(a)]
+    const ci = Math.cos(o.inc), si = Math.sin(o.inc); [y, z] = [y * ci - z * si, y * si + z * ci]
+    const cn = Math.cos(o.node), sn = Math.sin(o.node); [x, z] = [x * cn + z * sn, -x * sn + z * cn]
+    return [x, y, z]
+  }
+  const build = (spin, sats) => {
+    const S = []
+    const L = (g, a, b, o, m) => S.push([a, b, g, o, m])
+    const ring = (g, r, y, n, ph, mul = 1, o0 = 0, o1 = 1) => { for (let k = 0; k < n; k++) { const a = ph + k / n * 6.2832, b = ph + (k + 1) / n * 6.2832; L(g, pt(r, y, a), pt(r, y, b), o0 + (o1 - o0) * k / n, mul) } }
+    // planet: latitude rings, meridians that turn, a brighter equator band, a halo, polar caps
+    for (let j = 1; j < 10; j++) { const la = -1.5708 + j / 10 * 3.1416; ring('planet', PR * Math.cos(la), PR * Math.sin(la), 64, spin, j === 5 ? 1.2 : 0.7, j / 10, j / 10) }
+    for (let k = 0; k < 18; k++) { const a = spin + k / 18 * 6.2832; for (let j = 0; j < 16; j++) { const l0 = -1.5708 + j / 16 * 3.1416, l1 = -1.5708 + (j + 1) / 16 * 3.1416; L('planet', pt(PR * Math.cos(l0), PR * Math.sin(l0), a), pt(PR * Math.cos(l1), PR * Math.sin(l1), a), k / 18, k % 3 ? 0.4 : 0.8) } }
+    ring('band', PR + 1, 4, 96, spin, 0.9); ring('band', PR + 1, -4, 96, spin, 0.9)
+    for (let k = 0; k < 48; k++) { const a = spin + k / 48 * 6.2832; L('band', pt(PR + 1, -4, a), pt(PR + 1, 4, a), k / 48, 0.5) }
+    ring('halo', PR + 9, 0, 96, 0, 0.35)
+    for (const s of [1, -1]) { ring('detail', 10, s * (PR - 1), 20, spin, 0.8); L('detail', [0, s * PR, 0], [0, s * (PR + 14), 0], 0.5, 0.9) }
+    // continents: a few closed contours on the surface, turning with it
+    const blobs = [[0.5, 0.3, 0.42], [2.4, -0.4, 0.36], [4.2, 0.6, 0.3], [5.4, -0.2, 0.26]]
+    for (const [lo, la, s] of blobs) {
+      let prev = null
+      for (let k = 0; k <= 40; k++) {
+        const b = k / 40 * 6.2832, rr = s * (1 + 0.25 * Math.sin(b * 3 + lo) + 0.15 * Math.sin(b * 5)), lt = la + rr * Math.sin(b), ln = spin + lo + rr * Math.cos(b) / Math.cos(la)
+        const p = pt((PR + 0.5) * Math.cos(lt), (PR + 0.5) * Math.sin(lt), ln)
+        if (prev) L('land', prev, p, k / 40, 0.85); prev = p
+      }
+    }
+    // orbits: thin rings with tick marks; failed ones in segments (dashed)
+    for (const s of sats) {
+      const o = s.o, n = 120
+      for (let k = 0; k < n; k++) {
+        if ((s.st === 'failed' || s.st === 'stopped') && k % 2) continue
+        L(s.st === 'failed' ? 'obad' : 'orbit', onOrbit(o, k / n * 6.2832), onOrbit(o, (k + 1) / n * 6.2832), k / n, s.sel ? 1.1 : 0.55)
+        if (k % 10 === 0) L('orbit', onOrbit(o, k / n * 6.2832, -3), onOrbit(o, k / n * 6.2832, 3), k / n, 0.35)
+      }
+    }
+    return S
+  }
+  const INTRO = { planet: [0, 0.9], band: [0.5, 0.6], halo: [0.7, 0.6], land: [0.9, 0.7], detail: [1.0, 0.5], orbit: [1.1, 0.9], obad: [1.1, 0.9], sat: [1.9, 0.6] }
+
+  // ── state from the DOM ──
+  let S = null, frame = 0
+  const readState = () => {
+    const main = root.querySelector('.sw-ormain')
+    const calls = [...root.querySelectorAll('.sw-orl')].map((el, i) => ({ el, i, st: el.dataset.st || 'queued', sel: el.classList.contains('is-sel'), side: el.dataset.side }))
+    S = { main, busy: main?.dataset.st === 'running', mainSel: !!main?.classList.contains('is-sel'), calls }
+    // order orbits so each callout's node sits on its side, level with it: inner orbits for the upper labels
+    S.sats = calls.map((c, i) => ({ ...c, o: orbitDef(i) }))
+    for (const s of S.sats) {   // the node: the point of its orbit on the label's side nearest the label's height
+      let best = 0, bc = 1e9
+      for (let d = 0; d < 360; d += 3) {
+        const a = d * Math.PI / 180, q = proj(onOrbit(s.o, a))
+        if ((s.side === 'l') !== (q[0] < CX - 40 * U)) continue
+        const cost = Math.abs(q[1] - labelY(s)) + (q[2] < 0 ? 60 : 0)
+        if (cost < bc) { bc = cost; best = a }
+      }
+      s.node = best
+    }
+  }
+  const labelY = c => parseFloat(c.el.style.top) / 100 * H + 6
+
+  const rnd = (() => { let x = 7654321; return () => ((x = (x * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff) })()
+  const STARS = Array.from({ length: 150 }, () => ({ x: rnd(), y: rnd(), z: 0.2 + rnd() * 0.8, p: rnd() * 6.28, s: rnd() }))
+  const glow = (x, y, r, c, a) => { const g = ctx.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, paint(c, a)); g.addColorStop(1, paint(c, 0)); ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2) }
+  const poly = pts => { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath() }
+  const t0 = performance.now() / 1000
+
+  // where a satellite is on its orbit now
+  const satAngle = (s, t) => {
+    if (s.st === 'running') return s.node + t * (0.5 * 104 / s.o.r)
+    if (s.st === 'completed') return s.node + 0.12 * Math.sin(t * 0.3 + s.i)
+    return s.node
+  }
+
+  const render = () => {
+    if (resize() || frame % 30 === 0) { readPal(); readState() }
+    frame++
+    if (!W || !H) return
+    const t = still ? 30 : (window.__swStationClock ?? performance.now() / 1000 - t0)
+    yaw = 0.05 * Math.sin(t * 0.13)
+    const spin = t * (S.busy ? 0.11 : 0.05)
+    const reveal = g => { const [s, d] = INTRO[g]; return clamp((t - s) / d) }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, W, H)
+    ctx.globalCompositeOperation = 'lighter'
+    for (const s of STARS) { const a = (0.1 + 0.32 * s.z) * (0.55 + 0.45 * Math.sin(t * (0.5 + s.s) + s.p)); ctx.fillStyle = paint(P.line, a); ctx.fillRect(s.x * W, s.y * H, s.z > 0.88 ? 1.5 : 1, s.z > 0.88 ? 1.5 : 1) }
+    glow(CX, CY, W * 0.3, P.line, 0.07)
+
+    // ping across the equatorial plane, a scan ring riding the planet's latitudes, faint outer rings
+    const ring2 = (r, y, a, w, dash) => { ctx.beginPath(); for (let k = 0; k <= 80; k++) { const q = proj(pt(r, y, k / 80 * 6.2832)); k ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]) } ctx.lineWidth = w; ctx.strokeStyle = paint(P.line, a); if (dash) ctx.setLineDash(dash); ctx.stroke(); ctx.setLineDash([]) }
+    const ph = (t % 7) / 7
+    if (ph < 0.6 && t > 2) ring2(PR + ph / 0.6 * 260, 0, 0.45 * (1 - ph / 0.6), 1.2)
+    const sp = (t % 5) / 5, la = -1.3 + sp * 2.6
+    ring2(PR * Math.cos(la) + 2, PR * Math.sin(la), 0.6 * Math.sin(sp * 3.14) * reveal('planet'), 1.4)
+    ring2(220, 0, 0.12, 1, [2, 6]); ring2(262, 0, 0.07, 1, [1, 9])
+
+    // wireframe in depth buckets (glow + core), a planet's far side dimmer; failed orbits in red
+    const B = 8, bk = Array.from({ length: B }, () => []), red = []
+    for (const [p1, p2, g, o, m] of build(spin, S.sats)) {
+      const [s, d] = INTRO[g], prog = (t - s) / d
+      if (prog <= o) continue
+      const a1 = proj(p1), a2 = proj(p2)
+      const f = clamp(((a1[2] + a2[2]) / 2 + 120) / 240)
+      const a = (0.1 + 0.8 * f) * m * clamp((prog - o) * 6)
+      if (g === 'obad') { red.push([a1, a2, a]); continue }
+      bk[Math.min(B - 1, (a * B) | 0)].push(a1, a2)
+    }
+    bk.forEach((list, b) => {
+      if (!list.length) return
+      ctx.beginPath(); for (let i = 0; i < list.length; i += 2) { ctx.moveTo(list[i][0], list[i][1]); ctx.lineTo(list[i + 1][0], list[i + 1][1]) }
+      const a = (b + 0.5) / B
+      ctx.lineWidth = 3; ctx.strokeStyle = paint(P.line, a * 0.13); ctx.stroke()
+      ctx.lineWidth = 0.8; ctx.strokeStyle = paint(P.line, a * 0.95); ctx.stroke()
+    })
+    for (const [a1, a2, a] of red) { ctx.beginPath(); ctx.moveTo(a1[0], a1[1]); ctx.lineTo(a2[0], a2[1]); ctx.lineWidth = 0.9; ctx.strokeStyle = paint(P.bad, a * 0.9); ctx.stroke() }
+    const core = proj([0, PR + 14, 0])
+    glow(CX, CY, 70 * U, P.line, (S.busy ? 0.12 + 0.06 * Math.sin(t * 3) : 0.09) * reveal('planet'))
+
+    // satellites: a small wireframe bus with two panel wings, oriented along the orbit
+    const sr = reveal('sat')
+    for (const s of S.sats) {
+      if (sr <= 0) break
+      const a = satAngle(s, t), col = stCol(s.st)
+      const c3 = onOrbit(s.o, a), q = proj(c3)
+      const behind = q[2] < 0 && Math.hypot(q[0] - CX, q[1] - CY) < PR * U * 1.05
+      const vis = (behind ? 0.25 : 1) * sr
+      s.q = q
+      if (s.st === 'running') for (let k = 1; k < 26; k++) {   // trail
+        const p1 = proj(onOrbit(s.o, a - (k - 1) * 0.025)), p2 = proj(onOrbit(s.o, a - k * 0.025))
+        ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.lineWidth = 1.6; ctx.strokeStyle = paint(P.hot, (1 - k / 26) * 0.85 * vis); ctx.stroke()
+      }
+      const tang = (da, dr = 0, dy = 0) => proj(onOrbit(s.o, a + da, dr, dy))
+      let fa = 0.45
+      if (s.st === 'running') fa = 0.5 + 0.35 * (0.5 + 0.5 * Math.sin(t * 3.2 + s.i))
+      if (s.st === 'failed') fa = Math.sin(t * 17 + s.i * 3) > 0.2 || Math.sin(t * 5.3 + s.i) > 0.6 ? 0.6 : 0.12
+      const idle = s.st === 'queued' || s.st === 'stopped'
+      const d = 0.06, w = 6
+      // bus
+      poly([tang(-d * 0.5, -w), tang(d * 0.5, -w), tang(d * 0.5, w), tang(-d * 0.5, w)])
+      if (!idle) { ctx.fillStyle = paint(col, fa * vis); ctx.fill() }
+      ctx.lineWidth = 1; ctx.strokeStyle = paint(col, 0.95 * vis); if (idle) ctx.setLineDash([2.5, 2]); ctx.stroke()
+      // wings, out of the orbit plane
+      for (const sy of [-1, 1]) {
+        poly([tang(-d * 0.4, 0, sy * 7), tang(d * 0.4, 0, sy * 7), tang(d * 0.4, 0, sy * 24), tang(-d * 0.4, 0, sy * 24)])
+        ctx.strokeStyle = paint(P.line, 0.8 * vis); ctx.stroke()
+        const m0 = tang(0, 0, sy * 9), m1 = tang(0, 0, sy * 15); ctx.beginPath(); ctx.moveTo(m0[0], m0[1]); ctx.lineTo(m1[0], m1[1]); ctx.stroke()
+      }
+      ctx.setLineDash([])
+      if (s.st === 'running' && !behind) { const f = (t * 0.8 + s.i * 0.3) % 1; ctx.beginPath(); ctx.arc(q[0], q[1], 6 + f * 16, 0, 6.2832); ctx.lineWidth = 1; ctx.strokeStyle = paint(P.hot, 0.55 * (1 - f) * sr); ctx.stroke() }
+    }
+
+    // frame: the station's chamfered border, accent bars, tick ruler
+    ctx.globalCompositeOperation = 'source-over'
+    const i0 = 3, ch = 9
+    poly([[i0 + ch, i0], [W - i0 - ch, i0], [W - i0, i0 + ch], [W - i0, H - i0 - ch], [W - i0 - ch, H - i0], [i0 + ch, H - i0], [i0, H - i0 - ch], [i0, i0 + ch]])
+    ctx.lineWidth = 1; ctx.strokeStyle = paint(P.line, 0.26); ctx.stroke()
+    ctx.lineWidth = 2; ctx.strokeStyle = paint(P.hot, 0.85)
+    const bar = (x0, y0, x1, y1) => { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke() }
+    bar(i0, H * 0.4, i0, H * 0.4 + 26); bar(W - i0, H * 0.6 - 26, W - i0, H * 0.6); bar(W * 0.5 - 30, H - i0, W * 0.5 + 30, H - i0)
+    ctx.lineWidth = 1; ctx.strokeStyle = paint(P.line, 0.3)
+    ctx.beginPath(); for (let x = W * 0.5 - 120; x <= W * 0.5 + 120; x += 8) { if (Math.abs(x - W * 0.5) < 34) continue; ctx.moveTo(x, H - i0); ctx.lineTo(x, H - i0 - ((x / 8 | 0) % 4 ? 3 : 6)) } ctx.stroke()
+
+    // leader lines to each orbit's node pin, brackets on the selected satellite, the box
+    if (W >= 520) {
+      for (const s of S.sats) {
+        if (sr <= 0) continue
+        const pin = proj(onOrbit(s.o, s.node)), top = labelY(s) - 6, left = s.side === 'l', u = W / 666
+        const x0 = left ? 14 * u : W - 14 * u, x1 = left ? 150 * u : W - 150 * u
+        ctx.globalAlpha = sr
+        ctx.strokeStyle = s.sel ? paint(P.hot, 0.95) : paint(P.line, 0.45); ctx.lineWidth = s.sel ? 1.2 : 0.8
+        ctx.beginPath(); ctx.moveTo(x0, top); ctx.lineTo(x1, top); ctx.lineTo(pin[0], pin[1]); ctx.stroke()
+        ctx.fillStyle = paint(P.line, 0.95); ctx.fillRect(pin[0] - 1.5, pin[1] - 1.5, 3, 3)
+        if (s.sel && s.q) brackets(s.q[0], s.q[1], 16 + 2 * Math.sin(t * 3))
+        ctx.globalAlpha = 1
+      }
+      const mb = S.main
+      if (mb) {
+        const u = W / 666, bx = parseFloat(mb.style.left) / 100 * W, by = parseFloat(mb.style.top) / 100 * H, bw = parseFloat(mb.style.width) / 100 * W, bh = 18 * u
+        ctx.strokeStyle = paint(P.line, 0.45); ctx.lineWidth = 0.8
+        ctx.beginPath(); ctx.moveTo(bx + 24 * u, by + bh); ctx.lineTo(bx + 24 * u, by + bh + 6); ctx.lineTo(core[0], core[1]); ctx.stroke()
+        poly([[bx, by], [bx + bw - 10 * u, by], [bx + bw, by + bh / 2], [bx + bw - 10 * u, by + bh], [bx, by + bh]])
+        ctx.fillStyle = paint(P.bg, 0.88); ctx.fill(); ctx.strokeStyle = S.mainSel ? paint(P.hot, 0.95) : paint(P.line, 0.85); ctx.lineWidth = S.mainSel ? 1.4 : 0.9; ctx.stroke()
+      }
+    }
+  }
+  const brackets = (x, y, r) => {
+    ctx.strokeStyle = paint(P.hot, 0.95); ctx.lineWidth = 1.3
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { ctx.beginPath(); ctx.moveTo(x + sx * r, y + sy * (r - 7)); ctx.lineTo(x + sx * r, y + sy * r); ctx.lineTo(x + sx * (r - 7), y + sy * r); ctx.stroke() }
+  }
+  let raf = 0, tick = 0
+  const loop = () => { if (!canvas.isConnected) { stop(); return } render(); if (!still) raf = window.requestAnimationFrame(loop) }
+  const stop = () => { window.cancelAnimationFrame(raf); clearInterval(tick); probe.remove(); root.classList.remove('has-scene') }
+  canvas.swOrbitFrame = render
+  raf = window.requestAnimationFrame(loop)
+  if (still) tick = setInterval(() => { if (canvas.isConnected) render(); else stop() }, 1000)
+  return stop
+}
+
+function CmdOrbitScene() {
+  const ref = useRef(null)
+  useEffect(() => startCmdOrbitScene(ref.current), [])
+  return jsx('canvas', { className: 'sw-orcv', ref, 'aria-hidden': 'true' })
+}
+
+/** The Commands tab's ORBIT panel: FLEET's markup (callouts, a box, corner readouts) over the live orbit
+ * scene. Up to six commands get a callout (alternating sides, the picked one always among them); a callout
+ * picks its command like a list row. Without a 2D canvas the panel stays hidden (the list says it all). */
+function CmdOrbit({ t, rows, picked, now, onPick }) {
+  let shown = rows.slice(0, 6)
+  if (picked && !shown.includes(picked)) shown = [...shown.slice(0, 5), picked]
+  const sides = { l: shown.filter((_, i) => i % 2 === 0), r: shown.filter((_, i) => i % 2 === 1) }
+  const flying = rows.filter(p => p.status === 'running').length
+  const ended = rows.filter(p => p.status === 'completed' || p.status === 'failed').length
+  const n = st => String(rows.filter(p => p.status === st).length).padStart(2, '0')
+  const callouts = Object.entries(sides).flatMap(([side, list]) => list.map((p, k) => {
+    const ly = list.length === 1 ? 190 : 110 + (k * 170) / (list.length - 1)
+    const time = p.status === 'running' ? fmtDuration(p.started_at ? now - p.started_at : null, t) : p.status === 'stopped' ? '' : fmtDuration(p.duration_s, t)
+    const word = t(`sw.proc.short.${p.status}`)
+    return jsx(Tip, {
+      label: tipText(p.command),
+      children: jsxs('button', {
+        type: 'button', className: `sw-orl${p === picked ? ' is-sel' : ''}`, 'data-side': side, 'data-st': p.status,
+        style: { top: pct(ly, ORBIT_H), left: pct(side === 'l' ? 14 : ORBIT_W - 164, ORBIT_W), width: pct(150, ORBIT_W) },
+        'aria-pressed': p === picked, 'aria-label': `${commandLine(p.command)}: ${word}`, onClick: () => onPick(p.id),
+        children: [
+          jsx('span', { className: 'sw-orn', children: commandLine(p.command) }, 'n'),
+          jsx('span', { className: 'sw-orv', children: [hudCaps(word), time ? ` · ${time}` : ''].join('') }, 'v')
+        ]
+      })
+    }, p.id)
+  }))
+  const bars = Array.from({ length: 14 }, (_, k) => jsx('i', { className: rows.length && k < Math.round((14 * ended) / rows.length) ? 'on' : undefined, style: { '--k': k } }, k))
+  const tele = (side, list) => jsx('div', {
+    className: 'sw-ortele', 'data-side': side, 'aria-hidden': 'true',
+    children: list.map(([k, v], i) => jsxs('div', { className: 'sw-otl', style: { '--i': i * 2 + (side === 'r' ? 1 : 0) }, children: [jsx('span', { children: hudCaps(k) }, 'k'), jsx('b', { children: v }, `v-${v}`)] }, k))
+  }, `tele-${side}`)
+  return jsx(HudPanel, {
+    title: t('sw.hudCommands.orbit'), span: 6, className: 'sw-cmorb',
+    children: [jsxs('div', {
+      className: 'sw-hgrid sw-orbit', role: 'group', 'aria-label': t('sw.hudCommands.orbitLabel'),
+      children: [
+        jsx(CmdOrbitScene, {}, 'scene'),
+        jsxs('div', {
+          className: 'sw-ormain', 'data-st': flying ? 'running' : 'completed', 'aria-hidden': 'true',
+          style: { top: pct(40, ORBIT_H), left: pct(226, ORBIT_W), width: pct(214, ORBIT_W) },
+          children: [
+            jsx('span', { className: 'sw-orn', children: `★ ${hudCaps(t('sw.hudCommands.orbitMain', flying))}` }, 'n'),
+            jsxs('span', { className: 'sw-orp', children: [jsx('b', { children: `${ended}/${rows.length}` }, 'n'), jsx('span', { className: 'sw-orbars', children: bars }, 'b')] }, 'p')
+          ]
+        }, 'main'),
+        ...callouts,
+        tele('l', [[t('sw.hudCommands.teleLink'), hudCaps(t(flying ? 'sw.hudAgents.teleActive' : 'sw.hudAgents.teleStandby'))], [t('sw.hudCommands.teleOrbits'), String(rows.length).padStart(2, '0')], [t('sw.hudCommands.teleEnded'), `${ended}/${rows.length}`]]),
+        tele('r', ['running', 'failed', 'stopped'].map(st => [t(`sw.proc.short.${st}`), n(st)]))
+      ]
+    }, 'orbit')]
+  }, 'orbit')
+}
+
 
 function Orbit({ t, main, subs, selected, onSelect, flash, waitingOn, calm }) {
   const wings = orbitWings(subs)
@@ -2395,6 +2715,7 @@ function ProcView({ t, p, rows, now, storedId, onToast, onPick }) {
   return jsxs('div', {
     className: 'sw-cmgrid',
     children: [
+      jsx(CmdOrbit, { t, rows, picked: p, now, onPick }, 'orbit'),
       jsx(HudPanel, {
         title: t('sw.hudCommands.console'), name: commandLine(p.command), span: 6, className: 'sw-hpx sw-cmcon', chip: hudChip(p.status, word),
         children: [
@@ -3939,6 +4260,7 @@ const CSS = `${TM_PALETTE}
 .sw-cmgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;min-width:0}
 .sw-hp[data-span="4"]{grid-column:span 4}
 .sw-cmcon .sw-hgrid{min-height:150px}
+.sw-cmorb:has(.sw-orbit:not(.has-scene)){display:none}
 .sw-cmcon .sw-hgrid>.sw-crt,.sw-cmcon .sw-hgrid>.sw-cmerr,.sw-cmcon .sw-hgrid>.sw-cmnote{position:relative;z-index:1;margin:0 196px 0 0}
 .sw-page[data-theme=terminal] .sw-cmcon .sw-crt{margin-top:0;padding:8px 0;border:0;background:none}
 .sw-page[data-theme=terminal] .sw-cmcon .sw-crt[data-state=lost]{padding:10px 8px}

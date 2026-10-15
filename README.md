@@ -8,7 +8,8 @@ runs, and without a 2D canvas the SVG schematic of wings and cells stands in); f
 shows the selected agent — what it works on now, the files it changed and read, a subagent's task,
 model, answer and cost, with Copy answer and Open its chat. Earlier runs sit in a run picker; past
 six subagents the station keeps five wings for those that need eyes and one holding the rest. A Commands tab lists the chat's background shell
-commands (`terminal(background=true)`), running and finished. A Replay tab steps through the file
+commands (`terminal(background=true)`), running and finished, under an ORBIT drawn in the station's style (a wireframe
+planet, each command a satellite on its own orbit, FLEET's callouts). A Replay tab steps through the file
 edits the AI made after each of your requests, one edit at a time, as removed and added lines. A status-bar chip (and, with a pet on
 screen, a line in its bubble) shows the running batch's progress and cost while the page is closed.
 

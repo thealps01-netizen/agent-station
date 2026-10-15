@@ -33,10 +33,24 @@ PY = "dashboard/plugin_api.py"
 
 # (gate, file, old, new, what the mutation breaks)
 MUTATIONS = [
+    # ── 2.3.0 Commands ORBIT ────────────────────────────────────────────────────
+    ("render", JS, "      jsx(CmdOrbit, { t, rows, picked: p, now, onPick }, 'orbit'),\n", "",
+     "the Commands tab no longer shows its ORBIT panel"),
+    ("render", JS, "        jsx(CmdOrbitScene, {}, 'scene'),\n", "",
+     "the ORBIT panel no longer mounts its live canvas"),
+    ("render", JS, "const stop = () => { window.cancelAnimationFrame(raf); clearInterval(tick); probe.remove(); root.classList.remove('has-scene') }\n  canvas.swOrbitFrame = render",
+     "const stop = () => { window.cancelAnimationFrame(raf); clearInterval(tick); probe.remove() }\n  canvas.swOrbitFrame = render",
+     "a stopped orbit scene leaves its panel claimed"),
+    ("audit", JS, "ctx.lineWidth = 0.9; ctx.strokeStyle = paint(P.bad, a * 0.9); ctx.stroke() }",
+     "ctx.lineWidth = 0.9; ctx.strokeStyle = 'rgba(255,0,0,.9)'; ctx.stroke() }",
+     "a failed orbit is painted in a colour literal instead of the theme's failed colour"),
+    ("render", JS, "        type: 'button', className: `sw-orl${p === picked ? ' is-sel' : ''}`, 'data-side': side, 'data-st': p.status,",
+     "        type: 'button', className: 'sw-orl', 'data-side': side, 'data-st': p.status,",
+     "the ORBIT stops marking the picked command"),
     # ── 2.1.0 station scene ─────────────────────────────────────────────────────
     ("render", JS, "      jsx(StationScene, {}, 'scene'),\n", "",
      "the FLEET orbit no longer mounts the live station canvas"),
-    ("render", JS, "probe.remove(); root.classList.remove('has-scene') }", "probe.remove() }",
+    ("render", JS, "probe.remove(); root.classList.remove('has-scene') }\n  canvas.swStationFrame", "probe.remove() }\n  canvas.swStationFrame",
      "a stopped station scene leaves the SVG schematic hidden"),
     ("audit", JS, "const C = (c, a = 1) => `color(srgb ${c[0]} ${c[1]} ${c[2]} / ${Math.max(0, Math.min(1, a))})`",
      "const C = (c, a = 1) => `rgba(${c[0] * 255},${c[1] * 255},${c[2] * 255},${a})`",

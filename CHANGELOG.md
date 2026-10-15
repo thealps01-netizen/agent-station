@@ -3,6 +3,23 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 2.3.0 — 2026-10-15
+
+The Commands tab gets an ORBIT panel in the FLEET station's style, from a draft the user approved on video.
+(2.2.0, a holographic globe in another style, was withdrawn the same day and is not part of this line.)
+
+- Above the CONSOLE, a wireframe planet turns in the station's thin glowing lines (its camera, stars,
+  ping, construction intro and chamfered frame): latitude rings, meridians, continents, an equator band.
+- Every command shown has its own inclined orbit and is a small wireframe satellite on it: running flies
+  with a trail and a pulse, finished is parked and lit, failed flickers red on a dashed red orbit,
+  stopped is a dashed outline, frozen.
+- FLEET's own callouts name up to six commands (the picked one always among them) with status and time;
+  a callout picks its command like a list row. Each leader runs to a pin on its orbit on the callout's
+  side, so lines never cross the planet; the picked satellite gets FLEET's brackets. A box counts the
+  commands in flight and the ended ones; corner readouts count running, failed and stopped.
+- Colours from the theme's tokens; reduced motion draws one still frame a second; without a 2D canvas
+  the panel stays hidden.
+
 ## 2.1.0 — 2026-10-14
 
 The FLEET station comes alive, from drafts the user approved on video.

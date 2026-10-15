@@ -467,6 +467,41 @@ check(q('.sw-tabn')?.textContent === '1' && q('.sw-tabn')?.getAttribute('aria-la
   box.remove()
   proto.getContext = real
 }
+// 21d. the Commands ORBIT scene with a 2D context: it takes the panel, paints in token colours only, draws
+// the planet and an orbit per callout, a failed orbit in the failed colour, and hands the panel back when it stops
+{
+  const calls = [], fills = [], strokes = []
+  const fake = () => new Proxy({}, {
+    get: (o, k) => k === 'getImageData' ? () => ({ data: [51, 102, 204, 255] })
+      : k === 'createRadialGradient' ? () => ({ addColorStop() {} })
+      : k in o ? o[k] : (...a) => { calls.push(k); if (k === 'fill') fills.push(o.fillStyle); if (k === 'stroke') strokes.push(o.strokeStyle) },
+    set: (o, k, v) => { o[k] = v; return true }
+  })
+  const proto = window.HTMLCanvasElement.prototype, real = proto.getContext
+  proto.getContext = fake
+  const box = document.createElement('div')
+  box.className = 'sw-orbit'
+  box.dataset.calm = 'true'
+  box.innerHTML = `<canvas></canvas><div class="sw-ormain" data-st="running" style="top:11%;left:34%;width:32%"></div>
+    <button class="sw-orl is-sel" data-side="l" data-st="running" style="top:30%"></button>
+    <button class="sw-orl" data-side="r" data-st="failed" style="top:30%"></button>
+    <button class="sw-orl" data-side="l" data-st="completed" style="top:75%"></button>`
+  document.body.appendChild(box)
+  const canvas = box.querySelector('canvas')
+  Object.defineProperty(canvas, 'clientWidth', { value: 666 })
+  Object.defineProperty(canvas, 'clientHeight', { value: 360 })
+  const stop = mod.startCmdOrbitScene(canvas)
+  canvas.swOrbitFrame()
+  const styles = [...fills, ...strokes].filter(f => typeof f === 'string')
+  check(box.classList.contains('has-scene') && calls.filter(c => c === 'lineTo').length > 1000 && styles.length
+    && styles.every(f => /^color\(srgb [\d.]+ [\d.]+ [\d.]+ \/ [\d.]+\)$/.test(f)),
+    `the orbit scene takes its panel and paints in token colours read through the canvas, never a literal (${calls.filter(c => c === 'lineTo').length} line segments)`)
+  check(fills.length >= 3 && strokes.length > 100, `the running, failed and finished satellites are filled, the planet and orbits stroked (${fills.length} fills, ${strokes.length} strokes)`)
+  stop()
+  check(!box.classList.contains('has-scene') && !box.querySelector('span[style*="visibility"]'), 'stopped, the orbit scene hands the panel back and leaves no probe behind')
+  box.remove()
+  proto.getContext = real
+}
 check(q('.sw-bign')?.textContent === '1' && q('.sw-big small')?.textContent === '/2'
   && qa('.sw-score .sw-seg i').map(i => i.dataset.st).join() === 'completed,failed',
   `the score counts finished subagents of all, one cell per subagent (${q('.sw-big')?.textContent})`)
@@ -678,6 +713,21 @@ check(q('.sw-cmcon')?.dataset.span === '6' && q('.sw-cmlp')?.dataset.span === '4
   && /\.sw-hp\[data-span="4"\]\{grid-column:span 4\}/.test([...document.querySelectorAll('style')].map(s => s.textContent).join(''))
   && q('.sw-cmlp .sw-hpt .sw-sr')?.textContent === 'Commands · 4' && q('.sw-cmcard .sw-hpt .sw-sr')?.textContent === 'Process',
   'the tab is a HUD: CONSOLE across the grid, COMMANDS (4 of 6 columns, counted) and PROCESS (2) below')
+{
+  const orb = q('.sw-cmorb'), calls = qa('.sw-cmorb .sw-orl')
+  check(q('.sw-cmgrid')?.firstElementChild === orb && orb?.dataset.span === '6' && q('.sw-cmorb .sw-hpt .sw-sr')?.textContent === 'Orbit'
+    && q('.sw-cmorb .sw-orbit > canvas.sw-orcv')?.getAttribute('aria-hidden') === 'true' && !q('.sw-cmorb .sw-orbit').classList.contains('has-scene')
+    && /\.sw-cmorb:has\(\.sw-orbit:not\(\.has-scene\)\)\{display:none\}/.test([...document.querySelectorAll('style')].map(s => s.textContent).join('')),
+    'an ORBIT panel leads the tab across the grid, its canvas hidden from screen readers; without a 2D context it stays hidden')
+  check(calls.length === 4 && calls.map(c => `${c.dataset.side}:${c.dataset.st}`).join() === 'l:running,l:failed,r:stopped,r:completed'
+    && calls[0].getAttribute('aria-pressed') === 'true' && calls.filter(c => c.getAttribute('aria-pressed') === 'true').length === 1
+    && calls[0].querySelector('.sw-orv')?.textContent.startsWith('RUNNING · 1m')
+    && calls[2].querySelector('.sw-orv')?.textContent === 'STØPPED' && calls[3].querySelector('.sw-orv')?.textContent === 'FINISHED · 42s',
+    `a callout per command, alternating sides, the picked one marked, its status and time (${calls.map(c => c.querySelector('.sw-orv')?.textContent)})`)
+  check(q('.sw-cmorb .sw-ormain .sw-orn')?.textContent === '★ ØRBIT · 1 IN FLIGHT' && q('.sw-cmorb .sw-orp b')?.textContent === '2/4'
+    && qa('.sw-cmorb .sw-ortele[data-side=r] .sw-otl b').map(b => b.textContent).join() === '01,01,01',
+    `the box counts the commands in flight and the ended ones; the readouts count running, failed, stopped (${q('.sw-cmorb .sw-ormain')?.textContent})`)
+}
 check(pressed().length === 1 && pressed()[0] === prs()[0] && conTitle() === 'Console · npm run dev',
   `with none picked, the console shows the newest command (${conTitle()})`)
 check(q('.sw-cmcon .sw-cmnote')?.textContent === 'Still running — its output appears here when it finishes.' && !rest.some(p => p.startsWith('/process_output'))
@@ -693,6 +743,7 @@ check(q('.sw-cmcon .sw-cmnote')?.textContent === 'Still running — its output a
   await act(async () => { document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true })) }) // focus inside the page holds its chat; let it go
 }
 check(rest.includes('/process_output?session_id=st-1&process_id=proc_bad'), 'picking a command reads its output for THIS chat')
+check(qa('.sw-cmorb .sw-orl.is-sel').length === 1 && q('.sw-cmorb .sw-orl.is-sel')?.dataset.st === 'failed', 'the ORBIT marks the command picked in the list')
 check(q('.sw-cmcon .sw-out')?.textContent === 'tail of proc_bad in st-1' && conTitle() === 'Console · python build.py'
   && q('.sw-cmcon .sw-hchip')?.dataset.st === 'failed' && q('.sw-cmcon .sw-hchip')?.textContent === 'exit 1',
   `the console shows the picked command: its output, its command in the title, its exit code on a status chip (${conTitle()})`)
