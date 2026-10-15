@@ -311,7 +311,11 @@ This edit failed` : path),
         change: 'Change',
         request: 'Request',
         log: n => `Log · ${n} edit${n === 1 ? '' : 's'}`,
-        word: { edit: 'EDIT', whole: 'WRITE', delete: 'DELETE', move: 'MOVE', failed: 'FAILED' }
+        word: { edit: 'EDIT', whole: 'WRITE', delete: 'DELETE', move: 'MOVE', failed: 'FAILED' },
+        worm: 'Wormhole',
+        wormLabel: 'Edits of this request as rings on a wormhole',
+        wormMain: (k, n) => `replay · edit ${k} of ${n}`,
+        teleEdits: 'edits', teleWrites: 'writes', teleFailed: 'failed', teleAdded: 'added', teleRemoved: 'removed', teleFiles: 'files'
       },
       hudCommands: {
         console: 'Console',
@@ -3119,6 +3123,276 @@ function stepWord(s, t) {
   return t(`sw.replay.word.${s.kind === 'whole' || s.kind === 'delete' || s.kind === 'move' ? s.kind : 'edit'}`)
 }
 
+/** The Replay tab's WORMHOLE, drawn live in the FLEET station's style (thin glowing lines in depth buckets,
+ * stars, construction intro, chamfered frame, leader lines): two warped grid sheets joined by a narrow
+ * throat, the grid's circles flowing into it. The edits shown are rings on the throat, the oldest at the
+ * bottom, the newest at the top; a ring's colour says what the edit did (edit / write / delete / failed),
+ * its weight how many lines it changed, a failed one is dashed and flickers. A scan plane (rings, radial
+ * lines, a turning radar sweep) rides the throat to the current edit and rests there; on arrival the ring
+ * sends a ripple across its sheet. Each callout's leader runs to its ring's edge on the callout's side.
+ * State is read from the panel's own DOM (data-steps / data-kinds / data-sizes, .sw-orl[data-k], .is-sel),
+ * colours from the page's tokens. Reduced motion draws one still frame, refreshed once a second.
+ * window.__swStationClock, when set, drives the clock (frame-exact recordings). */
+export function startReplayWormScene(canvas) {
+  const root = canvas?.closest('.sw-orbit')
+  const ctx = canvas?.getContext?.('2d')
+  const swatch = document.createElement('canvas').getContext?.('2d', { willReadFrequently: true })
+  if (!root || !ctx || !swatch) return () => {}
+  root.classList.add('has-scene')
+  const still = root.dataset.calm === 'true' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  const probe = document.createElement('span')
+  probe.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden;visibility:hidden'
+  root.appendChild(probe)
+  // a token resolved to sRGB 0..1 by painting it: works for any colour syntax the theme uses
+  const tok = v => {
+    probe.style.color = `var(${v})`
+    swatch.clearRect(0, 0, 1, 1); swatch.fillStyle = window.getComputedStyle(probe).color; swatch.fillRect(0, 0, 1, 1)
+    const d = swatch.getImageData(0, 0, 1, 1).data
+    return [d[0] / 255, d[1] / 255, d[2] / 255]
+  }
+  let P
+  const readPal = () => { P = { line: tok('--a'), hot: tok('--run'), ok: tok('--ok'), bad: tok('--bad'), idle: tok('--idle'), ink: tok('--ink') } }
+  const paint = (c, a = 1) => `color(srgb ${c[0]} ${c[1]} ${c[2]} / ${Math.max(0, Math.min(1, a))})`
+  const KC = { edit: 'line', write: 'ok', delete: 'idle', failed: 'bad' }
+  const clamp = x => Math.max(0, Math.min(1, x))
+  const ease = x => x < 0.5 ? 2 * x * x : 1 - (-2 * x + 2) ** 2 / 2
+
+  // ── camera: low, looking across the sheets ──
+  const TILT = 0.3, ROLL = -0.06
+  let W = 0, H = 0, dpr = 1, U = 1, CX = 0, CY = 0, yaw = 0
+  const cam = ([x, y, z]) => {
+    const cy0 = Math.cos(yaw), sy0 = Math.sin(yaw)
+    const x1 = x * cy0 + z * sy0, z1 = -x * sy0 + z * cy0
+    const ct = Math.cos(TILT), st = Math.sin(TILT)
+    const y2 = y * ct - z1 * st, z2 = y * st + z1 * ct
+    const cr = Math.cos(ROLL), sr = Math.sin(ROLL)
+    return [x1 * cr - y2 * sr, x1 * sr + y2 * cr, z2]
+  }
+  const proj = p => { const c = cam(p), k = U * 800 / (800 - c[2]); return [CX + c[0] * k, CY - c[1] * k, c[2]] }
+  const resize = () => {
+    const w = canvas.clientWidth, h = canvas.clientHeight, d = Math.min(2, window.devicePixelRatio || 1)
+    if (w === W && h === H && d === dpr) return false
+    W = w; H = h; dpr = d; canvas.width = Math.round(w * d); canvas.height = Math.round(h * d)
+    U = Math.min(W / 666, H / 360) * 0.92; CX = W * 0.5; CY = H * 0.55
+    return true
+  }
+
+  // ── the surface: a throat of radius R0 flaring into two sheets that level off at ±HS ──
+  const R0 = 17, HS = 92, RMAX = 340
+  const yOf = (r, s) => s * HS * Math.tanh(2 * Math.sqrt(R0 * Math.max(0, r - R0)) / HS)
+  const rOf = y => { const q = Math.atanh(Math.min(0.999, Math.abs(y) / HS)) * HS / 2; return R0 + q * q / R0 }
+  const S = (r, a, s) => [r * Math.cos(a), yOf(r, s), r * Math.sin(a)]
+  const SY = (y, a) => { const r = rOf(y); return [r * Math.cos(a), y, r * Math.sin(a)] }
+  const ringY = (k, n) => n < 2 ? 0 : -60 + 120 * k / (n - 1)
+
+  const build = (t, spin) => {
+    const L = [], seg = (a, b, o, m, g) => L.push([a, b, o, m, g])
+    const fadeR = r => clamp((RMAX - r) / 110)
+    for (const s of [1, -1]) for (let j = 0; j < 56; j++) {   // meridians, sampled closer near the throat
+      const a = spin + j / 56 * 6.2832
+      for (let i = 0; i < 34; i++) { const r0 = R0 + (RMAX - R0) * (i / 34) ** 2, r1 = R0 + (RMAX - R0) * ((i + 1) / 34) ** 2; seg(S(r0, a, s), S(r1, a, s), i / 34, (j % 4 ? 0.45 : 0.8) * fadeR(r1), 'grid') }
+    }
+    const ph = 1 - ((t * 0.12) % 1)   // circles flowing into the throat
+    for (const s of [1, -1]) for (let k = 0; k < 22; k++) {
+      const w = (k + ph) / 22, r = R0 + (RMAX - R0) * w ** 2.1, m = fadeR(r) * (k === 0 ? ph : 1) * (0.5 + 0.5 * (1 - w))
+      for (let j = 0; j < 96; j++) seg(S(r, j / 96 * 6.2832, s), S(r, (j + 1) / 96 * 6.2832, s), w, m, 'grid')
+    }
+    for (let y = -HS * 0.86; y <= HS * 0.86; y += 6) for (let j = 0; j < 48; j++) seg(SY(y, j / 48 * 6.2832), SY(y, (j + 1) / 48 * 6.2832), 0.5 + y / HS / 2, 0.35, 'throat')
+    return L
+  }
+  const INTRO = { grid: [0, 1.6], throat: [0.6, 1.0], ring: [1.4, 0.8], scan: [2.1, 0.5] }
+
+  // ── state from the DOM ──
+  let S0 = null, frame = 0
+  const readState = () => {
+    const calls = [...root.querySelectorAll('.sw-orl')].map(el => ({ el, k: Number(el.dataset.k), side: el.dataset.side, sel: el.classList.contains('is-sel') }))
+    const sizes = (root.dataset.sizes || '').split(',').map(Number)
+    S0 = { calls, n: Number(root.dataset.steps) || calls.length, kinds: (root.dataset.kinds || '').split(','), sizes, max: Math.max(1, ...sizes.filter(x => x > 0)), cur: Math.max(0, Number(root.dataset.cur) || 0) }
+  }
+  const labelY = c => parseFloat(c.el.style.top) / 100 * H
+  const labelX = c => { const l = parseFloat(c.el.style.left) / 100 * W, w = parseFloat(c.el.style.width) / 100 * W; return [l, l + w] }
+
+  const rnd = (() => { let x = 7654321; return () => ((x = (x * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff) })()
+  const STARS = Array.from({ length: 220 }, () => ({ x: rnd(), y: rnd(), z: 0.2 + rnd() * 0.8, p: rnd() * 6.28, s: rnd() }))
+  const glow = (x, y, r, c, a) => { const g = ctx.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, paint(c, a)); g.addColorStop(1, paint(c, 0)); ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2) }
+  const poly = pts => { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath() }
+  const hring = (r, y, a0, a1, n = 48) => { ctx.beginPath(); for (let j = 0; j <= n; j++) { const a = a0 + (a1 - a0) * j / n, q = proj([r * Math.cos(a), y, r * Math.sin(a)]); j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]) } }
+  const line3 = (p1, p2, c, al, w = 1) => { const q1 = proj(p1), q2 = proj(p2); ctx.beginPath(); ctx.moveTo(q1[0], q1[1]); ctx.lineTo(q2[0], q2[1]); ctx.lineWidth = w; ctx.strokeStyle = paint(c, al); ctx.stroke() }
+  const t0 = performance.now() / 1000
+  let from = null, to = null, moveAt = -9
+
+  const render = () => {
+    if (resize() || frame % 10 === 0) { readPal(); readState() }
+    frame++
+    if (!W || !H) return
+    const t = still ? 30 : (window.__swStationClock ?? performance.now() / 1000 - t0)
+    if (to !== S0.cur) { from = to ?? S0.cur; to = S0.cur; moveAt = from === to || still ? -9 : t }
+    const fly = clamp((t - moveAt) / 1.6)
+    yaw = 0.04 * Math.sin(t * 0.1)
+    const reveal = g => { const [s, d] = INTRO[g]; return clamp((t - s) / d) }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, W, H)
+    ctx.globalCompositeOperation = 'lighter'
+    for (const s of STARS) { const a = (0.12 + 0.4 * s.z) * (0.55 + 0.45 * Math.sin(t * (0.5 + s.s) + s.p)); ctx.fillStyle = paint(s.s > 0.85 ? P.ink : P.line, a); ctx.fillRect(s.x * W, s.y * H, s.z > 0.9 ? 1.6 : 1, s.z > 0.9 ? 1.6 : 1) }
+    const th = proj([0, 0, 0])
+    glow(th[0], th[1], 150 * U, P.line, 0.12)
+    glow(th[0], th[1], 46 * U, P.ink, 0.1 * reveal('throat'))
+
+    // the grid in depth buckets (glow + core)
+    const B = 8, bk = Array.from({ length: B }, () => [])
+    for (const [p1, p2, o, m, g] of build(t, t * 0.03)) {
+      const [s, d] = INTRO[g], prog = (t - s) / d
+      if (prog <= o || m <= 0.01) continue
+      const a1 = proj(p1), a2 = proj(p2)
+      const f = clamp(((a1[2] + a2[2]) / 2 + 300) / 500)
+      const a = (0.12 + 0.85 * f) * m * clamp((prog - o) * 5)
+      bk[Math.min(B - 1, (a * B) | 0)].push(a1, a2)
+    }
+    bk.forEach((list, b) => {
+      if (!list.length) return
+      ctx.beginPath(); for (let i = 0; i < list.length; i += 2) { ctx.moveTo(list[i][0], list[i][1]); ctx.lineTo(list[i + 1][0], list[i + 1][1]) }
+      const a = (b + 0.5) / B
+      ctx.lineWidth = 3; ctx.strokeStyle = paint(P.line, a * 0.12); ctx.stroke()
+      ctx.lineWidth = 0.75; ctx.strokeStyle = paint(P.line, a * 0.95); ctx.stroke()
+    })
+
+    // the edits: rings on the throat, two hairlines beside each; the current one wears a turning dashed
+    // halo, and on arrival sends a ripple out across its sheet
+    const rr = reveal('ring'), ringsUp = []
+    for (let k = 0; k < S0.n; k++) {
+      const y = ringY(k, S0.n), kind = S0.kinds[k] || 'edit', col = P[KC[kind] || 'line'], cur = k === S0.cur
+      const sz = Math.sqrt((S0.sizes[k] || 0) / S0.max), pop = clamp(rr * S0.n - k * 0.6)
+      ringsUp.push(pop > 0)
+      if (pop <= 0) continue
+      const flick = kind === 'failed' ? (Math.sin(t * 17 + k * 3) > 0.2 || Math.sin(t * 5.3 + k) > 0.6 ? 1 : 0.35) : 1
+      const ring = (yy, w, al, dash) => { ctx.beginPath(); for (let j = 0; j <= 72; j++) { const q = proj(SY(yy, j / 72 * 6.2832)); j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]) } ctx.setLineDash(dash || []); ctx.lineWidth = w; ctx.strokeStyle = paint(col, al); ctx.stroke(); ctx.setLineDash([]) }
+      const al = (cur ? 1 : 0.7) * pop * flick
+      ring(y, 4, al * 0.18); ring(y, 1.3 + sz, al, kind === 'failed' ? [5, 4] : null)
+      ring(y - 2.5, 0.6, al * 0.5); ring(y + 2.5, 0.6, al * 0.5)
+      if (cur) {
+        hring(rOf(y) + 9, y, t * 0.7, t * 0.7 + 6.2832, 72)
+        ctx.setLineDash([9, 6]); ctx.lineWidth = 1.1; ctx.strokeStyle = paint(P.hot, 0.85 * pop); ctx.stroke(); ctx.setLineDash([])
+        if (fly >= 1 && moveAt > 0 && t - moveAt < 4.4) {
+          const f = clamp((t - moveAt - 1.6) / 2.4), s = y >= 0 ? 1 : -1, r0 = rOf(y), rw = r0 + (RMAX - r0) * f ** 1.4
+          ctx.beginPath(); for (let j = 0; j <= 96; j++) { const q = proj(S(rw, j / 96 * 6.2832, s)); j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]) }
+          ctx.lineWidth = 1.4; ctx.strokeStyle = paint(col, 0.75 * (1 - f)); ctx.stroke()
+        }
+      }
+    }
+
+    // the scan plane: a flat disk of rings and radial lines rides the throat to the current edit and rests
+    // there, a radar sweep turning on it, a tick ruler on its rim
+    const ex = reveal('scan')
+    if (ex > 0 && S0.n) {
+      const y0 = ringY(from ?? S0.cur, S0.n), y1 = ringY(S0.cur, S0.n), ccol = P[KC[S0.kinds[S0.cur] || 'edit'] || 'line']
+      const ys = (fly < 1 ? y0 + (y1 - y0) * ease(fly) : y1) + (fly < 1 ? 0 : 1.5 * Math.sin(t * 1.4)), rin = rOf(ys) + 3, rout = rin + 86
+      for (let r = rin; r <= rout; r += 9) { hring(r, ys, 0, 6.2832, 96); ctx.lineWidth = r === rin ? 1.4 : 0.7; ctx.strokeStyle = paint(r === rin ? ccol : P.line, (r === rin ? 0.95 : 0.45 * (1 - (r - rin) / 100)) * ex); ctx.stroke() }
+      for (let d = 0; d < 36; d++) { const a = d / 36 * 6.2832; line3([rin * Math.cos(a), ys, rin * Math.sin(a)], [rout * Math.cos(a), ys, rout * Math.sin(a)], P.line, 0.22 * ex, 0.6) }
+      for (let k = 0; k < 24; k++) { const a = t * 1.3 - k * 0.025; line3([rin * Math.cos(a), ys, rin * Math.sin(a)], [rout * Math.cos(a), ys, rout * Math.sin(a)], P.hot, (1 - k / 24) * 0.85 * ex, 1.1) }
+      for (let d = 0; d < 120; d++) { const a = d / 120 * 6.2832, l = d % 10 ? 3 : 8; line3([rout * Math.cos(a), ys, rout * Math.sin(a)], [(rout + l) * Math.cos(a), ys, (rout + l) * Math.sin(a)], P.line, 0.6 * ex, 0.8) }
+    }
+
+    // frame: the station's chamfered border, accent bars
+    ctx.globalCompositeOperation = 'source-over'
+    const i0 = 3, ch = 9
+    poly([[i0 + ch, i0], [W - i0 - ch, i0], [W - i0, i0 + ch], [W - i0, H - i0 - ch], [W - i0 - ch, H - i0], [i0 + ch, H - i0], [i0, H - i0 - ch], [i0, i0 + ch]])
+    ctx.lineWidth = 1; ctx.strokeStyle = paint(P.line, 0.26); ctx.stroke()
+    ctx.lineWidth = 2; ctx.strokeStyle = paint(P.hot, 0.85)
+    const bar = (x0, y0, x1, y1) => { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke() }
+    bar(i0, H * 0.4, i0, H * 0.4 + 26); bar(W - i0, H * 0.6 - 26, W - i0, H * 0.6); bar(W * 0.5 - 30, H - i0, W * 0.5 + 30, H - i0)
+
+    // leaders from each callout to its ring's edge on the callout's side
+    if (W >= 520) for (const c of S0.calls) {
+      if (!ringsUp[c.k]) continue
+      const g = proj(SY(ringY(c.k, S0.n), c.side === 'l' ? 3.1416 : 0)), y = labelY(c), [x0, x1] = labelX(c), left = c.side === 'l'
+      ctx.globalAlpha = rr
+      ctx.strokeStyle = c.sel ? paint(P.hot, 0.95) : paint(P.line, 0.5); ctx.lineWidth = c.sel ? 1.2 : 0.8
+      ctx.beginPath(); ctx.moveTo(left ? x0 : x1, y); ctx.lineTo(left ? x1 : x0, y); ctx.lineTo(g[0], g[1]); ctx.stroke()
+      ctx.fillStyle = paint(P.ink, 0.95); ctx.fillRect(g[0] - 1.5, g[1] - 1.5, 3, 3)
+      ctx.globalAlpha = 1
+    }
+  }
+  let raf = 0, tick = 0
+  const loop = () => { if (!canvas.isConnected) { stop(); return } render(); if (!still) raf = window.requestAnimationFrame(loop) }
+  const stop = () => { window.cancelAnimationFrame(raf); clearInterval(tick); probe.remove(); root.classList.remove('has-scene') }
+  canvas.swOrbitFrame = render
+  raf = window.requestAnimationFrame(loop)
+  if (still) tick = setInterval(() => { if (canvas.isConnected) render(); else stop() }, 1000)
+  return stop
+}
+
+function ReplayWormScene() {
+  const ref = useRef(null)
+  useEffect(() => startReplayWormScene(ref.current), [])
+  return jsx('canvas', { className: 'sw-orcv', ref, 'aria-hidden': 'true' })
+}
+
+const WORM_RINGS = 8
+const wormKind = s => (s.failed ? 'failed' : s.kind === 'whole' ? 'write' : s.kind === 'delete' ? 'delete' : 'edit')
+
+/** The Replay tab's WORMHOLE panel: FLEET's markup (callouts, a box, corner readouts) over the live
+ * wormhole. Up to eight edits round the current one are rings (oldest at the bottom); each gets a callout
+ * on alternating sides near its ring's height, and a callout opens its edit like a log row. The readouts
+ * count the whole request. Without a 2D canvas the panel stays hidden (the log says it all). */
+function ReplayWorm({ t, steps, i, go }) {
+  const n = steps.length, m = Math.min(WORM_RINGS, n)
+  const w0 = Math.max(0, Math.min(n - m, i - Math.floor(m / 2)))
+  const shown = steps.slice(w0, w0 + m)
+  const kinds = shown.map(wormKind), sizes = shown.map(s => (s.failed ? 0 : (s.added || 0) + (s.removed || 0)))
+  // labels: newest at the top, sides alternating, each near its ring's projected height, kept apart
+  const slot = {}
+  for (const side of ['l', 'r']) {
+    let last = 62
+    for (let k = m - 1; k >= 0; k--) {
+      if ((m - 1 - k) % 2 !== (side === 'l' ? 0 : 1)) continue
+      const ry = ORBIT_H * 0.55 - 0.88 * (m < 2 ? 0 : -60 + (120 * k) / (m - 1)) - 24
+      last = Math.max(last + 56, Math.min(318, Math.max(118, ry)))
+      slot[k] = { side, y: Math.min(318, last) }
+    }
+  }
+  const callouts = shown.map((s, k) => jsx(Tip, {
+    label: tipText(s.path),
+    children: jsxs('button', {
+      type: 'button', className: `sw-orl${w0 + k === i ? ' is-sel' : ''}`, 'data-k': k, 'data-side': slot[k].side, 'data-st': s.failed ? 'failed' : 'completed',
+      style: { top: pct(slot[k].y, ORBIT_H), left: pct(slot[k].side === 'l' ? 14 : ORBIT_W - 164, ORBIT_W), width: pct(150, ORBIT_W) },
+      'aria-pressed': w0 + k === i, 'aria-label': t('sw.replay.stepLabel', w0 + k + 1, splitPath(s.path).name, s.failed), onClick: () => go(w0 + k),
+      children: [
+        jsx('span', { className: 'sw-orn', children: splitPath(s.path).name }, 'n'),
+        jsx('span', { className: 'sw-orv', children: hudCaps(stepWord(s, t)) + (s.failed ? '' : ` · +${s.added || 0} −${s.removed || 0}`) }, 'v')
+      ]
+    })
+  }, s.id))
+  const done = steps.filter(s => !s.failed)
+  const count = kind => String(steps.filter(s => wormKind(s) === kind).length).padStart(2, '0')
+  const bars = Array.from({ length: 14 }, (_, k) => jsx('i', { className: k < Math.round((14 * (i + 1)) / n) ? 'on' : undefined, style: { '--k': k } }, k))
+  const tele = (side, list) => jsx('div', {
+    className: 'sw-ortele', 'data-side': side, 'aria-hidden': 'true',
+    children: list.map(([k, v], j) => jsxs('div', { className: 'sw-otl', style: { '--i': j * 2 + (side === 'r' ? 1 : 0) }, children: [jsx('span', { children: hudCaps(k) }, 'k'), jsx('b', { children: v }, `v-${v}`)] }, k))
+  }, `tele-${side}`)
+  return jsx(HudPanel, {
+    title: t('sw.replay.worm'), span: 6, className: 'sw-rworm',
+    children: [jsxs('div', {
+      className: 'sw-hgrid sw-orbit', role: 'group', 'aria-label': t('sw.replay.wormLabel'),
+      'data-steps': m, 'data-kinds': kinds.join(), 'data-sizes': sizes.join(), 'data-cur': i - w0,
+      children: [
+        jsx(ReplayWormScene, {}, 'scene'),
+        jsxs('div', {
+          className: 'sw-ormain', 'data-st': 'running', 'aria-hidden': 'true',
+          style: { top: pct(40, ORBIT_H), left: pct(226, ORBIT_W), width: pct(214, ORBIT_W) },
+          children: [
+            jsx('span', { className: 'sw-orn', children: `★ ${hudCaps(t('sw.replay.wormMain', i + 1, n))}` }, 'n'),
+            jsxs('span', { className: 'sw-orp', children: [jsx('b', { children: `${i + 1}/${n}` }, 'n'), jsx('span', { className: 'sw-orbars', children: bars }, 'b')] }, 'p')
+          ]
+        }, 'main'),
+        ...callouts,
+        tele('l', [[t('sw.replay.teleEdits'), count('edit')], [t('sw.replay.teleWrites'), count('write')], [t('sw.replay.teleFailed'), count('failed')]]),
+        tele('r', [[t('sw.replay.teleAdded'), `+${done.reduce((x, s) => x + (s.added || 0), 0)}`], [t('sw.replay.teleRemoved'), `−${done.reduce((x, s) => x + (s.removed || 0), 0)}`], [t('sw.replay.teleFiles'), String(new Set(steps.map(s => s.path)).size).padStart(2, '0')]])
+      ]
+    }, 'worm')]
+  }, 'worm')
+}
+
 function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, setPlaying, setHold, onToast }) {
   const steps = turn.steps
   const i = Math.min(index, steps.length - 1)
@@ -3149,6 +3423,7 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
   return jsxs('div', {
     className: 'sw-rplay',
     children: [
+      jsx(ReplayWorm, { t, steps, i, go }, 'worm'),
       jsx(HudPanel, {
         title: t('sw.replay.diff'), name, span: 6, className: 'sw-hpx', chip: hudChip(st, step.failed ? t('sw.replay.notApplied') : t('sw.replay.applied')),
         children: [
@@ -4260,7 +4535,7 @@ const CSS = `${TM_PALETTE}
 .sw-cmgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;min-width:0}
 .sw-hp[data-span="4"]{grid-column:span 4}
 .sw-cmcon .sw-hgrid{min-height:150px}
-.sw-cmorb:has(.sw-orbit:not(.has-scene)){display:none}
+.sw-cmorb:has(.sw-orbit:not(.has-scene)),.sw-rworm:has(.sw-orbit:not(.has-scene)){display:none}
 .sw-cmcon .sw-hgrid>.sw-crt,.sw-cmcon .sw-hgrid>.sw-cmerr,.sw-cmcon .sw-hgrid>.sw-cmnote{position:relative;z-index:1;margin:0 196px 0 0}
 .sw-page[data-theme=terminal] .sw-cmcon .sw-crt{margin-top:0;padding:8px 0;border:0;background:none}
 .sw-page[data-theme=terminal] .sw-cmcon .sw-crt[data-state=lost]{padding:10px 8px}

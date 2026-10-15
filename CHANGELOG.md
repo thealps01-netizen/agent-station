@@ -3,6 +3,24 @@
 All notable changes to subagent-watch. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 2.4.0 — 2026-10-15
+
+The Replay tab gets a WORMHOLE panel above the DIFF, from a draft the user picked on video (the scan plane
+variant; a route, a helix and a spaceship were tried and turned down first).
+
+- Two warped grid sheets joined by a narrow throat, drawn in the FLEET station's thin glowing lines; the
+  grid's circles flow into the throat.
+- The request's edits are rings on the throat, the oldest at the bottom: colour says what an edit did
+  (edit / write / delete / failed), weight how many lines it changed; a failed ring is dashed and flickers.
+  Up to eight rings round the current edit are shown; the readouts count the whole request.
+- A scan plane (rings, radial lines, a turning radar sweep) rides the throat to the current edit when
+  Play, Previous / Next, the marks or the log move it, and the arrived ring sends a ripple over its sheet.
+- FLEET's callouts name each ring's file with what it did and its line counts; a callout opens its edit.
+  A box says which edit of how many; corner readouts count edits, writes, failed edits, lines added and
+  removed, and files.
+- Colours from the theme's tokens; reduced motion draws one still frame a second; without a 2D canvas the
+  panel stays hidden.
+
 ## 2.3.0 — 2026-10-15
 
 The Commands tab gets an ORBIT panel in the FLEET station's style, from a draft the user approved on video.

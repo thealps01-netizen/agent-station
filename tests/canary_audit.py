@@ -33,13 +33,30 @@ PY = "dashboard/plugin_api.py"
 
 # (gate, file, old, new, what the mutation breaks)
 MUTATIONS = [
+    # ── 2.4.0 Replay WORMHOLE ───────────────────────────────────────────────────
+    ("render", JS, "      jsx(ReplayWorm, { t, steps, i, go }, 'worm'),\n", "",
+     "the Replay tab no longer shows its WORMHOLE panel"),
+    ("render", JS, "        jsx(ReplayWormScene, {}, 'scene'),\n", "",
+     "the WORMHOLE panel no longer mounts its live canvas"),
+    ("render", JS, "'aria-pressed': w0 + k === i, 'aria-label': t('sw.replay.stepLabel', w0 + k + 1, splitPath(s.path).name, s.failed), onClick: () => go(w0 + k),",
+     "'aria-pressed': w0 + k === i, 'aria-label': t('sw.replay.stepLabel', w0 + k + 1, splitPath(s.path).name, s.failed), onClick: () => go(w0),",
+     "a wormhole callout opens the wrong edit"),
+    ("render", JS, "sizes = shown.map(s => (s.failed ? 0 : (s.added || 0) + (s.removed || 0)))",
+     "sizes = shown.map(s => (s.added || 0) + (s.removed || 0))",
+     "a failed edit's ring is sized as if its lines had changed"),
+    ("render", JS, "probe.remove(); root.classList.remove('has-scene') }\n  canvas.swOrbitFrame = render\n  raf = window.requestAnimationFrame(loop)\n  if (still) tick = setInterval(() => { if (canvas.isConnected) render(); else stop() }, 1000)\n  return stop\n}\n\nfunction ReplayWormScene",
+     "probe.remove() }\n  canvas.swOrbitFrame = render\n  raf = window.requestAnimationFrame(loop)\n  if (still) tick = setInterval(() => { if (canvas.isConnected) render(); else stop() }, 1000)\n  return stop\n}\n\nfunction ReplayWormScene",
+     "a stopped wormhole scene leaves its panel claimed"),
+    ("audit", JS, "ctx.lineWidth = 1.4; ctx.strokeStyle = paint(col, 0.75 * (1 - f)); ctx.stroke()",
+     "ctx.lineWidth = 1.4; ctx.strokeStyle = 'rgba(80,160,255,.75)'; ctx.stroke()",
+     "the wormhole's ripple is painted in a colour literal instead of the theme's"),
     # ── 2.3.0 Commands ORBIT ────────────────────────────────────────────────────
     ("render", JS, "      jsx(CmdOrbit, { t, rows, picked: p, now, onPick }, 'orbit'),\n", "",
      "the Commands tab no longer shows its ORBIT panel"),
     ("render", JS, "        jsx(CmdOrbitScene, {}, 'scene'),\n", "",
      "the ORBIT panel no longer mounts its live canvas"),
-    ("render", JS, "const stop = () => { window.cancelAnimationFrame(raf); clearInterval(tick); probe.remove(); root.classList.remove('has-scene') }\n  canvas.swOrbitFrame = render",
-     "const stop = () => { window.cancelAnimationFrame(raf); clearInterval(tick); probe.remove() }\n  canvas.swOrbitFrame = render",
+    ("render", JS, "const stop = () => { window.cancelAnimationFrame(raf); clearInterval(tick); probe.remove(); root.classList.remove('has-scene') }\n  canvas.swOrbitFrame = render\n  raf = window.requestAnimationFrame(loop)\n  if (still) tick = setInterval(() => { if (canvas.isConnected) render(); else stop() }, 1000)\n  return stop\n}\n\nfunction CmdOrbitScene",
+     "const stop = () => { window.cancelAnimationFrame(raf); clearInterval(tick); probe.remove() }\n  canvas.swOrbitFrame = render\n  raf = window.requestAnimationFrame(loop)\n  if (still) tick = setInterval(() => { if (canvas.isConnected) render(); else stop() }, 1000)\n  return stop\n}\n\nfunction CmdOrbitScene",
      "a stopped orbit scene leaves its panel claimed"),
     ("audit", JS, "ctx.lineWidth = 0.9; ctx.strokeStyle = paint(P.bad, a * 0.9); ctx.stroke() }",
      "ctx.lineWidth = 0.9; ctx.strokeStyle = 'rgba(255,0,0,.9)'; ctx.stroke() }",

@@ -502,6 +502,40 @@ check(q('.sw-tabn')?.textContent === '1' && q('.sw-tabn')?.getAttribute('aria-la
   box.remove()
   proto.getContext = real
 }
+// 21e. the Replay WORMHOLE scene with a 2D context: it takes the panel, paints in token colours only, draws
+// the sheets, the rings and the scan plane, and hands the panel back when it stops
+{
+  const calls = [], strokes = []
+  const fake = () => new Proxy({}, {
+    get: (o, k) => k === 'getImageData' ? () => ({ data: [51, 102, 204, 255] })
+      : k === 'createRadialGradient' ? () => ({ addColorStop() {} })
+      : k in o ? o[k] : (...a) => { calls.push(k); if (k === 'stroke') strokes.push(o.strokeStyle) },
+    set: (o, k, v) => { o[k] = v; return true }
+  })
+  const proto = window.HTMLCanvasElement.prototype, real = proto.getContext
+  proto.getContext = fake
+  const box = document.createElement('div')
+  box.className = 'sw-orbit'
+  box.dataset.calm = 'true'
+  Object.assign(box.dataset, { steps: '3', kinds: 'edit,failed,write', sizes: '5,0,7', cur: '1' })
+  box.innerHTML = `<canvas></canvas><button class="sw-orl" data-k="0" data-side="l" style="top:70%;left:2%;width:22%"></button>
+    <button class="sw-orl is-sel" data-k="1" data-side="r" style="top:50%;left:75%;width:22%"></button>`
+  document.body.appendChild(box)
+  const canvas = box.querySelector('canvas')
+  Object.defineProperty(canvas, 'clientWidth', { value: 666 })
+  Object.defineProperty(canvas, 'clientHeight', { value: 360 })
+  const stop = mod.startReplayWormScene(canvas)
+  canvas.swOrbitFrame()
+  const styles = strokes.filter(f => typeof f === 'string')
+  check(box.classList.contains('has-scene') && calls.filter(c => c === 'lineTo').length > 5000 && styles.length > 100
+    && styles.every(f => /^color\(srgb [\d.]+ [\d.]+ [\d.]+ \/ [\d.]+\)$/.test(f)),
+    `the wormhole scene takes its panel and paints in token colours read through the canvas, never a literal (${calls.filter(c => c === 'lineTo').length} line segments)`)
+  check(calls.includes('setLineDash') && calls.filter(c => c === 'setLineDash').length >= 4, 'the wormhole dashes the failed ring and the current edit\'s halo')
+  stop()
+  check(!box.classList.contains('has-scene') && !box.querySelector('span[style*="visibility"]'), 'stopped, the wormhole scene hands the panel back and leaves no probe behind')
+  box.remove()
+  proto.getContext = real
+}
 check(q('.sw-bign')?.textContent === '1' && q('.sw-big small')?.textContent === '/2'
   && qa('.sw-score .sw-seg i').map(i => i.dataset.st).join() === 'completed,failed',
   `the score counts finished subagents of all, one cell per subagent (${q('.sw-big')?.textContent})`)
@@ -717,7 +751,7 @@ check(q('.sw-cmcon')?.dataset.span === '6' && q('.sw-cmlp')?.dataset.span === '4
   const orb = q('.sw-cmorb'), calls = qa('.sw-cmorb .sw-orl')
   check(q('.sw-cmgrid')?.firstElementChild === orb && orb?.dataset.span === '6' && q('.sw-cmorb .sw-hpt .sw-sr')?.textContent === 'Orbit'
     && q('.sw-cmorb .sw-orbit > canvas.sw-orcv')?.getAttribute('aria-hidden') === 'true' && !q('.sw-cmorb .sw-orbit').classList.contains('has-scene')
-    && /\.sw-cmorb:has\(\.sw-orbit:not\(\.has-scene\)\)\{display:none\}/.test([...document.querySelectorAll('style')].map(s => s.textContent).join('')),
+    && /\.sw-cmorb:has\(\.sw-orbit:not\(\.has-scene\)\)[,{]/.test([...document.querySelectorAll('style')].map(s => s.textContent).join('')),
     'an ORBIT panel leads the tab across the grid, its canvas hidden from screen readers; without a 2D context it stays hidden')
   check(calls.length === 4 && calls.map(c => `${c.dataset.side}:${c.dataset.st}`).join() === 'l:running,l:failed,r:stopped,r:completed'
     && calls[0].getAttribute('aria-pressed') === 'true' && calls.filter(c => c.getAttribute('aria-pressed') === 'true').length === 1
@@ -1527,8 +1561,8 @@ mod.default.register(quietCtx({ storage: undefined }))
   check(/\+1 line added · −1 line removed · by the main agent/.test(q('.sw-rwhat')?.textContent || ''), 'replay: an edit says in words what it did and who did it')
   check(asked.every(([sid]) => sid === 'st-1') && asked.some(([, id]) => id === 'a#0'), 'replay: the list and the edit are read for this chat')
   // the HUD: requests + six panels; titles drawn in caps with Ø, read out as plain words
-  check(qa('.sw-hp').length === 7 && qa('.sw-hpt').some(h => h.querySelector('[aria-hidden=true]')?.textContent === 'LINES SØ FAR' && h.querySelector('.sw-sr')?.textContent === 'Lines so far'),
-    `replay HUD: requests and six panels, each title in caps on screen and in plain words for a screen reader (${qa('.sw-hp').length})`)
+  check(qa('.sw-hp').length === 8 && qa('.sw-hpt').some(h => h.querySelector('[aria-hidden=true]')?.textContent === 'LINES SØ FAR' && h.querySelector('.sw-sr')?.textContent === 'Lines so far'),
+    `replay HUD: requests and seven panels (the wormhole first), each title in caps on screen and in plain words for a screen reader (${qa('.sw-hp').length})`)
   {
     const head = q('.sw-rlines .sw-rl[data-tag="@"]'), minus = q('.sw-rlines .sw-rl[data-tag="-"]')
     check(qa('.sw-rpart').length === 1 && head?.querySelector('.sw-rpart>span')?.textContent === '1 line replaced' && qa('.sw-rpart .sw-cov').map(e => e.textContent).join() === '−1,+1'
@@ -1543,9 +1577,29 @@ mod.default.register(quietCtx({ storage: undefined }))
     && qa('.sw-hlog>button')[0].getAttribute('aria-current') === 'step',
     `replay HUD: the log lists every edit with what it was, the current one marked (${qa('.sw-hlog .sw-hle').map(e => e.textContent)})`)
   {
-    const order = qa('.sw-replay .sw-hp').map(p => p.classList.contains('sw-rpb') ? 'play' : p.classList.contains('sw-rstep') ? 'file' : p.querySelector('.sw-hlog') ? 'log' : p.classList.contains('sw-hpx') ? 'diff' : p.classList.contains('sw-rturns') ? 'turns' : 'x')
-    check(/diff,play,x,x,file,log$/.test(order.join()) && q('.sw-rpb')?.dataset.span === '6' && q('.sw-hlog')?.closest('.sw-hp')?.dataset.span === '6' && !q('.sw-rstep .sw-rname'),
-      `replay: the playback is a full-width strip under the diff, then lines / so far / file, then the log; the file panel does not repeat the diff's name (${order})`)
+    const order = qa('.sw-replay .sw-hp').map(p => p.classList.contains('sw-rworm') ? 'worm' : p.classList.contains('sw-rpb') ? 'play' : p.classList.contains('sw-rstep') ? 'file' : p.querySelector('.sw-hlog') ? 'log' : p.classList.contains('sw-hpx') ? 'diff' : p.classList.contains('sw-rturns') ? 'turns' : 'x')
+    check(/worm,diff,play,x,x,file,log$/.test(order.join()) && q('.sw-rpb')?.dataset.span === '6' && q('.sw-hlog')?.closest('.sw-hp')?.dataset.span === '6' && !q('.sw-rstep .sw-rname'),
+      `replay: the wormhole leads, the playback is a full-width strip under the diff, then lines / so far / file, then the log; the file panel does not repeat the diff's name (${order})`)
+  }
+  {
+    const worm = q('.sw-rworm'), orb = worm?.querySelector('.sw-orbit'), calls = qa('.sw-rworm .sw-orl')
+    check(worm?.dataset.span === '6' && worm.querySelector('.sw-hpt .sw-sr')?.textContent === 'Wormhole'
+      && orb?.querySelector(':scope > canvas.sw-orcv')?.getAttribute('aria-hidden') === 'true' && !orb.classList.contains('has-scene')
+      && /\.sw-cmorb:has\(\.sw-orbit:not\(\.has-scene\)\),\.sw-rworm:has\(\.sw-orbit:not\(\.has-scene\)\)\{display:none\}/.test(css),
+      'replay: a WORMHOLE panel leads the edits, its canvas hidden from screen readers; without a 2D context it stays hidden')
+    check(orb?.dataset.steps === '3' && orb.dataset.kinds === 'edit,failed,write' && orb.dataset.cur === '0' && orb.dataset.sizes.split(',')[1] === '0'
+      && calls.length === 3 && calls.filter(c => c.getAttribute('aria-pressed') === 'true').length === 1 && calls.find(c => c.dataset.k === '0')?.classList.contains('is-sel')
+      && calls.find(c => c.dataset.k === '1')?.querySelector('.sw-orv')?.textContent === 'FAILED' && /^EDIT · \+\d+ −\d+$/.test(calls.find(c => c.dataset.k === '0')?.querySelector('.sw-orv')?.textContent || ''),
+      `replay: a ring per edit (what it did, how big; a failed one sized 0) and a callout each, the current one marked (${calls.map(c => c.querySelector('.sw-orv')?.textContent)})`)
+    check(q('.sw-rworm .sw-ormain .sw-orn')?.textContent === '★ REPLAY · EDIT 1 ØF 3' && q('.sw-rworm .sw-orp b')?.textContent === '1/3'
+      && qa('.sw-rworm .sw-ortele[data-side=l] .sw-otl b').map(b => b.textContent).join() === '01,01,01',
+      `replay: the box says which edit of how many; the readouts count edits, writes and failed ones (${q('.sw-rworm .sw-ormain')?.textContent})`)
+    await act(async () => { calls.find(c => c.dataset.k === '2').click() })
+    await tick(20)
+    check(q('.sw-rof')?.textContent === 'Edit 3 of 3' && q('.sw-rworm .sw-orbit')?.dataset.cur === '2' && q('.sw-rworm .sw-orl.is-sel')?.dataset.k === '2',
+      `replay: a wormhole callout opens its edit like a log row (${q('.sw-rof')?.textContent})`)
+    await act(async () => { qa('.sw-hlog>button')[0].click() })
+    await tick(20)
   }
   await act(async () => { qa('.sw-rbar .sw-ib').find(b => b.textContent === 'Next edit').click() })
   await tick(20)
