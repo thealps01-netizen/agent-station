@@ -8,6 +8,10 @@ All notable changes to subagent-watch. The top `## <version>` heading is checked
 The Replay tab gets a WORMHOLE panel above the DIFF, from a draft the user picked on video (the scan plane
 variant; a route, a helix and a spaceship were tried and turned down first).
 
+- **Fonts come from Hermes.** Text uses the app's UI font (`--dt-font-sans`, which also follows the chat
+  font picked in Hermes settings); code, diffs and numbers use the app's code font (`--dt-font-mono`,
+  shipped with Hermes, so the same on every machine), both at the app's regular weight. The fixed
+  Cascadia Mono Light is gone, from the panel and the status-bar chip. Sizes are unchanged.
 - Two warped grid sheets joined by a narrow throat, drawn in the FLEET station's thin glowing lines; the
   grid's circles flow into the throat.
 - The request's edits are rings on the throat, the oldest at the bottom: colour says what an edit did

@@ -617,6 +617,8 @@ MUTATIONS = [
      "leader lines ignore the page scale"),
     ("render", JS, ".sw-page[data-theme=terminal]{zoom:.9566;", ".sw-page[data-theme=terminal]{zoom:.8696;",
      "the HUD shrinks its text back under 11px"),
+    ("render", JS, ".sw-page[data-theme=terminal]{--mono:var(--dt-font-sans,system-ui,sans-serif);", ".sw-page[data-theme=terminal]{--mono:'Cascadia Mono',monospace;",
+     "the HUD sets a font of its own instead of Hermes's"),
     ("render", JS, " --tm-bg:transparent;--tm-raised:var(--ui-bg-card);", " --tm-bg:var(--ui-bg-chrome);--tm-raised:var(--ui-bg-card);",
      "the HUD paints an opaque ground over the window's glass"),
     ("render", JS, "--hud-add:var(--ui-diff-add-background);", "--hud-add:var(--hud-teal);",

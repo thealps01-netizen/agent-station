@@ -595,6 +595,8 @@ check(qa('[data-tip]').filter(e => !e.closest('button')).every(e => e.tabIndex =
   // the HUD page is scaled so its smallest text lands at the 11px the user picked, never under
   const zoom = parseFloat(css.match(/\.sw-page\[data-theme=terminal\]\{zoom:([\d.]+);/)?.[1] || '1')
   check(zoom < 1 && 11.5 * zoom >= 11 - 0.01, `the HUD is drawn at its picked scale and no text lands under 11px (zoom ${zoom} → ${(11.5 * zoom).toFixed(1)}px)`)
+  check(/\.sw-page\[data-theme=terminal\]\{--mono:var\(--dt-font-sans[^}]*--code:var\(--dt-font-mono/.test(css) && /\.sw-rlines,[^{]*\)\{font-family:var\(--code\)/.test(css) && !/Cascadia/.test(css),
+    'the HUD takes its fonts from Hermes: text in the app font, code and numbers in the app code font, no font name of its own')
 }
 check(/--dim:var\(--ui-text-secondary\)/.test(css) && !/tertiary/.test(css.match(/\.sw-model\{[^}]*\}/)?.[0] || 'tertiary')
   && !/tertiary/.test(css.match(/\.sw-meta\{[^}]*\}/)?.[0] || 'tertiary'),

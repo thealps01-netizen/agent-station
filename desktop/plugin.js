@@ -4195,7 +4195,7 @@ const CHIP_CSS = `${TM_PALETTE}
 .sw-sbm svg{width:100%;height:100%;display:block}
 .sw-sbbar{width:44px;height:5px;background:var(--ui-bg-tertiary);overflow:hidden;flex:none;transform:skewX(-20deg)}
 .sw-sbbar>i{display:block;height:100%;background:var(--sw-tint);transition:width .3s}
-.sw-sbw[data-theme=terminal] .sw-sb{background:var(--tm-bg);color:var(--tm-ink);font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;box-shadow:inset 0 0 0 1px var(--tm-line);--sw-tint:var(--tm-run)}
+.sw-sbw[data-theme=terminal] .sw-sb{background:var(--tm-bg);color:var(--tm-ink);font-family:var(--dt-font-sans,system-ui,sans-serif);box-shadow:inset 0 0 0 1px var(--tm-line);--sw-tint:var(--tm-run)}
 .sw-sbw[data-theme=terminal] .sw-sb[data-st=completed]{--sw-tint:var(--tm-ok)}
 .sw-sbw[data-theme=terminal] .sw-sb[data-st=failed]{--sw-tint:var(--tm-bad)}
 .sw-sbw[data-theme=terminal] .sw-sb[data-st=stopped],.sw-sbw[data-theme=terminal] .sw-sb[data-st=queued]{--sw-tint:var(--tm-dim)}
@@ -4208,7 +4208,7 @@ const CHIP_CSS = `${TM_PALETTE}
 
 
 const CSS = `${TM_PALETTE}
-.sw-page{height:100%;min-height:0;overflow:auto;padding:16px 20px;font-size:12.5px;--mono:var(--dt-font-mono,"Cascadia Mono",ui-monospace,Consolas,monospace)}
+.sw-page{height:100%;min-height:0;overflow:auto;padding:16px 20px;font-size:12.5px;--mono:var(--dt-font-mono,ui-monospace,monospace)}
 .sw-page:not([data-theme=terminal]){--a:var(--ui-accent);--ink:var(--ui-text-primary);--dim:var(--ui-text-secondary);--bg:var(--dt-background);
  --run:var(--a);--ok:var(--ink);--bad:var(--ui-red);--idle:var(--ui-text-tertiary);--line:color-mix(in srgb,var(--ink) 11%,transparent);
  --raised:color-mix(in srgb,var(--ink) 8%,var(--bg));--tile:color-mix(in srgb,var(--ink) 5%,var(--bg));--off:color-mix(in srgb,var(--ink) 16%,var(--bg))}
@@ -4867,10 +4867,13 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] :is(.sw-chatn,.sw-meta,.sw-meta .sw-1l,.sw-leg,.sw-un,.sw-hrow,.sw-hrow b,.sw-big,.sw-big small,.sw-bign,.sw-tl,.sw-fn,.sw-tn,.sw-verb,.sw-pickn,.sw-note,.sw-fl,.sw-fnote,.sw-nowf,.sw-rtext,.sw-rsign,.sw-ol,.sw-task,.sw-ans,.sw-hdetail .sw-head.is-file){font-size:11.5px}
 .sw-page[data-theme=terminal] :is(.sw-ht,.sw-rname){font-size:14px;font-weight:600}
 .sw-page[data-theme=terminal] :is(.sw-tab,.sw-hpt,.sw-hptv,.sw-hpt .sw-sr,.sw-hchip,.sw-kv dt,.sw-col,.sw-k,.sw-hrow,.sw-hrow b,.sw-cmls span,.sw-crth,.sw-crth span,.sw-ib,.sw-ib.is-text,.sw-tkh,.sw-tkh>span,.sw-fleg,.sw-fleg span,.sw-pickn,.sw-hle,.sw-rl>span:first-child,.sw-rl[data-tag="@"],.sw-ht,.sw-tmore,.sw-orkey,.sw-ormain .sw-orn,.sw-orv){letter-spacing:.04em}
-/* type, as in the reference: a light mono — Cascadia Mono where the system has it (Windows), else the
-   app's own mono — at one light weight; rank comes from size and grey, not from weight */
-.sw-page[data-theme=terminal]{--mono:"Cascadia Mono",var(--dt-font-mono,ui-monospace,Consolas,monospace)}
-.sw-page[data-theme=terminal] .sw-panel,.sw-page[data-theme=terminal] .sw-panel *{font-weight:300!important}
+/* type comes from Hermes, as the user asked: text in the app's own font (--dt-font-sans, which also
+   follows the chat font picked in Hermes settings), code and numbers in the app's code font
+   (--dt-font-mono, shipped with Hermes, so the same on every machine). One weight, the app's regular;
+   rank comes from size and grey. Sizes stay the panel's own. --mono is the panel's text font here. */
+.sw-page[data-theme=terminal]{--mono:var(--dt-font-sans,system-ui,sans-serif);--code:var(--dt-font-mono,ui-monospace,monospace)}
+.sw-page[data-theme=terminal] .sw-panel,.sw-page[data-theme=terminal] .sw-panel *{font-weight:400!important}
+.sw-page[data-theme=terminal] :is(.sw-rlines,.sw-rlines *,.sw-out,.sw-out *,.sw-ol,.sw-hbig,.sw-hbig *,.sw-big,.sw-big *,.sw-money,.sw-roll,.sw-hln,.sw-hlt,.sw-copn,.sw-pg,.sw-chax,.sw-head code){font-family:var(--code)!important;font-variant-numeric:tabular-nums}
 .sw-tmore{margin:-4px 0 8px;color:var(--dim)}
 .sw-page[data-theme=terminal] :is(.sw-hpn,.sw-tkh .sw-1l,.sw-un,.sw-verb,.sw-rname,.sw-tl,.sw-tn){letter-spacing:0}
 .sw-page[data-theme=terminal] .sw-why{margin:0;padding:7px 12px;background:var(--raised);box-shadow:inset 0 0 0 1px var(--line);line-height:1.5}
