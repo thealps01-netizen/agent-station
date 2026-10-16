@@ -228,7 +228,7 @@ const HISTORY = {
     {
       started_at: 2500,
       workers: [
-        { session_id: 'c-d', goal: "Write the 'docs-writer' notes", model: 'anthropic/claude-opus-5-5', effort: 'high', status: 'completed', duration_s: 48, tool_calls: 5, tokens: 2000, cost_usd: 0.08, cost_status: 'estimated', summary: 'Docs.' },
+        { session_id: 'c-d', goal: "Write the 'docs-writer' notes", model: 'anthropic/claude-opus-5-5', effort: 'high', status: 'completed', duration_s: 48, tool_calls: 5, tokens: 2000, cost_usd: 0.08, cost_status: 'estimated', summary: '{"files":1}\nDocs.' },
         { session_id: 'c-e', goal: "Watch the 'wiki-watchdog' panel", model: 'claude-opus-5-5', status: 'failed', duration_s: 12, tool_calls: 2, tokens: 500, summary: 'Cannot find module.' }
       ]
     }
@@ -358,9 +358,14 @@ check(mod.toolAct('patch') === 'edit' && mod.toolAct('write_file') === 'edit' &&
     { key: 'c', who: [''], editors: [], writes: 0, failed: 1, last_op: 'write', last_failed: true }
   ]
   const w1 = mod.agentFiles(files, 'w1'), me = mod.agentFiles(files, '')
-  check(w1.changed.map(f => f.key).join() === 'a' && w1.read.map(f => f.key).join() === 'b' && me.changed.map(f => f.key).join() === 'c' && me.read.map(f => f.key).join() === 'a',
-    `an agent's files come from who/editors: changed by it, only read by it, a failed change nobody made is its own (${JSON.stringify([w1, me].map(x => [x.changed.length, x.read.length]))})`)
+  check(w1.changed.map(f => f.key).join() === 'a' && w1.read.map(f => f.key).join() === 'b' && !w1.failed.length
+    && !me.changed.length && me.failed.map(f => f.key).join() === 'c' && me.read.map(f => f.key).join() === 'a',
+    `an agent's files come from who/editors: changed by it, only read by it; a failed change nobody made is its own and counts as failed, never changed (${JSON.stringify([w1, me].map(x => [x.changed.length, x.failed.length, x.read.length]))})`)
 }
+check(mod.logSaid('{"findings":[]}\nThree issues found.') === 'Three issues found.' && mod.logSaid('```json\n{"a":1}\n```') === '' && mod.logSaid('  Done.\nmore') === 'Done.',
+  "a log row shows an answer's first line of prose; an answer of data alone leaves the row to what the agent did")
+check(mod.distinctNames(['Blind-review desktop panel 1: colours', 'Blind-review desktop panel 2: layout']).every(n => !n.startsWith('…')),
+  'a shortened sibling name has no leading ellipsis (the label is already cut at its end where it does not fit)')
 check(mod.slugName('Pact weapon marker') === 'pact-weapon-marker' && mod.commandLine('\n  npm test\nmore') === 'npm test',
   'Terminal names are slugs; a command row shows its first non-empty line')
 check(mod.shortTarget('D:\\Proj\\src\\a.py') === 'src/a.py' && mod.shortTarget('npm test\nmore') === 'npm test' && mod.shortTarget('a b/c') === 'a b/c',
@@ -407,13 +412,14 @@ check(tab('agents')?.getAttribute('aria-selected') === 'true' && tab('commands')
 check(q('.sw-tabn')?.textContent === '1' && q('.sw-tabn')?.getAttribute('aria-label') === '1 command running' && q('.sw-tabn')?.dataset.tip === '1 command running',
   `the Commands tab badge counts running commands, named by its tooltip (${q('.sw-tabn')?.textContent})`)
 
+check(!/Ø/.test(document.body.textContent), 'no letter is swapped for Ø anywhere on the page (O reads as O; one word, one spelling)')
 // 21. the orbit: the main agent's box first and selected, a wing and a callout per subagent, statuses never mislabelled
 {
   const u = units()
   check(u.length === 3 && u[0].dataset.main === 'true' && u[0].getAttribute('aria-pressed') === 'true' && u[0].querySelector('.sw-orn')?.textContent === '★ MAIN · IDLE',
     `the main agent is the station's box, first and selected, saying what it does (${u.map(x => x.getAttribute('aria-label'))})`)
   check(u.slice(1).map(uname).join() === 'docs-writer,wiki-watchdog', 'then one callout per subagent of the last run')
-  check(u[1].dataset.st === 'completed' && u[1].dataset.icon === 'ok' && /^DØNE · \d/.test(u[1].querySelector('.sw-orv')?.textContent || '')
+  check(u[1].dataset.st === 'completed' && u[1].dataset.icon === 'ok' && /^DONE · \d/.test(u[1].querySelector('.sw-orv')?.textContent || '')
     && u[2].dataset.st === 'failed' && /^FAILED/.test(u[2].querySelector('.sw-orv')?.textContent || ''),
     `a done callout reads done with its time, a failed one failed (${u.slice(1).map(x => x.querySelector('.sw-orv')?.textContent)})`)
   const wings = qa('.sw-orbit .sw-orw')
@@ -567,8 +573,10 @@ check(q('.sw-money')?.textContent === '~$0.08' && q('.sw-money')?.tabIndex === 0
     'the detail panel starts folded under its title row and keeps its content in the page')
   check(!qa('.sw-hspent .sw-kv dt').some(d => /agents/i.test(d.textContent)) && !qa('.sw-hagent .sw-kv dt').some(d => /subagents/i.test(d.textContent)),
     'the done count is not repeated in SPENT or the main agent card (the fleet chip and the DONE cells carry it)')
+  check(qa('.sw-alog .sw-hlm')[0]?.textContent === 'Docs.', `a log row skips an answer's opening data for its first line of prose (${qa('.sw-alog .sw-hlm')[0]?.textContent})`)
   check(qa('.sw-alog > button').length === 2 && q('.sw-hagent .sw-rname')?.textContent === '★ main-agent' && q('.sw-hdetail .sw-focus')?.dataset.kind === 'main',
     'the log has a row per subagent; the agent card and the detail panel show the selected agent')
+  check(q('.sw-hdetail .sw-hpn')?.textContent === q('.sw-hagent .sw-rname')?.textContent, `DETAIL names the agent as the AGENT card does (${q('.sw-hdetail .sw-hpn')?.textContent})`)
   await act(async () => { units()[2].click() })
   check(q('.sw-focus')?.dataset.kind === 'sub' && units()[2].getAttribute('aria-pressed') === 'true' && qa('.sw-orw')[1].classList.contains('is-sel') && q('.sw-hagent .sw-rname')?.textContent === 'wiki-watchdog'
     && q('.sw-hagent .sw-hchip')?.dataset.st === 'failed' && qa('.sw-alog > button').map(b => b.getAttribute('aria-pressed')).join() === 'false,true',
@@ -612,12 +620,18 @@ check(stub.calls.request.some(([m, p]) => m === 'subagent.list' && p.session_id 
   const hud = css.match(/\.sw-page\[data-theme=terminal\]\{--tm-acc:light-dark[^}]*\}/)?.[0] || ''
   const chip = css.match(/\.sw-sbw\[data-theme=terminal\]\{[^}]*\}/)?.[0] || ''
   check(/\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-acc\)/.test(css) && /--tm-bg:transparent;--tm-raised:var\(--ui-bg-card\)/.test(hud) && /--tm-line:var\(--ui-stroke-tertiary\)/.test(hud) && /--hud-add:var\(--ui-diff-add-background\)/.test(hud)
-    && /--tm-acc:light-dark\(oklch\(from var\(--ui-accent\)/.test(hud) && /--tm-bad:color-mix\(in srgb,var\(--ui-red\)/.test(hud) && /--tm-run:color-mix\(in srgb,var\(--ui-yellow\)/.test(hud)
+    && /--tm-acc:light-dark\(oklch\(from var\(--ui-accent\)/.test(hud) && /--tm-bad:light-dark\(oklch\(from color-mix\(in srgb,var\(--ui-red\) 82%,var\(--ui-base\)\) min\(l,\.5\) c h\),color-mix\(in srgb,var\(--ui-red\)/.test(hud)
+    && /--tm-run:light-dark\(oklch\(from color-mix\(in srgb,var\(--ui-yellow\) 82%,var\(--ui-base\)\) min\(l,\.5\) c h\),color-mix\(in srgb,var\(--ui-yellow\)/.test(hud)
     && /--tm-acc:color-mix\(in srgb,var\(--ui-accent\)/.test(chip) && /--tm-ok:color-mix\(in srgb,var\(--ui-green\)/.test(chip) && /--tm-bad:color-mix\(in srgb,var\(--ui-red\)/.test(chip)
     && !/#[0-9a-f]{3,8}\b/i.test(css),
     'Terminal: the page uses the app tokens as they are (see-through ground for the glass, translucent card, strokes, diff colours) and the chip tints from them — no literal anywhere')
 }
 
+check(/\.sw-page\[data-theme=terminal\]\{[^}]*--solid:var\(--dt-background\);[^}]*--pop:color-mix\(in srgb,var\(--ui-text-primary\) 7%,var\(--dt-background\)\)/.test(css)
+  && /\.sw-menu\{[^}]*background:var\(--pop\)/.test(css) && (src.match(/bg: tok\('--solid'\)/g) || []).length === 2 && !/bg: tok\('--bg'\)/.test(src),
+  'Terminal: a menu over the page and every canvas ground are opaque (the page ground is see-through, and a canvas reads it as black)')
+check(/\.sw-page\{font-variant-emoji:text\}/.test(css), 'symbols draw as text, never as colour emoji')
+check(!/(['"`])[▶⚠](?!\\uFE0E|\\\\FE0E)/.test(src), 'every ▶ and ⚠ the panel writes carries U+FE0E, so Windows never draws it as a colour emoji')
 // 22. the run picker: the last run now, earlier runs on demand, Back to now
 await act(async () => { q('.sw-pick').click() })
 {
@@ -758,9 +772,9 @@ check(q('.sw-cmcon')?.dataset.span === '6' && q('.sw-cmlp')?.dataset.span === '4
   check(calls.length === 4 && calls.map(c => `${c.dataset.side}:${c.dataset.st}`).join() === 'l:running,l:failed,r:stopped,r:completed'
     && calls[0].getAttribute('aria-pressed') === 'true' && calls.filter(c => c.getAttribute('aria-pressed') === 'true').length === 1
     && calls[0].querySelector('.sw-orv')?.textContent.startsWith('RUNNING · 1m')
-    && calls[2].querySelector('.sw-orv')?.textContent === 'STØPPED' && calls[3].querySelector('.sw-orv')?.textContent === 'FINISHED · 42s',
+    && calls[2].querySelector('.sw-orv')?.textContent === 'STOPPED' && calls[3].querySelector('.sw-orv')?.textContent === 'FINISHED · 42s',
     `a callout per command, alternating sides, the picked one marked, its status and time (${calls.map(c => c.querySelector('.sw-orv')?.textContent)})`)
-  check(q('.sw-cmorb .sw-ormain .sw-orn')?.textContent === '★ ØRBIT · 1 IN FLIGHT' && q('.sw-cmorb .sw-orp b')?.textContent === '2/4'
+  check(q('.sw-cmorb .sw-ormain .sw-orn')?.textContent === '★ ORBIT · 1 IN FLIGHT' && q('.sw-cmorb .sw-orp b')?.textContent === '2/4'
     && qa('.sw-cmorb .sw-ortele[data-side=r] .sw-otl b').map(b => b.textContent).join() === '01,01,01',
     `the box counts the commands in flight and the ended ones; the readouts count running, failed, stopped (${q('.sw-cmorb .sw-ormain')?.textContent})`)
 }
@@ -783,12 +797,12 @@ check(qa('.sw-cmorb .sw-orl.is-sel').length === 1 && q('.sw-cmorb .sw-orl.is-sel
 check(q('.sw-cmcon .sw-out')?.textContent === 'tail of proc_bad in st-1' && conTitle() === 'Console · python build.py'
   && q('.sw-cmcon .sw-hchip')?.dataset.st === 'failed' && q('.sw-cmcon .sw-hchip')?.textContent === 'exit 1',
   `the console shows the picked command: its output, its command in the title, its exit code on a status chip (${conTitle()})`)
-check(q('.sw-cmcon .sw-hpn')?.textContent === 'python build.py' && q('.sw-cmcon .sw-hptv')?.textContent === 'CØNSØLE · python build.py'
+check(q('.sw-cmcon .sw-hpn')?.textContent === 'python build.py' && q('.sw-cmcon .sw-hptv')?.textContent === 'CONSOLE · python build.py'
   && q('.sw-cmgauge .sw-col')?.textContent === 'FAILED',
   `run text in a HUD title keeps its case (a command is not capitalised); a failed command's gauge says FAILED (${q('.sw-cmcon .sw-hptv')?.textContent} / ${q('.sw-cmgauge .sw-col')?.textContent})`)
 {
   const dd = qa('.sw-cmcard .sw-kv dd')
-  check(qa('.sw-cmcard .sw-kv dt').map(d => d.textContent).join('|') === 'CØMMAND|DIR|RAN|EXIT|LINES'
+  check(qa('.sw-cmcard .sw-kv dt').map(d => d.textContent).join('|') === 'COMMAND|DIR|RAN|EXIT|LINES'
     && dd[0]?.querySelector('.sw-1l')?.textContent === 'FULL proc_bad' && dd[0]?.querySelector('.sw-1l')?.dataset.tip === 'FULL proc_bad'
     && dd[1]?.querySelector('.sw-1l')?.textContent === '/w' && dd[1]?.querySelector('.sw-1l')?.dataset.tip === '/w'
     && dd[2]?.textContent === '5s' && dd[4]?.textContent === '1'
@@ -845,10 +859,10 @@ check(q('.sw-cmcon .sw-out')?.textContent === 'tail of proc_bad in st-1' && !q('
     `output lines are numbered and the error lines are highlighted (${lines.map(l => l.className).join()})`)
   const first = q('.sw-cmcon .sw-cmfirst')
   const target = first && q(`.sw-cmcon .sw-out [data-o="${first.dataset.to}"]`)
-  check(first?.querySelector('.sw-col')?.textContent === 'FIRST ERRØR' && first?.querySelector('.sw-cov')?.textContent === 'LINE 2' && target === q('.sw-cmcon .sw-ol.is-bad'),
+  check(first?.querySelector('.sw-col')?.textContent === 'FIRST ERROR' && first?.querySelector('.sw-cov')?.textContent === 'LINE 2' && target === q('.sw-cmcon .sw-ol.is-bad'),
     `the FIRST ERROR callout names the first failing line and its leader line has that row to point at (${first?.textContent} -> ${target?.textContent})`)
   check(q('.sw-cmcard .sw-exit b')?.textContent === '-15' && q('.sw-cmcard .sw-exit span')?.textContent === 'killed' && q('.sw-cmcard .sw-exit')?.getAttribute('aria-label') === 'killed'
-    && q('.sw-cmcon .sw-hchip')?.textContent === 'killed' && q('.sw-cmgauge .sw-col')?.textContent === 'STØPPED' && !qa('.sw-cmgauge .sw-copb i.on').length,
+    && q('.sw-cmcon .sw-hchip')?.textContent === 'killed' && q('.sw-cmgauge .sw-col')?.textContent === 'STOPPED' && !qa('.sw-cmgauge .sw-copb i.on').length,
     'a killed command says so on its exit mark, its chip and its gauge')
 }
 check(mod.outputLines('ok\nError: x\nall FAILED\n  Traceback\nException!\nfine\n').map(l => l.bad).join() === 'false,true,true,true,true,false',
@@ -1160,9 +1174,9 @@ check(q('.sw-score')?.getAttribute('aria-label') === 'No subagents yet', 'the sc
 // 25. more live subagents than wings: five wings and a group, the main agent waiting on them
 for (let i = 0; i < 12; i++) await emit('subagent.spawn_requested', 'rt-e', { subagent_id: `e${i}`, goal: `Spawn 'eq-${i}'`, task_index: i })
 check(qa('.sw-orw').length === 6 && qa('.sw-orl:not(.is-grp)').length === 5 && q('.sw-orl.is-grp')?.getAttribute('aria-label') === '7 more subagents: 7 waiting'
-  && q('.sw-orl.is-grp .sw-orn')?.textContent === '+7 MØRE' && q('.sw-ormain')?.getAttribute('aria-label') === 'Main agent: waiting on 12',
+  && q('.sw-orl.is-grp .sw-orn')?.textContent === '+7 MORE' && q('.sw-ormain')?.getAttribute('aria-label') === 'Main agent: waiting on 12',
   `past six subagents five wings and one holding the rest, the main agent waiting on them (${q('.sw-orl.is-grp')?.getAttribute('aria-label')} · ${q('.sw-ormain')?.getAttribute('aria-label')})`)
-check(qa('.sw-htime .sw-tk').length === 6 && q('.sw-htime .sw-tmore')?.textContent === '+6 MØRE · 0 DØNE', `time per agent: as many tracks as wings, the rest counted (${q('.sw-htime .sw-tmore')?.textContent})`)
+check(qa('.sw-htime .sw-tk').length === 6 && q('.sw-htime .sw-tmore')?.textContent === '+6 MORE · 0 DONE', `time per agent: as many tracks as wings, the rest counted (${q('.sw-htime .sw-tmore')?.textContent})`)
 
 // empty chat
 await act(async () => { stub.atoms.focusedSessionId.set(null); stub.atoms.focusedStoredSessionId.set(null) })
@@ -1291,7 +1305,8 @@ const rowOf = name => fqa('.sw-focus .sw-fr').find(b => b.querySelector('.sw-fn'
 check(rest.some(p => p === '/files?session_id=st-f'), 'files are read for the stored chat id')
 {
   const tiles = fqa('.sw-focus .sw-tile').map(x => `${x.querySelector('.sw-tl')?.textContent}=${x.querySelector('.sw-tn')?.textContent}`).join('|')
-  check(tiles === 'on task=28s|files touched=5|changed=3|only read=2', `the main agent's stat tiles: on task, files touched, changed, only read (${tiles})`)
+  check(tiles === 'first to last file=28s|changed=2|edit failed=1|only read=2', `the main agent's stat tiles: first to last file, changed, edit failed, only read — no sum tile (${tiles})`)
+  check(!fq('.sw-focus .sw-tile[style]') && fq('.sw-focus .sw-tile[data-k=failed]')?.dataset.tone === 'bad', 'the tiles carry no unlabelled share bar; a failed edit tile is red')
   check(fq('.sw-focus .sw-verb')?.textContent === '○ IDLE' && fq('.sw-focus .sw-ptag')?.textContent === 'main' && fq('.sw-focus .sw-por')?.dataset.st === 'idle',
     `an idle main agent's hero says so, tagged MAIN (${fq('.sw-focus .sw-verb')?.textContent})`)
 }
@@ -1304,16 +1319,18 @@ check(rest.some(p => p === '/files?session_id=st-f'), 'files are read for the st
 }
 const note = fq('.sw-focus .sw-note')?.textContent || ''
 check(/terminal commands or code runs are not listed/.test(note) && /Review › Last turn/.test(note), `the panel says what it cannot see and where every change is (${note})`)
-check(sec('changed').map(r => r.querySelector('.sw-fn').textContent).join() === 'a.py,README.md,old.txt' && sec('read').map(r => r.querySelector('.sw-fn').textContent).join() === 'b.py,x.md',
-  `the main agent's files: Changed (its edits, a failed change, a delete) and Only read (${sec('changed').length}/${sec('read').length})`)
+check(sec('changed').map(r => r.querySelector('.sw-fn').textContent).join() === 'a.py,old.txt' && sec('failed').map(r => r.querySelector('.sw-fn').textContent).join() === 'README.md'
+  && sec('read').map(r => r.querySelector('.sw-fn').textContent).join() === 'b.py,x.md'
+  && fqa('.sw-focus .sw-fsec h4').map(h => h.textContent).join() === 'Changed,Edit failed,Only read',
+  `the main agent's files: Changed (its edits, a delete), Edit failed, Only read — headings without counts, the tiles hold them (${sec('changed').length}/${sec('failed').length}/${sec('read').length})`)
 check(rowOf('a.py')?.dataset.op === 'write' && rowOf('README.md')?.dataset.op === 'failed' && rowOf('old.txt')?.dataset.op === 'delete' && rowOf('b.py')?.dataset.op === 'read',
   'each file state is its own row kind: edited, failed, deleted, read only')
-check(rowOf('a.py')?.querySelector('.sw-fl')?.textContent === '3 edits' && rowOf('README.md')?.querySelector('.sw-fl')?.textContent === 'failed' && rowOf('old.txt')?.querySelector('.sw-fl')?.textContent === 'deleted',
-  `a changed row says EDIT ×n / FAILED / DELETED (${rowOf('a.py')?.querySelector('.sw-fl')?.textContent})`)
+check(rowOf('a.py')?.querySelector('.sw-fl')?.textContent === '3 edits' && rowOf('README.md')?.querySelector('.sw-fl')?.textContent === '1 failed' && rowOf('old.txt')?.querySelector('.sw-fl')?.textContent === 'deleted',
+  `a changed row says n edits / n failed / deleted (${rowOf('a.py')?.querySelector('.sw-fl')?.textContent})`)
 check(rowOf('a.py')?.querySelector('.sw-pips')?.dataset.lit === '3' && rowOf('a.py')?.querySelectorAll('.sw-pips i').length === 8 && rowOf('a.py')?.querySelectorAll('.sw-pips i.on').length === 3
   && rowOf('README.md')?.querySelectorAll('.sw-pips i.on').length === 1 && !rowOf('old.txt')?.querySelector('.sw-pips') && rowOf('a.py')?.classList.contains('sw-ft'),
   'a changed file is a card: one lit block per edit out of 8, none for a delete')
-check(fq('.sw-focus [data-sec=changed] .sw-leg')?.textContent === '1 █ = 1 edit', 'the blocks are explained: 1 █ = 1 edit')
+check(!fq('.sw-focus .sw-leg'), 'no blocks legend: every row says its own count in words')
 check(mod.pips(3) === 3 && mod.pips(8) === 8 && mod.pips(12) === 8 && mod.pips(0) === 0 && mod.pips(null) === 0, 'the blocks stop at 8')
 check(rowOf('a.py')?.querySelector('.sw-fd')?.textContent === './src' && rowOf('README.md')?.querySelector('.sw-fd')?.textContent === 'chat folder'
   && /in …/.test(rowOf('x.md')?.getAttribute('aria-label') || '') && rowOf('x.md')?.dataset.tip.startsWith('C:/elsewhere')
@@ -1325,11 +1342,13 @@ check(/\.sw-page\[data-theme=terminal\] \.sw-ft\{display:grid;width:100%;/.test(
 {
   const fl = fq('.sw-focus .sw-flist')
   check(fl && fl.querySelectorAll(':scope > .sw-fsec').length >= 1 && !fq('.sw-focus .sw-fsec[data-sec=changed]:not(.sw-flist > *)')
-    && /\.sw-page\[data-theme=terminal\] \.sw-flist\{display:grid;grid-template-columns:14px fit-content\(32ch\) fit-content\(24ch\) 64px max-content max-content 1fr;/.test(css)
+    && /\.sw-page\[data-theme=terminal\] \.sw-flist\{display:grid;grid-template-columns:14px fit-content\(32ch\) minmax\(8ch,1fr\) 64px max-content max-content;/.test(css)
+    && /\.sw-page \.sw-fd\{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;direction:rtl;/.test(css)
+    && rowOf('a.py')?.querySelector('.sw-fd > bdi')?.textContent === './src'
     && /\.sw-page\[data-theme=terminal\] \.sw-flist>\.sw-fsec\{grid-column:1\/-1;display:grid;grid-template-columns:subgrid;/.test(css)
     && /\.sw-page\[data-theme=terminal\] \.sw-flist \.sw-fgrid\{display:grid;grid-template-columns:subgrid;/.test(css)
     && /\.sw-page\[data-theme=terminal\] \.sw-ft\{[^}]*grid-template-columns:subgrid/.test(css),
-    `all Terminal file lists share one set of columns sized to their content; the spare width goes to the end (${fl?.children.length} lists)`)
+    `all Terminal file lists share one set of columns; the folder takes the spare width and is cut at its start, so its own name stays (${fl?.children.length} lists)`)
   check(/\.sw-page\[data-theme=terminal\] \.sw-fl\{margin-left:0;text-align:left\}/.test(css)
     && !/\.sw-page\[data-theme=terminal\] \.sw-fh \.sw-k::after/.test(css) && /\.sw-page\[data-theme=terminal\] \.sw-leg::before\{content:"·"/.test(css),
     'Terminal labels start in one column; the heading dot belongs to the legend, so Only read ends clean')
@@ -1366,7 +1385,7 @@ check(!nowRows().length, 'a mirrored worker row and a V4A patch name no file')
 await emit('tool.complete', 'rt-f', { tool_id: 'm1' })
 await emit('tool.complete', 'rt-f', { tool_id: 'v1' })
 await emit('tool.start', 'rt-f', { tool_id: 't1', name: 'read_file', args: { path: 'src/b.py' } })
-check(nowNames() === 'b.py' && fq('.sw-focus .sw-head')?.textContent === 'b.py' && fq('.sw-focus .sw-verb')?.textContent === '▶ READING NOW' && mainUnit()?.dataset.icon === 'read' && mainUnit()?.dataset.st === 'running',
+check(nowNames() === 'b.py' && fq('.sw-focus .sw-head')?.textContent === 'b.py' && fq('.sw-focus .sw-verb')?.textContent === '▶\uFE0E READING NOW' && mainUnit()?.dataset.icon === 'read' && mainUnit()?.dataset.st === 'running',
   `a file call of the focused chat is the NOW card and the headline, the verb line reads (${fq('.sw-focus .sw-verb')?.textContent} ${fq('.sw-focus .sw-head')?.textContent})`)
 check(sec('now')[0]?.classList.contains('is-now') && fq('.sw-focus [data-sec=now] h4')?.textContent === 'Working on now'
   && fq('.sw-focus [data-sec=now]')?.nextElementSibling?.dataset.sec !== 'now'
@@ -1375,18 +1394,16 @@ check(sec('now')[0]?.classList.contains('is-now') && fq('.sw-focus [data-sec=now
 check(!sec('changed').some(r => r.querySelector('.sw-fn')?.textContent === 'b.py') && !sec('read').some(r => r.querySelector('.sw-fn')?.textContent === 'b.py'),
   'the file worked on now is in neither list below it')
 {
-  // heading count = rows shown + the "Show N more" rest, for each list
-  const counts = ['changed', 'read'].map(k => {
+  // rows shown + the "Show N more" rest, for each list: the file worked on now is in none of them
+  const counts = ['changed', 'failed', 'read'].map(k => {
     const box = fq(`.sw-focus [data-sec=${k}]`)
-    if (!box) return [k, 0, 0]
-    const head = Number(/(\d+)/.exec(box.querySelector('h4')?.textContent || '')?.[1])
-    const more = Number(/(\d+)/.exec(box.querySelector(':scope > .sw-more')?.textContent || '')?.[1] || 0)
-    return [k, head, box.querySelectorAll('.sw-fr').length + more]
+    const more = Number(/(\d+)/.exec(box?.querySelector(':scope > .sw-more')?.textContent || '')?.[1] || 0)
+    return box ? box.querySelectorAll('.sw-fr').length + more : 0
   })
-  check(counts.every(([, h, r]) => h === r), `each list heading counts exactly its rows while a file is worked on (${counts.map(c => c.join(' ')).join(' · ')})`)
+  check(counts.join() === '2,1,1', `each list holds exactly its own rows while a file is worked on (${counts})`)
 }
 await emit('tool.start', 'rt-f', { tool_id: 't2', name: 'write_file', args: { path: 'D:/Proj/src/new.ts', content: 'x' } })
-check(nowNames() === 'b.py,new.ts' && fq('.sw-focus .sw-head')?.textContent === 'new.ts' && fq('.sw-focus .sw-verb')?.textContent === '▶ EDITING NOW' && rowOf('new.ts')?.dataset.op === 'active' && mainUnit()?.dataset.icon === 'edit',
+check(nowNames() === 'b.py,new.ts' && fq('.sw-focus .sw-head')?.textContent === 'new.ts' && fq('.sw-focus .sw-verb')?.textContent === '▶\uFE0E EDITING NOW' && rowOf('new.ts')?.dataset.op === 'active' && mainUnit()?.dataset.icon === 'edit',
   'a file not yet recorded appears at once; the newest file is the head line and the icon edits')
 const readsBefore = filesReads()
 await emit('tool.complete', 'rt-f', { tool_id: 't1', name: 'read_file' })
@@ -1400,9 +1417,8 @@ check(!nowRows().length && !rowOf('new.ts') && mainUnit()?.dataset.st === 'idle'
 // a recorded changed file worked on now leaves Changed for the NOW block, and the heading counts what is left
 await emit('tool.start', 'rt-f', { tool_id: 't3', name: 'write_file', args: { path: 'D:/Proj/src/a.py', content: 'x' } })
 {
-  const h = Number(/(\d+)/.exec(fq('.sw-focus [data-sec=changed] h4')?.textContent || '')?.[1])
-  check(nowNames() === 'a.py' && !sec('changed').some(r => r.querySelector('.sw-fn')?.textContent === 'a.py') && h === sec('changed').length && h === 2,
-    `a changed file worked on now is shown once; Changed counts only its own rows (${h} / ${sec('changed').length})`)
+  check(nowNames() === 'a.py' && !sec('changed').some(r => r.querySelector('.sw-fn')?.textContent === 'a.py') && sec('changed').map(r => r.querySelector('.sw-fn').textContent).join() === 'old.txt',
+    `a changed file worked on now is shown once; Changed holds only the rest (${sec('changed').length})`)
 }
 await emit('tool.complete', 'rt-f', { tool_id: 't3', name: 'write_file' })
 await tick(4100)
@@ -1463,7 +1479,7 @@ await tick(10)
     `40 subagents: six wings, the failed first, then working; a stopped one waits in the group (${shown.map(b => `${b.querySelector('.sw-orn')?.textContent}=${b.dataset.st}`)})`)
   const g = fq('.sw-orl.is-grp')
   const marks = g ? [...g.querySelectorAll('.sw-orm')].map(m => `${m.dataset.st}=${m.textContent}`).join() : ''
-  check(g?.querySelector('.sw-orn')?.textContent === '+35 MØRE' && marks === 'completed=20,running=4,queued=10,stopped=1' && g.getAttribute('aria-label') === '35 more subagents: 20 done, 4 working, 10 waiting, 1 stopped'
+  check(g?.querySelector('.sw-orn')?.textContent === '+35 MORE' && marks === 'completed=20,running=4,queued=10,stopped=1' && g.getAttribute('aria-label') === '35 more subagents: 20 done, 4 working, 10 waiting, 1 stopped'
     && fqa('.sw-orw[data-st=group] .sw-orc').filter(c => c.dataset.k && c.dataset.k !== 'none').length === 16,
     `the group says how many it holds and a coloured mark with a count per state, never a word (${marks} · ${g?.getAttribute('aria-label')})`)
   for (const side of ['l', 'r']) {
@@ -1562,8 +1578,8 @@ mod.default.register(quietCtx({ storage: undefined }))
     `replay: the first edit shows its removed and added lines and where they start (${q('.sw-rof')?.textContent})`)
   check(/\+1 line added · −1 line removed · by the main agent/.test(q('.sw-rwhat')?.textContent || ''), 'replay: an edit says in words what it did and who did it')
   check(asked.every(([sid]) => sid === 'st-1') && asked.some(([, id]) => id === 'a#0'), 'replay: the list and the edit are read for this chat')
-  // the HUD: requests + six panels; titles drawn in caps with Ø, read out as plain words
-  check(qa('.sw-hp').length === 8 && qa('.sw-hpt').some(h => h.querySelector('[aria-hidden=true]')?.textContent === 'LINES SØ FAR' && h.querySelector('.sw-sr')?.textContent === 'Lines so far'),
+  // the HUD: requests + six panels; titles drawn in caps (letters as written), read out as plain words
+  check(qa('.sw-hp').length === 8 && qa('.sw-hpt').some(h => h.querySelector('[aria-hidden=true]')?.textContent === 'LINES SO FAR' && h.querySelector('.sw-sr')?.textContent === 'Lines so far'),
     `replay HUD: requests and seven panels (the wormhole first), each title in caps on screen and in plain words for a screen reader (${qa('.sw-hp').length})`)
   {
     const head = q('.sw-rlines .sw-rl[data-tag="@"]'), minus = q('.sw-rlines .sw-rl[data-tag="-"]')
@@ -1593,7 +1609,7 @@ mod.default.register(quietCtx({ storage: undefined }))
       && calls.length === 3 && calls.filter(c => c.getAttribute('aria-pressed') === 'true').length === 1 && calls.find(c => c.dataset.k === '0')?.classList.contains('is-sel')
       && calls.find(c => c.dataset.k === '1')?.querySelector('.sw-orv')?.textContent === 'FAILED' && /^EDIT · \+\d+ −\d+$/.test(calls.find(c => c.dataset.k === '0')?.querySelector('.sw-orv')?.textContent || ''),
       `replay: a ring per edit (what it did, how big; a failed one sized 0) and a callout each, the current one marked (${calls.map(c => c.querySelector('.sw-orv')?.textContent)})`)
-    check(q('.sw-rworm .sw-ormain .sw-orn')?.textContent === '★ REPLAY · EDIT 1 ØF 3' && q('.sw-rworm .sw-orp b')?.textContent === '1/3'
+    check(q('.sw-rworm .sw-ormain .sw-orn')?.textContent === '★ REPLAY · EDIT 1 OF 3' && q('.sw-rworm .sw-orp b')?.textContent === '1/3'
       && qa('.sw-rworm .sw-ortele[data-side=l] .sw-otl b').map(b => b.textContent).join() === '01,01,01',
       `replay: the box says which edit of how many; the readouts count edits, writes and failed ones (${q('.sw-rworm .sw-ormain')?.textContent})`)
     await act(async () => { calls.find(c => c.dataset.k === '2').click() })

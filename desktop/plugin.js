@@ -167,10 +167,9 @@ const BUNDLES = {
         main: {
           working: verb => `${verb[0].toUpperCase()}${verb.slice(1)}`,
           waiting: n => `Waiting on ${n} subagent${n === 1 ? '' : 's'}`,
-          busy: 'Working — no tool running right now',
-          idle: 'Idle — waiting for your message',
+          busy: 'No tool running right now',
+          idle: 'Waiting for your message',
           unknown: 'No tool running right now',
-          touched: n => (n ? `touched ${n} file${n === 1 ? '' : 's'} in this chat` : 'no files touched in this chat yet'),
           in: dir => `in ${dir}`
         },
         line: {
@@ -185,14 +184,14 @@ const BUNDLES = {
           : read ? `changed nothing, read ${read} file${read === 1 ? '' : 's'}` : 'touched no files'),
         startedBy: name => `started by ${name}`,
         now: 'Working on now',
-        changed: n => `Changed · ${n}`,
-        read: n => `Only read · ${n}`,
+        // the counts stand in the tiles above the lists, so the headings carry none
+        changed: 'Changed',
+        failedH: 'Edit failed',
+        read: 'Only read',
         files: 'Files',
         noFiles: 'No files read or changed in this chat yet.',
         noFilesSub: 'No files read or changed with the file tools.',
         more: n => `Show ${n} more`,
-        legend: '1 block = 1 edit',
-        legendTm: '1 █ = 1 edit',
         note: 'Click a file to copy its path. Changes made by terminal commands or code runs are not listed — Review › Last turn shows every change.',
         task: 'Task',
         showAll: 'Show all',
@@ -204,9 +203,10 @@ const BUNDLES = {
         open: 'Open its chat'
       },
       hero: {
-        now: verb => `▶ ${verb.toUpperCase()} NOW`,
+        // ▶ carries U+FE0E (text presentation): without it Windows draws a colour emoji
+        now: verb => `▶\uFE0E ${verb.toUpperCase()} NOW`,
         waiting: n => `⧗ WAITING ON ${n} SUBAGENT${n === 1 ? '' : 'S'}`,
-        working: '▶ WORKING',
+        working: '▶\uFE0E WORKING',
         idle: '○ IDLE',
         queued: '⧗ WAITING TO START',
         completed: '✓ DONE',
@@ -214,7 +214,7 @@ const BUNDLES = {
         stopped: '■ STOPPED BEFORE IT FINISHED'
       },
       tile: {
-        onTask: 'on task', touched: 'files touched', changed: 'changed', read: 'only read',
+        onTask: 'first to last file', changed: 'changed', failed: 'edit failed', read: 'only read',
         runTime: 'run time', tools: 'tool calls', tokens: 'tokens', cost: 'cost'
       },
       hudAgents: {
@@ -251,7 +251,7 @@ const BUNDLES = {
         state: 'state',
         subagents: 'subagents',
         filesK: 'files',
-        filesV: (changed, read) => `${changed} changed · ${read} read`,
+        filesV: (changed, failed, read) => [`${changed} changed`, failed ? `${failed} failed` : '', `${read} read`].filter(Boolean).join(' · '),
         log: 'Log',
         noLog: 'Each subagent gets a line here.',
         detail: 'Detail',
@@ -336,7 +336,7 @@ This edit failed` : path),
       },
       file: {
         op: {
-          active: 'now', write: n => `${n} edit${n === 1 ? '' : 's'}`, delete: 'deleted', failed: 'failed', read: n => `read ×${n}`
+          active: 'now', write: n => `${n} edit${n === 1 ? '' : 's'}`, delete: 'deleted', failed: n => `${n} failed`, read: n => `read ×${n}`
         },
         nowBadge: 'NOW',
         nowLabel: label => `${label}, worked on now`,
@@ -504,7 +504,9 @@ export function distinctNames(goals) {
   const words = common.slice(0, common.lastIndexOf(' ') + 1).split(' ').filter(Boolean)
   if (words.length < 2 || words.join(' ').length < 12) return names
   const cut = words.slice(0, -1).join(' ').length + 1
-  return names.map(n => (n.length > cut ? `…${n.slice(cut)}` : n))
+  // No leading ellipsis: the label is already cut at its end where the pane is narrow, and a name cut
+  // at both ends reads as damaged. The tooltip keeps the whole task.
+  return names.map(n => (n.length > cut ? n.slice(cut) : n))
 }
 
 /** A name as the Terminal theme prints it: 'Pact weapon marker' -> 'pact-weapon-marker'. */
@@ -1230,7 +1232,7 @@ export function startStationScene(canvas) {
     return [d[0] / 255, d[1] / 255, d[2] / 255]
   }
   let P
-  const readPal = () => { P = { line: tok('--a'), hot: tok('--run'), ok: tok('--ok'), bad: tok('--bad'), idle: tok('--idle'), bg: tok('--bg') } }
+  const readPal = () => { P = { line: tok('--a'), hot: tok('--run'), ok: tok('--ok'), bad: tok('--bad'), idle: tok('--idle'), bg: tok('--solid') } }
   const C = (c, a = 1) => `color(srgb ${c[0]} ${c[1]} ${c[2]} / ${Math.max(0, Math.min(1, a))})`
   const stCol = st => ({ running: P.hot, completed: P.ok, failed: P.bad, queued: P.idle, stopped: P.idle })[st] || P.line
   const clamp = x => Math.max(0, Math.min(1, x))
@@ -1571,7 +1573,7 @@ export function startCmdOrbitScene(canvas) {
     return [d[0] / 255, d[1] / 255, d[2] / 255]
   }
   let P
-  const readPal = () => { P = { line: tok('--a'), hot: tok('--run'), ok: tok('--ok'), bad: tok('--bad'), idle: tok('--idle'), bg: tok('--bg') } }
+  const readPal = () => { P = { line: tok('--a'), hot: tok('--run'), ok: tok('--ok'), bad: tok('--bad'), idle: tok('--idle'), bg: tok('--solid') } }
   const paint = (c, a = 1) => `color(srgb ${c[0]} ${c[1]} ${c[2]} / ${Math.max(0, Math.min(1, a))})`
   const stCol = st => ({ running: P.hot, completed: P.ok, failed: P.bad, queued: P.idle, stopped: P.idle })[st] || P.line
   const clamp = x => Math.max(0, Math.min(1, x))
@@ -2079,16 +2081,19 @@ function FleetFiles({ t, files }) {
   })
 }
 
+/** An agent's name wherever the HUD prints it (AGENT card, DETAIL): one spelling for one agent. */
+const agentLabel = u => `${u.main ? '★ ' : ''}${slugName(u.name)}`
+
 /** AGENT: the selected agent's name, its status chip, and its key facts. */
 function FleetAgent({ t, u, subs, files, waitingOn }) {
   const goal = String(u.rec?.goal || '').trim()
-  const name = `${u.main ? '★ ' : ''}${slugName(u.name)}`
+  const name = agentLabel(u)
   let rows
   if (u.main) {
     const mine = agentFiles(files.data?.files, '')
     rows = [
       [t('sw.hudAgents.state'), statusWord(t, u, waitingOn)],
-      [t('sw.hudAgents.filesK'), t('sw.hudAgents.filesV', mine.changed.length, mine.read.length)]
+      [t('sw.hudAgents.filesK'), t('sw.hudAgents.filesV', mine.changed.length, mine.failed.length, mine.read.length)]
     ]
   } else {
     const rec = u.rec || {}
@@ -2114,6 +2119,12 @@ function FleetAgent({ t, u, subs, files, waitingOn }) {
   })
 }
 
+/** An answer's first line of prose, or '' when it has none: an answer that opens with data (JSON, a
+ *  code fence) says nothing in a one-line log, so the row shows what the agent did instead. */
+export function logSaid(summary) {
+  return String(summary || '').split('\n').map(x => x.trim()).find(x => x && !/^([[{]|```)/.test(x)) || ''
+}
+
 /** LOG: one row per subagent — when it started, its name, its answer or what it does; a click selects it. */
 function FleetLog({ t, subs, selected, onSelect, now }) {
   return jsx(HudPanel, {
@@ -2122,7 +2133,7 @@ function FleetLog({ t, subs, selected, onSelect, now }) {
       ? [jsx('div', {
         className: 'sw-hlog sw-alog',
         children: subs.map(u => {
-          const said = String(u.rec?.summary || '').trim().split('\n', 1)[0] || unitLine(t, u)
+          const said = logSaid(u.rec?.summary) || unitLine(t, u)
           return jsxs('button', {
             type: 'button', 'data-st': u.status, 'aria-pressed': selected === u.key, onClick: () => onSelect(u.key),
             children: [
@@ -2146,6 +2157,7 @@ function FleetLog({ t, subs, selected, onSelect, now }) {
  */
 export function agentFiles(files, who) {
   const changed = []
+  const failed = []
   const read = []
   for (const f of files || []) {
     const by = f.who || []
@@ -2153,10 +2165,11 @@ export function agentFiles(files, who) {
     if (!by.includes(who) && !editors.includes(who)) continue
     const edit = editors.includes(who) || (f.last_failed && !editors.length && f.last_op !== 'read')
     const row = { ...f, key: f.key || pathKey(f.path) }
-    if (edit) changed.push({ ...row, state: fileState(f, false) })
-    else read.push({ ...row, state: 'read' })
+    const state = edit ? fileState(f, false) : 'read'
+    ;(state === 'read' ? read : state === 'failed' ? failed : changed).push({ ...row, state })
   }
-  return { changed, read }
+  // A failed edit changed nothing: it is listed and counted as failed, never as changed (FILES does the same).
+  return { changed, failed, read }
 }
 
 /** How many times a file counts: its changes, or its reads. */
@@ -2196,7 +2209,7 @@ function FileCard({ t, f, cwd, label, now, order, onToast }) {
         now ? jsx('span', { className: 'sw-nowb', 'aria-hidden': 'true', children: t('sw.file.nowBadge') }, 'now') : null,
         // Keyed by the file: when the file worked on changes, its name slides in anew.
         jsx('span', { className: 'sw-fn', children: name }, `n-${f.key}`),
-        dir ? jsx('span', { className: 'sw-fd', children: dirLabel(dir, cwd, t) }, 'd') : null,
+        dir ? jsx('span', { className: 'sw-fd', children: jsx('bdi', { children: dirLabel(dir, cwd, t, false) }) }, 'd') : null,
         jsxs('span', {
           className: 'sw-pipr',
           children: [
@@ -2224,18 +2237,17 @@ function NowFiles({ t, rows, cwd, verbOf, onToast }) {
   })
 }
 
-function ChangedFiles({ t, theme, count, rows, cwd, onToast }) {
+function ChangedFiles({ t, rows, cwd, onToast, sec = 'changed', head = 'sw.focus.changed' }) {
   const [all, setAll] = useState(false)
   if (!rows.length) return null
   const shown = all ? rows : rows.slice(0, CHANGED_ROWS)
   return jsxs('div', {
-    className: 'sw-fsec', 'data-sec': 'changed',
+    className: 'sw-fsec', 'data-sec': sec,
     children: [
       jsxs('div', {
         className: 'sw-fh',
         children: [
-          jsx('h4', { className: 'sw-k', children: t('sw.focus.changed', count) }, 'h'),
-          jsx('span', { className: 'sw-leg', children: t(theme === 'terminal' ? 'sw.focus.legendTm' : 'sw.focus.legend') }, 'l')
+          jsx('h4', { className: 'sw-k', children: t(head) }, 'h')
         ]
       }, 'h'),
       jsx('div', {
@@ -2257,7 +2269,7 @@ function ReadFiles({ t, rows, cwd, onToast }) {
   return jsxs('div', {
     className: 'sw-fsec', 'data-sec': 'read',
     children: [
-      jsx('div', { className: 'sw-fh', children: jsx('h4', { className: 'sw-k', children: t('sw.focus.read', rows.length) }, 'h') }, 'h'),
+      jsx('div', { className: 'sw-fh', children: jsx('h4', { className: 'sw-k', children: t('sw.focus.read') }, 'h') }, 'h'),
       jsx('div', {
         className: 'sw-fgrid',
         children: shown.map((f, i) => jsx(FileCard, { t, f: { ...f, state: 'read' }, cwd, order: i, onToast }, f.key))
@@ -2272,7 +2284,7 @@ function ReadFiles({ t, rows, cwd, onToast }) {
 function Files({ t, theme, mine, nowRows = [], verbOf, files, onToast, empty }) {
   const cwd = files.data?.cwd
   if (files.loading && !files.data && !nowRows.length) return jsx('p', { className: 'sw-empty', children: t('sw.loading') })
-  if (!mine.changed.length && !mine.read.length && !nowRows.length) {
+  if (!mine.changed.length && !mine.failed.length && !mine.read.length && !nowRows.length) {
     return jsxs('div', { className: 'sw-fsec', 'data-sec': 'none', children: [jsx('h4', { className: 'sw-k', children: t('sw.focus.files') }, 'h'), jsx('p', { className: 'sw-empty', children: empty }, 'e')] })
   }
   // A file worked on now is shown once, in its own block, and in neither list below it;
@@ -2285,7 +2297,8 @@ function Files({ t, theme, mine, nowRows = [], verbOf, files, onToast, empty }) 
     className: 'sw-flist',
     children: [
       jsx(NowFiles, { t, rows: nowRows, cwd, verbOf, onToast }, 'n'),
-      jsx(ChangedFiles, { t, theme, count: changed.length, rows: changed, cwd, onToast }, 'c'),
+      jsx(ChangedFiles, { t, rows: changed, cwd, onToast }, 'c'),
+      jsx(ChangedFiles, { t, rows: mine.failed.filter(f => !nowKeys.has(f.key)), cwd, onToast, sec: 'failed', head: 'sw.focus.failedH' }, 'x'),
       jsx(ReadFiles, { t, rows: mine.read.filter(f => !nowKeys.has(f.key)), cwd, onToast }, 'r')
     ]
   })
@@ -2338,12 +2351,10 @@ function Hero({ t, theme, u, verb, head, full, file, where, chip, cursor }) {
  * reduced-motion lock stops it); any other value rolls in. The real value is always in the DOM.
  */
 function Tiles({ tiles }) {
-  const all = tiles.find(x => x.k === 'touched')?.n
-  const share = x => (all > 0 && Number.isInteger(x.n) && ['touched', 'changed', 'read'].includes(x.k) ? { '--p': Math.min(1, x.n / all).toFixed(3) } : undefined)
   return jsx('div', {
     className: 'sw-tiles',
     children: tiles.map(x => jsxs('div', {
-      className: 'sw-tile', 'data-k': x.k, 'data-tone': x.tone, style: share(x),
+      className: 'sw-tile', 'data-k': x.k, 'data-tone': x.tone,
       children: [
         Number.isInteger(x.n) && x.n >= 0
           ? jsx('b', { className: 'sw-tn', 'data-count': x.n, style: { '--sw-n': x.n }, children: jsx('span', { children: String(x.n) }) }, `n-${x.n}`)
@@ -2388,8 +2399,7 @@ function MainPanel({ t, theme, main, files, touching, tool, waitingOn, onToast }
     head = t('sw.focus.main.idle')
   }
   const newestDir = newest ? splitPath(newest.path).dir : ''
-  const touched = mine.changed.length + mine.read.length
-  const where = [newestDir ? t('sw.focus.main.in', dirLabel(newestDir, cwd, t)) : '', t('sw.focus.main.touched', touched)].filter(Boolean).join(' · ')
+  const where = newestDir ? t('sw.focus.main.in', dirLabel(newestDir, cwd, t)) : ''
   const unreadable = files.data?.unreadable || 0
   const more = files.data?.more || 0
   return jsxs('section', {
@@ -2399,9 +2409,9 @@ function MainPanel({ t, theme, main, files, touching, tool, waitingOn, onToast }
       jsx(Hero, { t, theme, u: main, verb, head, full: !newest && tool?.target ? String(tool.target) : newest?.path, file: Boolean(newest || tool?.target), where, cursor: main.status === 'running' }, 'hero'),
       jsx(Tiles, {
         tiles: [
-          { k: 'span', label: t('sw.tile.onTask'), v: fmtDuration(fileSpan([...mine.changed, ...mine.read]), t), tone: main.status === 'running' ? 'run' : undefined },
-          { k: 'touched', label: t('sw.tile.touched'), n: touched },
+          { k: 'span', label: t('sw.tile.onTask'), v: fmtDuration(fileSpan([...mine.changed, ...mine.failed, ...mine.read]), t), tone: main.status === 'running' ? 'run' : undefined },
           { k: 'changed', label: t('sw.tile.changed'), n: mine.changed.length },
+          { k: 'failed', label: t('sw.tile.failed'), n: mine.failed.length, tone: mine.failed.length ? 'bad' : undefined },
           { k: 'read', label: t('sw.tile.read'), n: mine.read.length, tone: 'idle' }
         ]
       }, 'tiles'),
@@ -2429,7 +2439,7 @@ function SubPanel({ t, theme, u, parentName, files, onToast }) {
   const sid = u.sid
   const goal = String(rec.goal || '').trim()
   const title = goal.split('\n', 1)[0] || u.name
-  const mine = sid ? agentFiles(files.data?.files, sid) : { changed: [], read: [] }
+  const mine = sid ? agentFiles(files.data?.files, sid) : { changed: [], failed: [], read: [] }
   const time = fmtDuration(u.duration, t)
   const doing = u.status === 'running' && rec.last_tool ? [toolVerb(t, rec.last_tool), shortTarget(rec.tool_preview)].filter(Boolean).join(' ') : ''
   const line = u.status === 'running' ? t('sw.focus.line.running', time, doing)
@@ -2996,9 +3006,9 @@ function DiffLines({ t, step, got, typing }) {
 }
 
 // The Replay tab is laid out as a HUD (the look the user picked from a mission-control reference): a
-// six-column grid of hairline panels with caps titles. Titles swap O for Ø on screen only; a screen
-// reader hears the plain words.
-const hudCaps = text => String(text).toUpperCase().replace(/O/g, 'Ø')
+// six-column grid of hairline panels with caps titles. A title is drawn in caps; the letters stay as
+// written (an O is an O): a swapped letter read worse and spelled one word two ways across the page.
+const hudCaps = text => String(text).toUpperCase()
 
 /** A HUD panel. `title` is our own label and reads in caps; `name` is text from the run (a command, a
  *  file) and keeps its case, so a path or a command reads as typed. */
@@ -3113,7 +3123,7 @@ function useWires(heroRef, deps, list = '.sw-rlines', attr = 'data-h') {
   return wires ? JSON.parse(wires) : []
 }
 
-/** A HUD key : value card. rows: [[label, value node], …]; labels are drawn in caps with Ø. */
+/** A HUD key : value card. rows: [[label, value node], …]; labels are drawn in caps. */
 function HudKV({ rows, className = '' }) {
   return jsx('dl', { className: `sw-kv ${className}`.trim(), children: rows.flatMap(([k, v], n) => [jsx('dt', { children: hudCaps(k) }, `k${n}`), jsx('dd', { children: v }, `v${n}`)]) })
 }
@@ -3616,12 +3626,12 @@ function splitPath(path) {
 }
 
 /** A folder as its group heading: relative to the chat's folder when inside it, else cut from the left. */
-export function dirLabel(dir, cwd, t = enT) {
+export function dirLabel(dir, cwd, t = enT, cut = true) {
   const d = pathKey(dir)
   const c = cwd ? pathKey(cwd) : ''
   if (c && d === c) return t('sw.file.here')
   if (c && d.startsWith(`${c}/`)) return `./${dir.replace(/\\/g, '/').slice(cwd.replace(/[/\\]+$/, '').length + 1)}`
-  return dir.length > DIR_CHARS ? `…${dir.slice(-(DIR_CHARS - 1))}` : dir
+  return cut && dir.length > DIR_CHARS ? `…${dir.slice(-(DIR_CHARS - 1))}` : dir
 }
 
 /**
@@ -3881,7 +3891,7 @@ export function Page() {
             jsx(FleetAgent, { t, u: sel, subs, files, waitingOn: active }, 'agent'),
             jsx(FleetLog, { t, subs, selected: sel.key, onSelect: setSelected, now }, 'log'),
             jsx(HudPanel, {
-              title: t('sw.hudAgents.detail'), name: sel.main ? main.name : sel.name, span: 6, className: 'sw-hdetail', fold: true,
+              title: t('sw.hudAgents.detail'), name: agentLabel(sel.main ? main : sel), span: 6, className: 'sw-hdetail', fold: true,
               children: [sel.main
                 ? jsx(MainPanel, { t, theme, main, files, touching: calm ? new Map() : touching, tool: calm ? null : tool, waitingOn: active, onToast }, 'focus-main')
                 : jsx(SubPanel, { t, theme, u: sel, parentName, files, onToast }, `focus-${sel.key}`)]
@@ -4164,8 +4174,8 @@ const TM_PALETTE = `
  --tm-bg:transparent;--tm-raised:var(--ui-bg-card);--tm-shade:var(--ui-bg-chrome);
  --tm-hi:var(--ui-text-primary);--tm-name:var(--ui-text-primary);--tm-ink:color-mix(in srgb,var(--ui-text-primary) 55%,var(--ui-text-secondary));
  --tm-dim:var(--ui-text-secondary);--tm-line:var(--ui-stroke-tertiary);
- --tm-badline:color-mix(in srgb,var(--ui-red) 40%,transparent);--tm-run:color-mix(in srgb,var(--ui-yellow) 82%,var(--ui-base));
- --tm-bad:color-mix(in srgb,var(--ui-red) 82%,var(--ui-base));--tm-glow:color-mix(in srgb,var(--tm-acc) 40%,transparent);
+ --tm-badline:color-mix(in srgb,var(--ui-red) 40%,transparent);--tm-run:light-dark(oklch(from color-mix(in srgb,var(--ui-yellow) 82%,var(--ui-base)) min(l,.5) c h),color-mix(in srgb,var(--ui-yellow) 82%,var(--ui-base)));
+ --tm-bad:light-dark(oklch(from color-mix(in srgb,var(--ui-red) 82%,var(--ui-base)) min(l,.5) c h),color-mix(in srgb,var(--ui-red) 82%,var(--ui-base)));--tm-glow:color-mix(in srgb,var(--tm-acc) 40%,transparent);
  --hud-page:transparent;--hud-hero:color-mix(in srgb,var(--ui-base) 2%,transparent);--hud-line2:var(--ui-stroke-secondary);
  --hud-grid:var(--ui-stroke-quaternary);--hud-track:color-mix(in srgb,var(--ui-base) 8%,transparent);
  --hud-teal:color-mix(in srgb,var(--tm-acc) 24%,transparent);--hud-teal-b:color-mix(in srgb,var(--tm-acc) 34%,transparent);--hud-teal-d:color-mix(in srgb,var(--tm-acc) 13%,transparent);
@@ -4209,11 +4219,15 @@ const CHIP_CSS = `${TM_PALETTE}
 
 const CSS = `${TM_PALETTE}
 .sw-page{height:100%;min-height:0;overflow:auto;padding:16px 20px;font-size:12.5px;--mono:var(--dt-font-mono,ui-monospace,monospace)}
-.sw-page:not([data-theme=terminal]){--a:var(--ui-accent);--ink:var(--ui-text-primary);--dim:var(--ui-text-secondary);--bg:var(--dt-background);
+.sw-page:not([data-theme=terminal]){--a:var(--ui-accent);--ink:var(--ui-text-primary);--dim:var(--ui-text-secondary);--bg:var(--dt-background);--solid:var(--bg);
  --run:var(--a);--ok:var(--ink);--bad:var(--ui-red);--idle:var(--ui-text-tertiary);--line:color-mix(in srgb,var(--ink) 11%,transparent);
- --raised:color-mix(in srgb,var(--ink) 8%,var(--bg));--tile:color-mix(in srgb,var(--ink) 5%,var(--bg));--off:color-mix(in srgb,var(--ink) 16%,var(--bg))}
-.sw-page[data-theme=terminal]{--a:var(--tm-acc);--ink:var(--tm-ink);--dim:var(--tm-dim);--bg:var(--tm-bg);
+ --raised:color-mix(in srgb,var(--ink) 8%,var(--bg));--tile:color-mix(in srgb,var(--ink) 5%,var(--bg));--off:color-mix(in srgb,var(--ink) 16%,var(--bg));--pop:var(--raised)}
+/* --solid: an opaque ground (Terminal's --bg is transparent, and a canvas reads transparent as black);
+   --pop: anything drawn OVER other content (a menu) — opaque, or the content under it shows through */
+.sw-page[data-theme=terminal]{--a:var(--tm-acc);--ink:var(--tm-ink);--dim:var(--tm-dim);--bg:var(--tm-bg);--solid:var(--dt-background);
+ --pop:color-mix(in srgb,var(--ui-text-primary) 7%,var(--dt-background));
  --run:var(--tm-run);--ok:var(--tm-ok);--bad:var(--tm-bad);--idle:var(--tm-dim);--line:var(--tm-line);--raised:var(--tm-raised)}
+.sw-page{font-variant-emoji:text}
 .sw-page [data-st=running]{--c:var(--run)}
 .sw-page [data-st=completed]{--c:var(--ok)}
 .sw-page [data-st=failed]{--c:var(--bad)}
@@ -4300,8 +4314,10 @@ const CSS = `${TM_PALETTE}
 .sw-pickn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw-back{margin-left:auto;font:12px var(--mono)!important;letter-spacing:.04em;text-transform:uppercase;color:var(--ink)!important;padding:3px 8px!important;box-shadow:inset 0 0 0 1px var(--a)}
 .sw-page[data-theme=terminal] .sw-back{box-shadow:none;text-transform:lowercase;letter-spacing:0;color:var(--a)!important;padding:0!important}
-.sw-page[data-theme=terminal] .sw-back::before{content:"[← "}.sw-page[data-theme=terminal] .sw-back::after{content:"]"}
-.sw-menu{position:absolute;z-index:8;left:0;top:calc(100% + 6px);width:min(380px,100%);padding:6px;background:var(--raised);color:var(--ink);
+.sw-page[data-theme=terminal] :is(.sw-back,.sw-more:not(.sw-inl)){padding:2px 9px!important;font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink)!important;background:none;box-shadow:inset 0 0 0 1px var(--hud-line2)}
+.sw-page[data-theme=terminal] :is(.sw-back,.sw-more:not(.sw-inl)):hover{color:var(--tm-hi)!important;box-shadow:inset 0 0 0 1px var(--hud-teal-b)}
+.sw-page[data-theme=terminal] .sw-back::before{content:"← "}
+.sw-menu{position:absolute;z-index:8;left:0;top:calc(100% + 6px);width:min(380px,100%);padding:6px;background:var(--pop);color:var(--ink);
  box-shadow:0 10px 30px color-mix(in srgb,var(--bg) 70%,transparent),inset 0 0 0 1px var(--a)}
 .sw-mr{display:flex;align-items:center;gap:10px;width:100%;padding:7px 10px}
 .sw-mr:hover,.sw-mr.is-on{background:color-mix(in srgb,var(--a) 16%,transparent)}
@@ -4316,7 +4332,7 @@ const CSS = `${TM_PALETTE}
 .sw-more{display:block;margin:4px 0 0 14px;font:12px var(--mono)!important;letter-spacing:.04em;text-transform:uppercase;color:var(--ink)!important;text-decoration:underline;text-decoration-color:var(--a);text-underline-offset:3px}
 .sw-more.sw-inl{display:inline;margin:0 0 0 6px}
 .sw-page[data-theme=terminal] .sw-more{text-transform:lowercase;letter-spacing:0;text-decoration:none;color:var(--a)!important}
-.sw-page[data-theme=terminal] .sw-more::before{content:"[+] "}
+.sw-page[data-theme=terminal] .sw-more.sw-inl::before{content:"+ "}
 /* score */
 .sw-score{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
 .sw-sseg{flex:1;min-width:120px}
@@ -4463,7 +4479,10 @@ const CSS = `${TM_PALETTE}
 /* Terminal: one grid for all file lists; each list and row borrows its columns (subgrid). Columns are
    as wide as their longest entry (a long name or folder is cut at 32 / 24 characters), the spare width
    goes to the end — no gap in the middle of a row. */
-.sw-page[data-theme=terminal] .sw-flist{display:grid;grid-template-columns:14px fit-content(32ch) fit-content(24ch) 64px max-content max-content 1fr;column-gap:14px}
+.sw-page[data-theme=terminal] .sw-flist{display:grid;grid-template-columns:14px fit-content(32ch) minmax(8ch,1fr) 64px max-content max-content;column-gap:14px}
+/* a folder is cut at its start: the end of a path names the folder */
+.sw-page .sw-fd{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;direction:rtl;text-align:left}
+.sw-page .sw-fd bdi{direction:ltr;unicode-bidi:isolate}
 .sw-page[data-theme=terminal] .sw-flist>.sw-fsec{grid-column:1/-1;display:grid;grid-template-columns:subgrid;column-gap:normal;align-content:start}
 .sw-page[data-theme=terminal] .sw-flist>.sw-fsec>*{grid-column:1/-1}
 .sw-page[data-theme=terminal] .sw-flist .sw-fgrid{display:grid;grid-template-columns:subgrid;column-gap:normal;row-gap:0}
@@ -4472,7 +4491,7 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-ft:hover{background:color-mix(in srgb,var(--a) 10%,transparent)}
 .sw-page[data-theme=terminal] .sw-ft::before{content:"";grid-column:1;grid-row:1}
 .sw-page[data-theme=terminal] .sw-ft.is-now{background:color-mix(in srgb,var(--run) 12%,transparent);box-shadow:none}
-.sw-page[data-theme=terminal] .sw-ft.is-now::before{content:"▶";color:var(--run)}
+.sw-page[data-theme=terminal] .sw-ft.is-now::before{content:"▶\\FE0E";color:var(--run)}
 .sw-page[data-theme=terminal] .sw-pipr{display:contents}
 .sw-page[data-theme=terminal] .sw-fn{grid-column:2;grid-row:1;padding:0;font-weight:400}
 .sw-page[data-theme=terminal] .sw-fd{grid-column:3;grid-row:1}
@@ -4514,7 +4533,7 @@ const CSS = `${TM_PALETTE}
 .sw-cmerr .sw-btns{margin-top:10px}
 .sw-quiet{margin:0;padding:14px;text-align:center;font:12px var(--mono);letter-spacing:.04em;color:var(--dim)}
 .sw-pu{margin:8px 0 0;color:var(--dim)}
-.sw-pu::before{content:"⚠ ";color:var(--run)}
+.sw-pu::before{content:"⚠\\FE0E  ";color:var(--run)}
 .sw-page[data-theme=terminal] .sw-exit{width:auto;height:auto;padding:4px 12px;clip-path:none;background:none;border:1px solid currentColor;color:color-mix(in srgb,var(--c) 80%,var(--ink));line-height:1.1}
 .sw-page[data-theme=terminal] .sw-exit b{font-size:15px;color:inherit;text-shadow:none}
 .sw-page[data-theme=terminal] .sw-exit span{color:inherit;letter-spacing:0}
@@ -4968,7 +4987,10 @@ const CSS = `${TM_PALETTE}
    number, the file lists are ticked sub-panels, the blocks are the FILES panel's cells, the portrait a
    ticked tile on the station grid, the state a chip. One tick recipe for panels, counters and lists. */
 .sw-page[data-theme=terminal]{--hud-ticks:linear-gradient(var(--hud-tick),var(--hud-tick)) left top/8px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) left top/1px 8px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right top/8px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right top/1px 8px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) left bottom/8px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) left bottom/1px 8px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right bottom/8px 1px no-repeat,linear-gradient(var(--hud-tick),var(--hud-tick)) right bottom/1px 8px no-repeat}
-.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-hero{grid-template-columns:auto minmax(0,1fr);gap:14px;align-items:center;margin-top:2px}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-hero{grid-template-columns:minmax(0,1fr);gap:14px;align-items:center;margin-top:2px}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-hero .sw-por{display:none}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile[data-k=failed]{--tc:var(--bad)}
+.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-fsec[data-sec=failed] .sw-ft{--fc:var(--bad)}
 .sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-por{width:auto;gap:5px}
 .sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-pg{position:relative;overflow:hidden;width:56px;height:46px;border:0;font-size:18px;color:var(--c);
  background:var(--hud-ticks),linear-gradient(var(--hud-grid) 1px,transparent 1px) -1px -1px/9px 9px,linear-gradient(90deg,var(--hud-grid) 1px,transparent 1px) -1px -1px/9px 9px,color-mix(in srgb,var(--c) 7%,transparent);
@@ -4980,7 +5002,6 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:14px 0 0}
 .sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile{--tc:var(--a);position:relative;display:flex;flex-direction:column-reverse;justify-content:flex-end;gap:9px;min-width:0;padding:9px 11px 11px;
  background:color-mix(in srgb,var(--tc) 4%,transparent);box-shadow:inset 0 0 0 1px var(--line)}
-.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile[data-k=touched]{--tc:var(--ink)}
 .sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile[data-k=read]{--tc:var(--hud-teal-b)}
 .sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile::before{display:block;content:"";position:absolute;inset:0;width:auto;pointer-events:none;background:var(--hud-ticks);box-shadow:none}
 .sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile::after{content:"";position:absolute;left:11px;right:11px;bottom:0;height:2px;background:var(--tc);box-shadow:0 0 8px var(--tc);transform-origin:left;transform:scaleX(var(--p,0))}
