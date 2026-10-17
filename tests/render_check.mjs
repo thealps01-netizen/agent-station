@@ -1037,7 +1037,7 @@ await quiet(async () => { await refresh(); await tick(3100) })
 check(listCalls() > gaveUp && !(q('[role=alert]')?.textContent || '').includes('live updates failing'), `Refresh polls at once and clears the alert (${gaveUp} -> ${listCalls()})`)
 // A slowed poll recovers by itself: three more failures, then the gateway answers on the slow tick.
 stub.state.listFails = true
-await quiet(async () => { for (let i = 0; i < 3; i++) await tick(3100) })
+await quiet(async () => { for (let i = 0; i < 3; i++) await fire(3000) })
 check((q('[role=alert]')?.textContent || '').includes('live updates failing'), 'three failures show the alert again')
 stub.state.listFails = false
 await fire(SLOW_POLL)
@@ -1045,7 +1045,7 @@ check(!(q('[role=alert]')?.textContent || '').includes('live updates failing') &
   'the slowed poll answers, the alert goes by itself and polling is back to every 3 s')
 // 4001: Hermes does not hold this runtime right now (a resume or reconnect in flight) — no alert, slow polls.
 stub.state.listGone = true
-await quiet(async () => { for (let i = 0; i < 4; i++) await tick(3100) })
+await quiet(async () => { for (let i = 0; i < 4; i++) await fire(3000) })
 check(!q('[role=alert]') || !(q('[role=alert]')?.textContent || '').includes('live updates'),
   `a runtime Hermes does not hold is not shown as a failure (${q('[role=alert]')?.textContent})`)
 check(pending(SLOW_POLL).length === 1 && pending(3000).length === 0, 'a runtime Hermes does not hold is asked again every 30 s, not every 3 s')
@@ -1308,7 +1308,7 @@ stub.state.listFails = false
 await fire(SLOW_POLL)
 check(chip()?.dataset.st !== 'failed' && !/not updating/.test(chip()?.dataset.tip || ''), `the chip's slowed poll answers and the chip recovers by itself (${chip()?.dataset.tip})`)
 stub.state.listGone = true
-await quiet(async () => { for (let i = 0; i < 4; i++) await tick(3100) })
+await quiet(async () => { for (let i = 0; i < 4; i++) await fire(3000) })
 check(chip()?.dataset.st !== 'failed' && pending(SLOW_POLL).length >= 1, `a runtime Hermes does not hold never turns the chip red (${chip()?.dataset.st})`)
 stub.state.listGone = false
 await fire(SLOW_POLL)
