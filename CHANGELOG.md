@@ -1,7 +1,249 @@
 # Changelog
 
-All notable changes to subagent-watch. The top `## <version>` heading is checked against
+All notable changes to Agent Station. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
+
+## 3.0.0 — 2026-10-17
+
+The plugin is now called **Agent Station** (id `agent-station`, route `/agent-station`). The old name
+said "subagents", but the page shows the main agent and its subagents, the chat's background commands
+and a Replay of the file edits; the sidebar entry now reads "Agent Station" too.
+
+- **Install from the app.** Settings → Capabilities → Plugins → Install from Git, paste the
+  repository's web address, keep "Enable agent plugin after install" on. Hermes copies the desktop
+  page by itself: the manual copy step is gone. From a terminal: `hermes plugins install <repository
+  URL> --enable`.
+- **Requires Hermes 0.21.7 or newer, tested up to 0.22.2.** `plugin.yaml` declares it
+  (`requires_hermes`), so an older Hermes says so instead of loading a half-working page. Your Hermes
+  version is in Settings → About.
+- Settings: nothing to carry over. The page's only stored setting (the look) was never written, so
+  the new id starts exactly where the old one was.
+- The DETAIL panel is drawn in the HUD's style: no second portrait, no unlabelled bars, an "Edit
+  failed" list, and the folder column shortened once at its start.
+- A failed edit is never counted as a changed file: FILES, AGENT and DETAIL now agree.
+- Panel titles keep their letter O (no more Ø), menus and the canvas drawings sit on a solid ground,
+  and each agent has one name everywhere.
+- Nothing is cut off or overlapping at 915, 560 or 380 px wide: callout values, durations and the
+  FILES legend stay whole.
+- Empty panels follow one rule: they say there is nothing yet instead of drawing zeros and empty
+  axes.
+- Every number is set in the code font with even-width figures, so columns line up.
+- Scroll lists (LOG, COMMANDS, requests, diff, console) end on a whole row, never half a line.
+
+**Moving from Subagent Watch.** Remove the old plugin first: Plugins → Uninstall "subagent-watch", or
+`hermes plugins remove subagent-watch`. If a "Subagents" entry is still in the sidebar afterwards,
+uninstall the remaining Desktop row or delete `<Hermes home>/desktop-plugins/subagent-watch`. Then
+install Agent Station. Keeping both shows two sidebar entries and two status-bar chips.
+
+## 2.4.0 — 2026-10-15
+
+The Replay tab gets a WORMHOLE panel above the DIFF, from a draft the user picked on video (the scan plane
+variant; a route, a helix and a spaceship were tried and turned down first).
+
+- **Fonts come from Hermes.** Text uses the app's UI font (`--dt-font-sans`, which also follows the chat
+  font picked in Hermes settings); code, diffs and numbers use the app's code font (`--dt-font-mono`,
+  shipped with Hermes, so the same on every machine), both at the app's regular weight. The fixed
+  Cascadia Mono Light is gone, from the panel and the status-bar chip. Sizes are unchanged.
+- Two warped grid sheets joined by a narrow throat, drawn in the FLEET station's thin glowing lines; the
+  grid's circles flow into the throat.
+- The request's edits are rings on the throat, the oldest at the bottom: colour says what an edit did
+  (edit / write / delete / failed), weight how many lines it changed; a failed ring is dashed and flickers.
+  Up to eight rings round the current edit are shown; the readouts count the whole request.
+- A scan plane (rings, radial lines, a turning radar sweep) rides the throat to the current edit when
+  Play, Previous / Next, the marks or the log move it, and the arrived ring sends a ripple over its sheet.
+- FLEET's callouts name each ring's file with what it did and its line counts; a callout opens its edit.
+  A box says which edit of how many; corner readouts count edits, writes, failed edits, lines added and
+  removed, and files.
+- Colours from the theme's tokens; reduced motion draws one still frame a second; without a 2D canvas the
+  panel stays hidden.
+
+## 2.3.0 — 2026-10-15
+
+The Commands tab gets an ORBIT panel in the FLEET station's style, from a draft the user approved on video.
+(2.2.0, a holographic globe in another style, was withdrawn the same day and is not part of this line.)
+
+- Above the CONSOLE, a wireframe planet turns in the station's thin glowing lines (its camera, stars,
+  ping, construction intro and chamfered frame): latitude rings, meridians, continents, an equator band.
+- Every command shown has its own inclined orbit and is a small wireframe satellite on it: running flies
+  with a trail and a pulse, finished is parked and lit, failed flickers red on a dashed red orbit,
+  stopped is a dashed outline, frozen.
+- FLEET's own callouts name up to six commands (the picked one always among them) with status and time;
+  a callout picks its command like a list row. Each leader runs to a pin on its orbit on the callout's
+  side, so lines never cross the planet; the picked satellite gets FLEET's brackets. A box counts the
+  commands in flight and the ended ones; corner readouts count running, failed and stopped.
+- Colours from the theme's tokens; reduced motion draws one still frame a second; without a 2D canvas
+  the panel stays hidden.
+
+## 2.1.0 — 2026-10-14
+
+The FLEET station comes alive, from drafts the user approved on video.
+
+- The station is drawn live on a canvas in thin glowing lines: a ribbed wheel with habitat windows,
+  a top rail and hull blocks on four truss spokes round a central column (collar ring, fuel tanks,
+  solar arrays), a deck disc with two dishes, a command sphere under the MAIN box and a docking mast.
+  It is drawn in part by part on first paint; the wheel, disc and sphere turn, faster while the main
+  agent works; a scan ring rides the column and a ping rolls across the wheel.
+- Each subagent is a module on the rim, level with its callout: working pulses and a scan bar crosses
+  it, done glows steady, failed flickers red, waiting is a dashed outline; the group callout is a row
+  of slivers. The top module keeps clear of the command sphere.
+- Film-style readouts type in at the station's top corners (scan, core, wings on the left; working,
+  failed, waiting counts on the right), callouts slide in from their side, panel titles type in.
+- DETAIL reads like the HUD's own panels: boxed counters with gauges, caps headings over hairlines.
+- Colours come from the page's tokens, read through the canvas, so the scene follows every theme.
+  Reduced motion or an earlier run: one still frame, refreshed once a second. Without a 2D canvas the
+  SVG schematic stays.
+- Gates: render checks for the canvas, its fallback, token colours and hand-back; four new canaries.
+  Readout text is 11.5px, the page's floor.
+
+## 2.0.0 — 2026-10-14
+
+The page is redrawn as a mission-control HUD, from a reference the user picked: a black ground,
+near-black panels on hairlines, one mint accent with dark-teal tracks, grey caps titles, a light
+monospace. The colours are fixed, so the page looks the same in every app theme; the status-bar chip
+still takes the theme's colours. Red marks only a failure, amber only something still running.
+
+### Changed
+
+- **The HUD follows the Hermes theme.** It uses the app's own tokens as they are: a see-through ground
+  (the window's glass shows through, as behind the chat), the app's translucent card for panels, its
+  strokes, text levels, diff colours, active-row fill and mono font. The accent is the theme accent, held
+  light enough to read on a dark ground; red and amber are the theme's status colours. No colour is fixed.
+- **HUD light and motion.** Panels carry accent corner ticks and power on one after another; time bars and
+  the chart fill in, with glowing markers and a filled curve; the picked tab, big numbers and changed-file
+  tiles glow faintly; the tabs sit on the title row; the playback strip is a band of ticks with text
+  PREVIOUS / PLAY / NEXT; callout chips are filled. While Play types, a scan line sweeps the diff and a
+  number that changes rolls in. Reduced motion stops all of it.
+- **One order on every tab.** Three type sizes (11.5 px text, 14 px names, 28 px numbers) and two letter
+  spacings; the line under the title is the same strip on every tab (Replay's text shortened to one line);
+  TIME PER AGENT draws its shared scale once instead of under every agent; the FILES legend stays on one
+  line. DETAIL starts folded under its title row (click to open). The done count is no longer repeated in
+  SPENT and the main agent card. Replay: PLAYBACK is a full-width strip under the diff, then LINES CHANGED,
+  LINES SO FAR and FILE in one row, then the log; FILE no longer repeats the diff's file name and status.
+- **11 px text.** The HUD page is scaled (CSS zoom .9566) so its smallest text lands at 11 px, and the
+  leader lines convert screen pixels back to the scaled page so they still meet their rows.
+- **Denser, like the draft.** 11.5 px body text, one 8 px gutter and no frame around the panels, tighter
+  fleet nodes and smaller large numbers, no text glow. DETAIL sits on the same ground as the other panels,
+  names its agent in its title instead of a second focus label, and has a smaller portrait.
+- **Play types the edit out, as in the draft.** Each removed line is struck through and dims, then each
+  added line is typed in letter by letter, one line every 0.9 s (faster on a long edit, so it ends near
+  9 s), behind a block cursor with an accent bar on the line being typed; the list follows that line.
+  Play stays on an edit until it is done. A failed edit was never applied, so it stands still. Reduced
+  motion shows every edit whole. (The typing was a CSS width on an inline span, which does nothing: lines
+  showed whole at once. It is now done in script, so it also types wrapped lines.)
+- **Replay shows the code whole.** The diff takes the panel's full width and long lines wrap instead of
+  being cut off behind a callout column; each row has its line number. What a part of the edit did
+  ("2 LINES REPLACED −2 +3") sits on its FROM LINE header row, and a whole-file write gets one from line 1.
+- **Run text keeps its case in HUD titles.** A command or a file name next to a caps title
+  (`CØNSØLE · python build.py`, `DIFF · plugin.js`) and the agent names in TIME PER AGENT read as typed;
+  only our own labels are capitalised.
+- **Shorter list times.** Within a week a time reads `Tue 23:56` instead of `yesterday 23:56`, which
+  left the command column a few letters wide.
+- A failed command's gauge says FAILED, not FINISHED; the fleet says SUBAGENTS DØNE, not RUN CØMPLETE,
+  while the main agent still works; FILES groups its cells changed, failed, read; DETAIL's file
+  sections use the HUD's caps headings instead of boxed frames.
+- **Replay is a HUD.** A six-column grid: your requests on top; the edit's lines on a faint grid, each
+  part headed by where it starts and what it did; LINES CHANGED (added, removed, this edit, each against the request's largest); LINES SO FAR
+  (applied lines up to this edit over the request's total, a curve with failed edits ticked in red);
+  PLAYBACK (one cell per edit, Previous / Play / Next); FILE (name, folder, what changed, the request);
+  LOG (every edit with its time, EDIT / WRITE / DELETE / MOVE / FAILED and its +/−; a row opens it).
+  Below 540 px the panels stack and the callouts give way.
+- **Agents is a HUD.** FLEET is a wireframe space station drawn in isometric lines. Its core is the main
+  agent, with a box above it saying what it does and how many subagents are done. Each subagent is a wing
+  of 8 × 2 cells: amber cells run along it while it works, it fills in the accent when done (its frame
+  flashes once), three cells turn red and it shakes once when it fails, a waiting wing is dashed. A
+  callout per wing (name, state, time) sits in a column at each side on a leader line to the wing's
+  nearest corner; a click selects it. At most six wings fit, three a side, without touching: past six
+  subagents five wings go to those that need eyes (failed, then working, then waiting) and an outer sixth
+  holds the rest, its callout a coloured mark and count per state (+9 MØRE ■6 ■2 ⬚1). Below 540 px the
+  station stays and the callouts drop under it as a list. Then TIME PER AGENT (as many tracks as wings,
+  the rest counted) (each run time against the longest),
+  SPENT (cost, tokens, tools, done n/N), FILES (a cell per file: changed, failed, only read), AGENT (the
+  selected agent's model, time, tools · tokens · cost, task), LOG (a row per subagent; a row selects it)
+  and DETAIL (the full focus panel: files worked on now, changed and read, the answer, its buttons).
+- **Type as in the reference: a light grey mono.** Cascadia Mono Light where the system has it
+  (Windows 11), else the app's own mono, at one light weight everywhere; caps labels keep a slight
+  .04em letter spacing instead of .12em.
+- **Commands is a HUD.** CONSOLE across the grid: the picked command's output on the faint grid with
+  line numbers, failing lines marked red, a FINISHED / RUNNING gauge and a FIRST ERROR callout tied by a
+  leader line to that line; below it COMMANDS (one row per command: start time, a status square and
+  word, the command on one line, its exit and duration; a row picks it, the newest by default) and
+  PROCESS (command, folder, ran, exit, lines, Copy output / Copy command). Rows no longer fold open.
+- **Agents and Commands take the same look:** caps titles and tabs ("01 AGENTS"), square hairline
+  panels, no scanlines, quiet outlined buttons.
+- A failed request's count keeps its text in the reading colour and carries a red mark.
+
+## 1.8.0 — 2026-10-12
+
+### Added
+
+- **Replay tab** (Agents | Commands | Replay). Your requests in this chat, newest first, each with
+  "N edits · N files" (and how many failed). Pick one and its edits play one at a time: "Edit 3 of 4",
+  Previous / Next, Play (one edit every 1.5 s), and a row of numbered marks named by file. Each edit
+  names its file and folder, says in words what it did (+N lines added · −N lines removed, wrote the
+  whole file, deleted, moved), who made it (the main agent or a helper) and when, then shows the
+  lines: removed on red with −, added on green with +, context dimmed, "from line N" where Hermes
+  recorded it. 40 lines first, then Show the rest; long lines scroll inside the box. A failed edit
+  says why and that the file did not change. Read-only: no undo here. Changes made by scripts or
+  commands are not shown, and the tab says so.
+- Backend: `GET /replay` (the list, without lines) and `GET /replay_step` (one edit's lines; 403
+  for another chat's edit).
+
+### Fixed
+
+- **An edit no longer counts twice after compression.** Compressing a chat writes a copy of the kept
+  turns under the same call id; the files list counted the copy as a second edit (in this install
+  12,235 of 32,214 recent call ids had such a copy). Each call is now read once.
+
+## 1.7.0 — 2026-10-11
+
+One look, one layout. The 1.6.0 deck tied agents to files with letters and colours, which read as a
+code to learn; the page now names each agent by what it is doing and shows one agent at a time.
+
+### Changed
+
+- **One look: Terminal.** A CRT console whose ink and glow are your theme's accent (its statuses the
+  theme's green, red and yellow, its ground derived from the theme background), with ASCII sprite
+  boxes and `[RUN]` / `[OK ]` / `[ERR]` tags. No colour is hard-coded anywhere — the static audit's
+  former exception for a fixed Terminal palette is gone. The status-bar chip takes the same look.
+  Looks tried during 1.7.0 (Cockpit, Dot matrix, Live map) were removed; a choice an earlier build kept
+  in `ctx.storage` reads as Terminal. Run text is never laid out in full: one line with an ellipsis,
+  the whole of it (up to 300 characters) in the tooltip.
+- **The main agent is a unit too,** the first one, starred (★ main-agent) and selected by default.
+  Each unit's sprite is what it is doing — editing, reading, running a command, waiting, done, failed,
+  stopped, idle. No letter badges anywhere.
+- **One focus panel** below the units shows the selected agent. Its top is a hero: a bordered
+  portrait with its status glyph, tagged MAIN or with its status tag, a verb line
+  (▶ EDITING NOW, ✕ STOPPED WITH AN ERROR, …), a large headline — the file the main agent works on
+  now, a subagent's task — and where / how long, with a subagent's model · effort chip. Labelled stat
+  tiles follow: the main agent's on task (its first to last file touch) / files touched / changed /
+  only read; a subagent's run time / tool calls / tokens / cost. Changed files are a grid of cards
+  (name, folder, one block per edit up to 8 — more fill the row and the label says the real count —
+  N EDITS / FAILED / DELETED; 1 block = 1 edit); the file worked on now leads with a NOW badge. Files
+  only read are small chips with ×count and + N more. Terminal draws the same as bordered boxes with
+  bar rows. A subagent's task (Show all) and its answer as a transmission card in its status colour
+  (Terminal: a box labelled >> its answer), Copy answer and Open its chat as cut-corner keys. Hover a
+  file for its full path, click to copy it; the note that terminal and code-run changes are not
+  listed (Review › Last turn) stays.
+- **Run picker** replaces the Earlier list: "Current run ▾" lists earlier runs with mini status
+  cells, time ago, done/total and cost (+ Show N older runs); an earlier run is shown calmly with
+  Back to now.
+- **Tabs:** Agents | Commands (the badge counts running commands). The Commands tab says once what
+  these are and opens each command in place: its exit code in an EXIT box, dir / ran chips, the output tail in a CRT box with line numbers and error lines highlighted,
+  Copy output / Copy command. While it runs a radar says its output appears when it finishes; while
+  the output is read a scan bar runs; an unreadable output says NO SIGNAL with Try again; an empty
+  one says — IT PRINTED NOTHING —.
+- **More than 8 subagents become a swarm:** the main agent on top ("waiting on N"), failed ones by
+  name, working ones as small cells (hover names them, click selects), waiting and done collapsed.
+  At narrow widths units wrap; nothing scrolls sideways.
+- **Motion:** the score counts up as units finish, a failing one shakes red, the busy main agent
+  breathes; a unit retypes its tag and the headline blinks a cursor. When a panel opens its
+  numbers count up, the file cards appear in turn, a light sweeps the NOW card and the answer
+  reveals. All of it is off under reduced motion.
+
+### Removed
+
+- Agent letters and colours, the live log, the separate Files section and the Earlier list — their
+  information lives in the units, the focus panel and the run picker.
 
 ## 1.6.0 — 2026-10-11
 

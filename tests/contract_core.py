@@ -1,4 +1,4 @@
-"""Core contract: everything subagent-watch reads from Hermes still exists under the name it reads.
+"""Core contract: everything agent-station reads from Hermes still exists under the name it reads.
 
 Why: the panel never imports most of what it depends on. The backend opens `state.db` by column
 name and reads Hermes' own process files by key; the desktop page listens for gateway events by
@@ -18,13 +18,17 @@ Checked against the core checkout (`HERMES_AGENT_DIR`, see env.py):
   cost       a worker's complete frame still carries `cost_usd`; Hermes' CostStatus still names
              the statuses the backend and page read (actual / estimated / included / unknown)
   sdk        every name the page imports from `@hermes/plugin-sdk` is exported, the two
-             `host.state` atoms it reads exist, `host.navigate` exists (the progress chip opens the
-             page), and `ctx.pet` keeps `say` / `clear` / `visible` (the progress line)
+             `host.state` atoms it reads exist, `host.state.busyBySession` exists (the main agent's
+             busy state), `host.navigate` exists (the progress chip opens the page), `ctx.pet` keeps
+             `say` / `clear` / `visible` (the progress line), and `ctx.storage` keeps a synchronous
+             `get(key, fallback)` / `set(key, value)` (the kept Cockpit / Terminal look)
   files      the file tools keep their names and `path` / `mode` / `patch` arguments (patch mode
              defaults to "replace"); Hermes' V4A parser keeps `parse_v4a_patch` and its update / add /
              delete / move operations with `new_path`; `tool.start` / `tool.complete` are declared with
              `tool_id` / `name` / `args`, and write_file / patch keep their lifecycle even with tool
-             progress off; a compressed result stub still says ` FAILED:` / `BLOCKED, not run`;
+             progress off (`_TOOL_LIFECYCLE_UI_TOOLS`, read from whichever of `tui_gateway/server.py`
+             and `tui_gateway/agent_factory.py` defines it — the core moved it between releases); a
+             compressed result stub still says ` FAILED:` / `BLOCKED, not run`;
              `ctx.setTimeout` exists (the shimmer's linger)
 
 Running:
@@ -61,6 +65,10 @@ PET_FILE = "apps/desktop/src/contrib/plugin.ts"
 FILE_TOOLS_FILE = "tools/file_tools.py"
 PATCH_PARSER_FILE = "tools/patch_parser.py"
 SERVER_FILE = "tui_gateway/server.py"
+AGENT_FACTORY_FILE = "tui_gateway/agent_factory.py"
+LIFECYCLE_FILES = (SERVER_FILE, AGENT_FACTORY_FILE)
+LIFECYCLE = "<the file defining _TOOL_LIFECYCLE_UI_TOOLS>"  # a BREAKS target resolved per core
+_LIFECYCLE_SET = re.compile(r"_TOOL_LIFECYCLE_UI_TOOLS = frozenset\(\{(.*?)\}\)", re.S)
 COMPRESSOR_FILE = "agent/context_compressor.py"
 FILE_TOOL_NAMES = ("read_file", "write_file", "patch")
 V4A_OPS = ("update", "add", "delete", "move")
@@ -80,6 +88,15 @@ def _read(core: Path, rel: str, problems: list[str]) -> str:
     except OSError:
         problems.append(f"{rel}: missing from the core — the file this panel's contract lives in moved")
         return ""
+
+
+def _lifecycle_file(core: Path) -> str | None:
+    """The core file that defines `_TOOL_LIFECYCLE_UI_TOOLS` (it moved from server.py to agent_factory.py)."""
+    for rel in LIFECYCLE_FILES:
+        path = core / rel
+        if path.is_file() and _LIFECYCLE_SET.search(path.read_text(encoding="utf-8")):
+            return rel
+    return None
 
 
 def _create_table_columns(schema: str, table: str) -> set[str]:
@@ -209,6 +226,13 @@ def check(core: Path) -> list[str]:
             problems.append(f"{PRICING_FILE}: new cost status `{status}` — the backend would read it as not priced")
 
     plugin_ts = _read(core, PET_FILE, problems)
+    if plugin_ts and not re.search(r"^\s+storage: PluginStorage$", plugin_ts, re.M):
+        problems.append(f"{PET_FILE}: `ctx.storage` is gone — the page keeps its look (Cockpit / Terminal) there")
+    store = re.search(r"export interface PluginStorage \{(.*?)\n\}", plugin_ts, re.S)
+    if plugin_ts and not (store and re.search(r"^\s+get<T>\(key: string, fallback: T\): T$", store.group(1), re.M)
+                          and re.search(r"^\s+set\(key: string, value: unknown\): void$", store.group(1), re.M)):
+        problems.append(f"{PET_FILE}: `PluginStorage.get/set` are no longer synchronous (get<T>(key, fallback): T) — "
+                        "the page reads its kept look at first render")
     if plugin_ts and not re.search(r"^\s+pet: PluginPet$", plugin_ts, re.M):
         problems.append(f"{PET_FILE}: `ctx.pet` is gone — the progress line in the pet's bubble would never show")
     pet = re.search(r"export interface PluginPet \{(.*?)\n\}", plugin_ts, re.S)
@@ -228,6 +252,9 @@ def check(core: Path) -> list[str]:
         for atom in HOST_STATE_ATOMS:
             if not re.search(rf"^\s+{atom}: readonlyAtom", sdk, re.M):
                 problems.append(f"{SDK_FILE}: `host.state.{atom}` is gone — the page scopes everything by it")
+        if not re.search(r"^\s+busyBySession: readonlyAtom<Record<string, boolean>>", sdk, re.M):
+            problems.append(f"{SDK_FILE}: `host.state.busyBySession` is gone or changed — the main agent unit would "
+                            "never show it is busy")
 
     tools = _read(core, FILE_TOOLS_FILE, problems)
     if tools:
@@ -259,12 +286,16 @@ def check(core: Path) -> list[str]:
         for field in ("tool_id", "name", "args"):
             if not start or not re.search(rf"^\s+{field}:", start.group(1), re.M):
                 problems.append(f"{EVENTS_FILE}: `ToolStartPayload.{field}` is gone — the shimmer reads it")
-    server = _read(core, SERVER_FILE, problems)
-    lifecycle = re.search(r"_TOOL_LIFECYCLE_UI_TOOLS = frozenset\(\{(.*?)\}\)", server, re.S)
-    for name in ("write_file", "patch"):
-        if server and (not lifecycle or f"\"{name}\"" not in lifecycle.group(1)):
-            problems.append(f"{SERVER_FILE}: `{name}` left _TOOL_LIFECYCLE_UI_TOOLS — with tool progress off an "
-                            "edit would never shimmer")
+    lifecycle_file = _lifecycle_file(core)
+    if lifecycle_file is None:
+        problems.append(f"{' / '.join(LIFECYCLE_FILES)}: neither defines _TOOL_LIFECYCLE_UI_TOOLS — with tool "
+                        "progress off an edit would never shimmer")
+    else:
+        lifecycle = _LIFECYCLE_SET.search((core / lifecycle_file).read_text(encoding="utf-8"))
+        for name in ("write_file", "patch"):
+            if f"\"{name}\"" not in lifecycle.group(1):
+                problems.append(f"{lifecycle_file}: `{name}` left _TOOL_LIFECYCLE_UI_TOOLS — with tool progress off "
+                                "an edit would never shimmer")
     compressor = _read(core, COMPRESSOR_FILE, problems)
     if compressor:
         if 'label: str = "FAILED"' not in compressor or 'f" {label}: {preview}"' not in compressor:
@@ -290,7 +321,10 @@ BREAKS = [
     (REGISTRY_FILE, "completion_reason = \"killed\"", "completion_reason = \"terminated\"", "no longer records completion_reason"),
     (EVENTS_FILE, "(\"subagent.tool\",", "(\"subagent.tool_call\",", "event `subagent.tool` is not declared"),
     (STATUS_FILE, "    timeout = \"timeout\"\n", "    timeout = \"timeout\"\n    paused = \"paused\"\n", "wire status `paused`"),
-    (SDK_FILE, "  PanelEmpty,\n", "\n", "`PanelEmpty` is not exported"),
+    (SDK_FILE, "export { Tip, Tooltip", "export { Tooltip", "`Tip` is not exported"),
+    (SDK_FILE, "    busyBySession: readonlyAtom", "    busyMap: readonlyAtom", "`host.state.busyBySession` is gone"),
+    (PET_FILE, "  storage: PluginStorage\n", "  store: PluginStorage\n", "`ctx.storage` is gone"),
+    (PET_FILE, "get<T>(key: string, fallback: T): T", "get<T>(key: string, fallback: T): Promise<T>", "no longer synchronous"),
     (SDK_FILE, "    focusedStoredSessionId: readonlyAtom", "    storedSessionId: readonlyAtom", "`host.state.focusedStoredSessionId` is gone"),
     (SDK_FILE, "  navigate: (path", "  go: (path", "`host.navigate` is gone"),
     (SDK_FILE, "STATUSBAR_AREAS, ", "", "`STATUSBAR_AREAS` is not exported"),
@@ -309,7 +343,7 @@ BREAKS = [
     (PATCH_PARSER_FILE, "    DELETE = \"delete\"\n", "\n", "V4A operation `delete` is gone"),
     (EVENTS_FILE, "event(\"tool.start\"", "event(\"tool.begin\"", "event `tool.start` is not declared"),
     (EVENTS_FILE, "    tool_id: str\n    name: str\n    context:", "    id: str\n    name: str\n    context:", "`ToolStartPayload.tool_id` is gone"),
-    (SERVER_FILE, "\"edit_file\", \"patch\", \"write_file\",", "\"edit_file\",", "left _TOOL_LIFECYCLE_UI_TOOLS"),
+    (LIFECYCLE, "\"edit_file\", \"patch\", \"write_file\",", "\"edit_file\",", "left _TOOL_LIFECYCLE_UI_TOOLS"),
     (COMPRESSOR_FILE, 'label: str = "FAILED"', 'label: str = "ERROR"', "no longer says ' FAILED:'"),
     (COMPRESSOR_FILE, "BLOCKED, not run", "refused", "no longer says 'BLOCKED, not run'"),
     (PET_FILE, "  setTimeout: (fn", "  delay: (fn", "`ctx.setTimeout` is gone"),
@@ -325,6 +359,8 @@ def selftest(core: Path) -> int:
                 STATUS_FILE, SDK_FILE, CHILD_RUN_FILE, PRICING_FILE, PET_FILE, FILE_TOOLS_FILE, PATCH_PARSER_FILE,
                 SERVER_FILE, COMPRESSOR_FILE} | {str(p.relative_to(core)).replace("\\", "/")
                                            for p in (core / CONTRACTS_DIR).glob("*.py")}
+        if (core / AGENT_FACTORY_FILE).is_file():
+            rels.add(AGENT_FACTORY_FILE)
         for rel in rels:
             (fake / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(core / rel, fake / rel)
@@ -333,6 +369,7 @@ def selftest(core: Path) -> int:
             print(f"FAIL  the copied core is not clean before the breaks: {clean}")
             return 1
         for rel, old, new, fragment in BREAKS:
+            rel = _lifecycle_file(fake) if rel == LIFECYCLE else rel
             path = fake / rel
             original = path.read_text(encoding="utf-8")
             if old not in original:

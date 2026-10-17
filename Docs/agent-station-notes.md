@@ -1,8 +1,9 @@
-# subagent-watch — notes
+# Agent Station — notes
 
-Read-only desktop page for `delegate_task` workers of the focused chat, plus that chat's background
-shell commands (`terminal(background=true)`).
-Sidebar entry "Subagents" → route `/subagent-watch`.
+Read-only desktop page for the focused chat: the main agent and its `delegate_task` subagents, that
+chat's background shell commands (`terminal(background=true)`) and a Replay of its file edits.
+Sidebar entry "Agent Station" → route `/agent-station`. The plugin's earlier name and the move from
+it are in `CHANGELOG.md` (3.0.0) and the README.
 
 ## Layout
 - **Header** — the same card as the batches: icon, title, the watched chat's name (its newest
@@ -67,11 +68,11 @@ Sidebar entry "Subagents" → route `/subagent-watch`.
 |---|---|
 | Watched chat | the app's focused chat (`focusedStoredSessionId` / `focusedSessionId`), held while the last pointerdown/focusin landed in this page or in a `route-tile:` / `preview-tile:` zone — see below |
 | Live workers | gateway events `subagent.spawn_requested/start/progress/tool/complete`, filtered to the focused runtime session id; reconciled every 3 s by `subagent.list({session_id})` — see "Live reconciliation" |
-| Earlier batches | `GET /api/plugins/subagent-watch/children?session_id=<stored id>` — `dashboard/plugin_api.py` |
-| Full output | `GET /api/plugins/subagent-watch/output?session_id=<stored id>&worker_id=<child id>` — 403 unless the child was delegated from that chat (or a worker of it) |
-| Background commands | `GET /api/plugins/subagent-watch/processes?session_id=<stored id>`, polled every 3 s |
-| Command output tail | `GET /api/plugins/subagent-watch/process_output?session_id=<stored id>&process_id=<proc_…>` |
-| Files | `GET /api/plugins/subagent-watch/files?session_id=<stored id>`, polled every 3 s and after each file tool call ends — see "Files" |
+| Earlier batches | `GET /api/plugins/agent-station/children?session_id=<stored id>` — `dashboard/plugin_api.py` |
+| Full output | `GET /api/plugins/agent-station/output?session_id=<stored id>&worker_id=<child id>` — 403 unless the child was delegated from that chat (or a worker of it) |
+| Background commands | `GET /api/plugins/agent-station/processes?session_id=<stored id>`, polled every 3 s |
+| Command output tail | `GET /api/plugins/agent-station/process_output?session_id=<stored id>&process_id=<proc_…>` |
+| Files | `GET /api/plugins/agent-station/files?session_id=<stored id>`, polled every 3 s and after each file tool call ends — see "Files" |
 | Shimmer | gateway events `tool.start` / `tool.complete` of the focused runtime session id |
 
 The backend opens `state.db` with SQLite `mode=ro` (cannot write) and serves only sessions whose
@@ -170,14 +171,56 @@ Source: the `tool_calls` of every message in the chat's compression chain and it
   files are in its text, so neither shimmers; both appear on reload.
 - At most `MAX_FILES` (400) files are returned, the rest counted in `more`; the page draws 40 and a
   "N more" button. The answer is cached until a message lands in any covered session.
+- **One call, once.** Compressing a conversation keeps the original rows and writes copies of the
+  turns it keeps, under the same session id and the same call id; in this install 12,235 of 32,214
+  call ids over 20 days sat in state.db twice. Every call is read once by `(session id, call id)`
+  (`_tool_calls`); before 1.8.0 such a copy counted as a second edit. A result's copy may be a
+  one-line stub where the original holds the full answer, so the longer result text wins.
+
+### Replay
+Source: the same calls as Files, only `write_file` and `patch`, read by `build_replay`.
+- **Grouped under the request they followed.** A request is a `user` message of the chat's own
+  compression chain; a message Hermes posts in the user's place is not one: a `display_kind` set
+  (finished delegation, background process, steer, model switch) or text starting with one of
+  Hermes' own markers (`[CONTEXT COMPACTION`, `[ASYNC DELEGATION`, `[IMPORTANT: …background
+  process`, `[System`, …; `_NOT_A_REQUEST`). A compressed copy of a request (same time, same text)
+  is the same request. A message made of parts (`\x00json:` + JSON) reads as its text parts. An
+  edit belongs to the last request before it in time, a worker's edit too; edits before the first
+  request sit under "Before your first request". A request with no edit is not listed.
+- **The lines of an edit.** A `patch` (replace mode) shows the unified diff Hermes returned in its
+  result (`diff`), with the real line number of each hunk. A result compression replaced with a stub
+  no longer has it, so the edit falls back to `difflib` over the call's own `old_string` /
+  `new_string` (no line number: "next part"). A V4A patch is one edit per file it names, its hunks
+  read by Hermes' own parser; a delete has no lines, a move names its target. A `write_file` is the
+  whole file as added lines.
+- **Failed.** The same rule as Files; the edit carries the error text (300 characters) and says it
+  was tried, not applied.
+- **Blind spot, said on the page.** Like Files: a script or command that writes a file leaves no
+  edit here.
+- **Limits.** 40 newest requests (`more_turns`), 200 edits each (`more_steps`), 400 lines per edit
+  (`cut`), 400 characters per line. `/replay` sends the list without lines; the page reads one edit's
+  lines from `/replay_step` when it is shown (403 for an edit of another chat). Cached like Files.
+- **Read-only.** No undo or restore: Hermes' own checkpoints (`/rollback`) own that.
 
 ## Not here on purpose
 Interrupt / steer / live transcript — the composer status stack already owns them.
 
 ## Install
-1. Folder lives at `<HERMES_HOME>/plugins/subagent-watch/`.
-2. `hermes plugins enable subagent-watch` (backend routes mount only for enabled plugins).
-3. Restart the desktop app; it copies `desktop/` into `<HERMES_HOME>/desktop-plugins/subagent-watch/`.
+1. In the app: Settings → Capabilities → Plugins → **Install from Git**, paste the repository's web
+   address, **Review repository**, leave "Enable agent plugin after install" on, install. The CLI
+   equivalent is `hermes plugins install <repository URL> --enable`. Hermes puts the folder at
+   `<HERMES_HOME>/plugins/agent-station/` — the folder name comes from `plugin.yaml` `name`, not from
+   the repository's name.
+2. The desktop half needs no copy step: the app copies `plugins/agent-station/desktop/` to
+   `<HERMES_HOME>/desktop-plugins/agent-station/` (with a `.hermes-package.json` marker), re-copies it
+   when the source is newer, and removes the copy when the plugin is uninstalled.
+3. Two switches on the plugin's row: **Agent** (the backend routes under `/api/plugins/agent-station/`
+   mount only for enabled plugins) and **Desktop** (the page and sidebar entry). A unified desktop half
+   loads opt-in; the install flow turns it on when the agent half is installed enabled. Nav items and
+   routes register at load, so a newly enabled page may need a restart.
+4. `plugin.yaml` `requires_hermes: ">=0.21.7"`: an older core skips the agent half with "requires
+   hermes …, running …". The id `agent-station` is also the key of the page's stored settings
+   (`hermes.plugin.agent-station.*`).
 
 ## Checks
 - `python tests/check_api.py` (Hermes venv python, it provides fastapi) — backend against a fixture
@@ -193,9 +236,20 @@ Interrupt / steer / live transcript — the composer status stack already owns t
   run found two behaviours no check covered (a failed command-output read, cards left open after a
   chat switch); both are now render checks.
 - `python tests/audit_static.py` — i18n, native `title`, icon names, `aria-expanded`, status-mark / header-count names, hard-coded
-  colour, tone used as text ink, silent catches, read-only backend, release gate.
+  colour (the HUD palette included: it is mixed from the theme's tokens), tone used as text ink, silent
+  catches, read-only backend, release gate (versions, supported range), the old name, the licence,
+  and no personal account or `<drive>:/Users/<name>` path in a shipped file.
 - `python tests/contract_core.py [--selftest]` — every column, marker, field, event and SDK export
-  read from the core still exists (source read, no import).
+  read from the core still exists (source read, no import). CI runs it against the oldest supported
+  core (`ci.yml` `CORE_SHA`, v0.21.7) and weekly against the latest release and `main`
+  (`newest-core.yml`).
 - Visual pass: `node tests/preview.mjs` then `<electron> tests/shot.cjs preview.html preview.png` —
   real React output in the compiled app stylesheet, WCAG contrast gated in the app's own engine.
   It found the red `exit N` text at 3.3:1; failure text now uses the reading token (6.4:1).
+- `cd tests && python live.py [--selftest]` — the real-render harness: the real panel, canvas and app
+  stylesheet in the core's Electron on a synthetic fixture home, 56 shots (3 tabs × full/empty ×
+  dark/light × 915/560/380 px, plus opened states), each measured in the engine for clipped text,
+  overlap, sideways overflow, half rows in scroll lists, numerals off the code font, contrast and engine
+  errors. Its first run found cut corner readouts at 560 px, a FILES legend running out at 380 px,
+  scroll lists ending on half a row and numerals in mixed faces; all are fixed and locked in
+  render_check. `--selftest` proves each rule fires.

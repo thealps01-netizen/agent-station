@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PLUGIN_ID = "subagent-watch"
+PLUGIN_ID = "agent-station"
 VENV_PYTHONS = ("venv/Scripts/python.exe", "venv/bin/python", ".venv/bin/python")
 
 
@@ -65,6 +65,21 @@ def desktop_app_dir() -> Path | None:
         return None
     app = core / "apps" / "desktop"
     return app if app.is_dir() else None
+
+
+ELECTRON_CANDIDATES = ("node_modules/electron/dist/electron.exe", "node_modules/electron/dist/electron",
+                       "node_modules/.bin/electron.cmd", "node_modules/.bin/electron")
+
+
+def electron_binary() -> Path | None:
+    """`HERMES_ELECTRON`, else the core's apps/desktop Electron (the twin of env.mjs's electronBinary)."""
+    configured = os.environ.get("HERMES_ELECTRON")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    app = desktop_app_dir()
+    if not app:
+        return None
+    return next((app / rel for rel in ELECTRON_CANDIDATES if (app / rel).exists()), None)
 
 
 def installed_desktop_copy() -> Path:
