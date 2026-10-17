@@ -45,7 +45,7 @@ it are in `CHANGELOG.md` (3.0.0) and the README.
   session id the event carries), so it works with the page closed. On focus it asks `subagent.list`
   once (a batch already running when the app loaded), then every 3 s while the batch runs; a worker
   the list drops without a complete frame is stopped (a queued one gets 60 s); three failed polls turn
-  the chip red with the error. A finished batch lingers 8 s. Why the status bar and not
+  the chip red with the error and slow its poll to 30 s until one answers. A finished batch lingers 8 s. Why the status bar and not
   `composer.top`: a composer slot is given no session, so in a split layout every composer would show
   the focused chat's batch.
 - **Pet line** — with a Hermes pet on screen, the chip's numbers go to the pet's bubble through
@@ -103,6 +103,11 @@ before `subagent.list` shows it. A queued worker the list does not show stays qu
 `QUEUE_GRACE_S` (60 s) before it reads stopped. A worker's end is final: the registry lists a
 finished worker as running until Hermes' cleanup unregisters it, and that snapshot never revives
 it. A poll of a chat the page has left does not count toward the new chat's three failures.
+Live polls never stop. Three failures in a row show the alert and slow the poll to `SLOW_POLL_MS`
+(30 s); the next answer clears the alert. A 4001 "session not found or not owned by this
+transport" is not a failure: Hermes does not hold that runtime on this connection right now (a
+resume or reconnect in flight), so the poll says nothing and asks again every 30 s, as the
+desktop's own background pollers do.
 
 ### Background commands — where they come from
 Nothing is parsed out of chat text. Both sources are files Hermes itself writes, read-only:

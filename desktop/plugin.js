@@ -39,7 +39,10 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 const ID = 'agent-station'
 const ROUTE = '/agent-station'
 const POLL_MS = 3000
+// A live poll that failed this many times in a row says so and slows to SLOW_POLL_MS; it never stops,
+// so the page recovers by itself once the gateway answers again.
 const MAX_POLL_FAILS = 3
+const SLOW_POLL_MS = 30000
 // Earlier runs listed in the run picker before "Show N older runs".
 const HISTORY_PAGE = 8
 // A stored batch still reading "running" is the live tree only when it started around the same time:
@@ -55,6 +58,14 @@ const ROW_COMMAND_CHARS = 28
 const SUBAGENT_EVENTS = [
   'subagent.spawn_requested', 'subagent.start', 'subagent.progress', 'subagent.tool', 'subagent.complete'
 ]
+// Hermes answers 4001 "session not found or not owned by this transport" while the focused runtime id
+// is not live on this connection: a resume or reconnect in flight, or a reaped runtime the app is
+// re-binding. That is not this page's failure, so a live poll says nothing and asks again slowly. The
+// desktop's own pollers read the code the same way (apps/desktop/src/store/session-gone-latch.ts).
+function isRuntimeGone(err) {
+  if (typeof err?.code === 'number') return err.code === 4001
+  return /session not found/i.test(String(err?.message ?? err ?? ''))
+}
 // Wire statuses (tui_gateway/contracts/common.py SubagentStatus) -> the five states this page draws.
 const STATUS_OF = {
   queued: 'queued', running: 'running', completed: 'completed',
@@ -399,7 +410,7 @@ This edit failed` : path),
           cost ? `cost ${cost}` : ''
         ].filter(Boolean).join(' · ') + '. Click to open Agent Station.',
         pet: (finished, total, cost) => [`Subagents ${finished}/${total} done`, cost].filter(Boolean).join(' · '),
-        stalled: detail => `Subagent progress stopped updating: ${detail}`
+        stalled: detail => `Subagent progress is not updating, retrying: ${detail}`
       },
       units: {
         hm: (h, m) => `${h}h ${m}m`,
@@ -412,7 +423,7 @@ This edit failed` : path),
         replayStep: 'This edit',
         title: 'Some parts could not be read:',
         history: 'earlier runs',
-        live: 'live updates stopped',
+        live: 'live updates failing, retrying',
         procs: 'background commands',
         files: 'the files list',
         item: (what, detail) => `${what} — ${detail}`,
@@ -965,8 +976,10 @@ function useLive(runtimeId, onBatchEnded) {
     }))
 
     let alive = true
+    let next = () => {}
     const poll = async () => {
-      if (!alive || fails.current >= MAX_POLL_FAILS) return
+      if (!alive) return
+      let wait = POLL_MS
       try {
         const snap = await host.request('subagent.list', { session_id: runtimeId })
         if (!alive) return
@@ -999,18 +1012,31 @@ function useLive(runtimeId, onBatchEnded) {
         })
       } catch (err) {
         if (!alive) return // a poll of the chat the page has left: its failure is not this chat's
-        fails.current += 1
-        console.warn(`[${ID}] subagent.list failed (${fails.current}/${MAX_POLL_FAILS})`, err)
-        if (fails.current >= MAX_POLL_FAILS) setError(String(err?.message || err))
+        if (isRuntimeGone(err)) {
+          fails.current = 0
+          setError(null)
+          wait = SLOW_POLL_MS
+        } else {
+          fails.current += 1
+          console.warn(`[${ID}] subagent.list failed (${fails.current}/${MAX_POLL_FAILS})`, err)
+          if (fails.current >= MAX_POLL_FAILS) {
+            setError(String(err?.message || err))
+            wait = SLOW_POLL_MS
+          }
+        }
+      }
+      // One timer at a time: a Refresh during a pending wait replaces it.
+      if (alive) {
+        next()
+        next = ctxRef.setTimeout(() => void poll(), wait)
       }
     }
     pollRef.current = poll
     void poll()
-    const stop = ctxRef.setInterval(() => void poll(), POLL_MS)
     return () => {
       alive = false
       pollRef.current = null
-      stop()
+      next()
       offs.forEach(off => off())
     }
   }, [runtimeId])
@@ -1043,7 +1069,7 @@ function useLive(runtimeId, onBatchEnded) {
     })
   }, [finished])
 
-  // Refresh after polling gave up: reset the failure count so the interval polls again, and poll now.
+  // Refresh: reset the failure count and poll now instead of after the slowed wait.
   const retry = useCallback(() => {
     fails.current = 0
     setError(null)
@@ -4170,14 +4196,17 @@ function ProgressChip() {
   const live = Boolean(track && track.workers.size && !track.endedAt)
   const [stalled, setStalled] = useState(null)
   // Reconcile with subagent.list: once when a chat gets focus (a batch may already be running),
-  // then every POLL_MS while its batch runs. Three failures in a row stop the poll and say so.
+  // then every POLL_MS while its batch runs. Three failures in a row say so and slow the poll to
+  // SLOW_POLL_MS; a runtime Hermes does not hold right now (4001) is not a failure.
   useEffect(() => {
     setStalled(null)
     if (!runtimeId) return undefined
     let alive = true
     let fails = 0
+    let next = () => {}
     const poll = async () => {
-      if (!alive || fails >= MAX_POLL_FAILS) return
+      if (!alive) return
+      let wait = POLL_MS
       try {
         const snap = await host.request('subagent.list', { session_id: runtimeId })
         if (!alive) return
@@ -4186,16 +4215,28 @@ function ProgressChip() {
         trackSnapshot(runtimeId, snap?.subagents)
       } catch (err) {
         if (!alive) return
-        fails += 1
-        console.warn(`[${ID}] progress: subagent.list failed (${fails}/${MAX_POLL_FAILS})`, err)
-        if (fails >= MAX_POLL_FAILS) setStalled(String(err?.message || err))
+        if (isRuntimeGone(err)) {
+          fails = 0
+          setStalled(null)
+          wait = SLOW_POLL_MS
+        } else {
+          fails += 1
+          console.warn(`[${ID}] progress: subagent.list failed (${fails}/${MAX_POLL_FAILS})`, err)
+          if (fails >= MAX_POLL_FAILS) {
+            setStalled(String(err?.message || err))
+            wait = SLOW_POLL_MS
+          }
+        }
+      }
+      if (alive && live) {
+        next()
+        next = ctxRef.setTimeout(() => void poll(), wait)
       }
     }
     void poll()
-    const stop = live ? ctxRef.setInterval(() => void poll(), POLL_MS) : () => {}
     return () => {
       alive = false
-      stop()
+      next()
     }
   }, [runtimeId, live])
   // A finished batch lingers, then the chip goes.

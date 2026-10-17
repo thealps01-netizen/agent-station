@@ -22,7 +22,8 @@
  *      row, "—" for a stopped one; an opened row shows exit code, cwd, the full command, the output
  *      tail and Copy output; running (no read yet), loading, unreadable (alert + Try again), printed
  *      nothing, no receipt; unreadable records counted; polled.
- *  10. Refresh after live polls gave up resets the failure count and polling resumes.
+ *  10. Live polls never stop: three failures slow them to SLOW_POLL_MS and a later answer clears the
+ *      alert by itself; Refresh polls at once; a runtime Hermes does not hold (4001) is no failure.
  *  11. A clipboard rejection on any copy button is a "Copy failed" toast, never an unhandled rejection.
  *  15. The watched chat: a click inside the page (or on another page's route tile) keeps the chat the
  *      page shows and marks it held; a click on a chat, in the Sessions sidebar, or elsewhere follows.
@@ -77,7 +78,7 @@ import { jsx } from 'react/jsx-runtime'
 
 export const calls = { request: [], opened: [], navigated: [] }
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' }
-export const state = { listFails: false, list: {}, listHold: null }
+export const state = { listFails: false, listGone: false, list: {}, listHold: null }
 
 function atom(v) {
   const subs = new Set()
@@ -109,6 +110,7 @@ export const host = {
   request: async (method, params) => {
     calls.request.push([method, params])
     if (state.listHold) await state.listHold
+    if (state.listGone) throw Object.assign(new Error('session not found or not owned by this transport'), { code: 4001 })
     if (state.listFails) throw new Error('gateway down')
     return { subagents: state.list[params.session_id] || [] }
   },
@@ -139,9 +141,15 @@ const check = (ok, what) => {
   if (!ok) failures++
 }
 const tick = (ms = 0) => act(() => new Promise(r => setTimeout(r, ms)))
+// The page's ctx.setTimeout calls: pending(ms) are the waits of that length not yet run or cancelled;
+// fire(ms) runs them now (a slowed live poll without waiting 30 s).
+const SLOW_POLL = 30000
+const pending = ms => timers.filter(t => t.on && t.ms === ms)
+const fire = async ms => { for (const t of pending(ms)) { t.cancel(); await act(async () => { t.fn() }) } await tick(10) }
 
 // ── fake ctx ────────────────────────────────────────────────────────────────
 const listeners = new Map()
+const timers = []
 const registered = []
 const rest = []
 const clip = []
@@ -255,7 +263,13 @@ const ctx = {
     return () => listeners.get(type).delete(fn)
   },
   setInterval: (fn, ms) => { const h = setInterval(fn, ms); return () => clearInterval(h) },
-  setTimeout: (fn, ms) => { const h = setTimeout(fn, ms); return () => clearTimeout(h) },
+  setTimeout: (fn, ms) => {
+    const t = { fn, ms, on: true }
+    timers.push(t)
+    const h = setTimeout(() => { t.on = false; fn() }, ms)
+    t.cancel = () => { t.on = false; clearTimeout(h) }
+    return t.cancel
+  },
   rest: async path => {
     rest.push(path)
     if (path.startsWith('/children')) {
@@ -1004,7 +1018,7 @@ await quiet(async () => {
 })
 {
   const items = qa('.sw-err[role=alert] li').map(li => li.textContent)
-  check(items.includes('earlier runs — backend 503') && items.includes('background commands — procs 503') && items.includes('live updates stopped — gateway down'),
+  check(items.includes('earlier runs — backend 503') && items.includes('background commands — procs 503') && items.includes('live updates failing, retrying — gateway down'),
     `one alert lists each source that failed (${items.join(' | ')})`)
 }
 check(qa('.sw-err li').length && qa('.sw-err li').every(li => li.querySelector('.sw-1l')), 'each failed source is one line; a long error is cut, its text in the tooltip')
@@ -1018,9 +1032,26 @@ stub.state.listFails = false
 const listCalls = () => stub.calls.request.filter(([m, p]) => m === 'subagent.list' && p.session_id === 'rt-3').length
 const gaveUp = listCalls()
 await tick(3100)
-check(listCalls() === gaveUp, 'polling has stopped after three failures')
+check(listCalls() === gaveUp && pending(SLOW_POLL).length === 1, `three failures slow polling to one wait of 30 s (${gaveUp} -> ${listCalls()})`)
 await quiet(async () => { await refresh(); await tick(3100) })
-check(listCalls() > gaveUp && !(q('[role=alert]')?.textContent || '').includes('live updates stopped'), `Refresh resumes live polling (${gaveUp} -> ${listCalls()})`)
+check(listCalls() > gaveUp && !(q('[role=alert]')?.textContent || '').includes('live updates failing'), `Refresh polls at once and clears the alert (${gaveUp} -> ${listCalls()})`)
+// A slowed poll recovers by itself: three more failures, then the gateway answers on the slow tick.
+stub.state.listFails = true
+await quiet(async () => { for (let i = 0; i < 3; i++) await fire(3000) })
+check((q('[role=alert]')?.textContent || '').includes('live updates failing'), 'three failures show the alert again')
+stub.state.listFails = false
+await fire(SLOW_POLL)
+check(!(q('[role=alert]')?.textContent || '').includes('live updates failing') && pending(3000).length === 1,
+  'the slowed poll answers, the alert goes by itself and polling is back to every 3 s')
+// 4001: Hermes does not hold this runtime right now (a resume or reconnect in flight) — no alert, slow polls.
+stub.state.listGone = true
+await quiet(async () => { for (let i = 0; i < 4; i++) await fire(3000) })
+check(!q('[role=alert]') || !(q('[role=alert]')?.textContent || '').includes('live updates'),
+  `a runtime Hermes does not hold is not shown as a failure (${q('[role=alert]')?.textContent})`)
+check(pending(SLOW_POLL).length === 1 && pending(3000).length === 0, 'a runtime Hermes does not hold is asked again every 30 s, not every 3 s')
+stub.state.listGone = false
+await fire(SLOW_POLL)
+check(pending(3000).length === 1, 'once Hermes holds it again polling is back to every 3 s')
 
 // A chat switch drops the old chat's errors; the first read shows a loading skeleton, commands a loader.
 historyFails = false
@@ -1159,10 +1190,10 @@ await quiet(async () => {
   await act(async () => { releaseList() })
   await tick(10)
   await tick(3100)
-  afterTwo = (q('[role=alert]')?.textContent || '').includes('live updates stopped')
+  afterTwo = (q('[role=alert]')?.textContent || '').includes('live updates failing')
   await tick(3100)
 })
-check(!afterTwo && (q('[role=alert]')?.textContent || '').includes('live updates stopped'), `the new chat gets its own three tries (stopped after two: ${afterTwo})`)
+check(!afterTwo && (q('[role=alert]')?.textContent || '').includes('live updates failing'), `the new chat gets its own three tries (alert after two: ${afterTwo})`)
 stub.state.listFails = false
 
 // 24. a chat with no subagents: the main agent alone, what subagents are, its files or none yet
@@ -1272,8 +1303,15 @@ check(chip()?.querySelector('.sw-sbn')?.textContent === '1/2' && /1 failed or st
   `a worker the list dropped without a complete frame ends as stopped (${chip()?.dataset.tip})`)
 stub.state.listFails = true
 await quiet(async () => { for (let i = 0; i < 3; i++) await tick(3100) })
-check(chip()?.dataset.st === 'failed' && /stopped updating: gateway down/.test(chip()?.dataset.tip || ''), `three failed polls are shown on the chip (${chip()?.dataset.tip})`)
+check(chip()?.dataset.st === 'failed' && /not updating, retrying: gateway down/.test(chip()?.dataset.tip || ''), `three failed polls are shown on the chip (${chip()?.dataset.tip})`)
 stub.state.listFails = false
+await fire(SLOW_POLL)
+check(chip()?.dataset.st !== 'failed' && !/not updating/.test(chip()?.dataset.tip || ''), `the chip's slowed poll answers and the chip recovers by itself (${chip()?.dataset.tip})`)
+stub.state.listGone = true
+await quiet(async () => { for (let i = 0; i < 4; i++) await fire(3000) })
+check(chip()?.dataset.st !== 'failed' && pending(SLOW_POLL).length >= 1, `a runtime Hermes does not hold never turns the chip red (${chip()?.dataset.st})`)
+stub.state.listGone = false
+await fire(SLOW_POLL)
 await emit('subagent.complete', 'rt-8', { subagent_id: 'r2', status: 'completed', cost_usd: 0 })
 await tick(5)
 check(chip()?.querySelector('.sw-sbn')?.textContent === '2/2' && !chip()?.querySelector('.sw-sbc'),
