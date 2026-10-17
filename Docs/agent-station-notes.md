@@ -238,7 +238,7 @@ Interrupt / steer / live transcript — the composer status stack already owns t
 - `python tests/audit_static.py` — i18n, native `title`, icon names, `aria-expanded`, status-mark / header-count names, hard-coded
   colour (the HUD palette included: it is mixed from the theme's tokens), tone used as text ink, silent
   catches, read-only backend, release gate (versions, supported range), the old name, the licence,
-  and no personal account or `C:/Users/<name>` path in a shipped file.
+  and no personal account or `<drive>:/Users/<name>` path in a shipped file.
 - `python tests/contract_core.py [--selftest]` — every column, marker, field, event and SDK export
   read from the core still exists (source read, no import). CI runs it against the oldest supported
   core (`ci.yml` `CORE_SHA`, v0.21.7) and weekly against the latest release and `main`
