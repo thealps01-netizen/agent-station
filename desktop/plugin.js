@@ -226,7 +226,8 @@ const BUNDLES = {
         orbitMoreLabel: (n, parts) => `${n} more subagents: ${parts}`,
         time: 'Time per agent',
         timeMore: (n, done) => `+${n} more · ${done} done`,
-        noTime: 'No subagent has run yet.',
+        noTime: 'Each subagent\'s run time appears here when it starts.',
+        noSpent: 'Cost, tokens and tool calls appear here when a subagent runs.',
         spent: 'Spent',
         tokens: 'tokens',
         toolCalls: 'tools',
@@ -241,7 +242,7 @@ const BUNDLES = {
         legRead: 'read',
         filesLabel: (changed, failed, read) => `${changed} changed, ${failed} failed, ${read} only read`,
         moreFiles: n => `+${n}`,
-        noFiles: 'No files yet.',
+        noFiles: 'Files appear here when an agent reads or changes one.',
         agent: 'Agent',
         model: 'model',
         timeK: 'time',
@@ -251,9 +252,9 @@ const BUNDLES = {
         state: 'state',
         subagents: 'subagents',
         filesK: 'files',
-        filesV: (changed, failed, read) => [`${changed} changed`, failed ? `${failed} failed` : '', `${read} read`].filter(Boolean).join(' · '),
+        filesV: (changed, failed, read) => [changed ? `${changed} changed` : '', failed ? `${failed} failed` : '', read ? `${read} read` : ''].filter(Boolean).join(' · '),
         log: 'Log',
-        noLog: 'Each subagent gets a line here.',
+        noLog: 'Each subagent gets a line here when it starts.',
         detail: 'Detail',
         pastRun: 'earlier run'
       },
@@ -268,7 +269,7 @@ const BUNDLES = {
         olderTurns: n => `${n} older request${n === 1 ? '' : 's'} with edits not listed`,
         moreSteps: n => `${n} more edit${n === 1 ? '' : 's'} in this request not listed`,
         unreadable: n => `${n} edit${n === 1 ? '' : 's'} could not be read`,
-        none: 'No file edits in this chat yet.',
+        none: 'File edits appear here when the AI changes a file.',
         of: (i, n) => `Edit ${i} of ${n}`,
         prev: 'Previous edit',
         next: 'Next edit',
@@ -349,7 +350,7 @@ This edit failed` : path),
       },
       proc: {
         why: 'Terminal commands the agent started and left running in the background — not subagents.',
-        none: 'No background commands in this chat.',
+        none: 'Background commands appear here when the agent leaves one running.',
         short: { running: 'Running', completed: 'Finished', failed: 'Failed', stopped: 'Stopped' },
         status: {
           running: 'Running', completed: 'Finished (exit 0)', failed: 'Failed', stopped: 'Stopped before it finished'
@@ -1838,7 +1839,7 @@ function CmdOrbit({ t, rows, picked, now, onPick }) {
   const bars = Array.from({ length: 14 }, (_, k) => jsx('i', { className: rows.length && k < Math.round((14 * ended) / rows.length) ? 'on' : undefined, style: { '--k': k } }, k))
   const tele = (side, list) => jsx('div', {
     className: 'sw-ortele', 'data-side': side, 'aria-hidden': 'true',
-    children: list.map(([k, v], i) => jsxs('div', { className: 'sw-otl', style: { '--i': i * 2 + (side === 'r' ? 1 : 0) }, children: [jsx('span', { children: hudCaps(k) }, 'k'), jsx('b', { children: v }, `v-${v}`)] }, k))
+    children: list.map(([k, v], i) => jsxs('div', { className: 'sw-otl', style: { '--i': i * 2 + (side === 'r' ? 1 : 0) }, children: [jsx('span', { children: hudCaps(k) }, 'k'), jsx('b', { className: isNum(v) ? 'sw-num' : undefined, children: v }, `v-${v}`)] }, k))
   }, `tele-${side}`)
   return jsx(HudPanel, {
     title: t('sw.hudCommands.orbit'), span: 6, className: 'sw-cmorb',
@@ -1935,19 +1936,20 @@ function Orbit({ t, main, subs, selected, onSelect, flash, waitingOn, calm }) {
         'aria-pressed': selected === main.key, 'aria-label': `${main.name}: ${mainWord}`, onClick: () => onSelect(main.key),
         children: [
           jsx('span', { className: 'sw-orn', children: `★ ${hudCaps(t('sw.hudAgents.orbitMain', mainWord))}` }, 'n'),
-          jsxs('span', {
+          // no subagent: no n/total counter and bars under MAIN (nothing to count yet)
+          subs.length ? jsxs('span', {
             className: 'sw-orp', 'aria-hidden': 'true',
             children: [jsx('b', { children: `${done}/${subs.length}` }, 'n'), jsx('span', { className: 'sw-orbars', children: bars }, 'b')]
-          }, 'p')
+          }, 'p') : null
         ]
       }) }, 'main'),
       ...calls.map(callout),
       ...telemetry(t, mainWord, subs, done, live),
       subs.length ? null : jsx('p', { className: 'sw-nosub', children: t('sw.noSubagents') }, 'none'),
-      jsx('div', {
+      subs.length ? jsx('div', {
         className: 'sw-orkey', 'aria-hidden': 'true',
         children: ['running', 'completed', 'failed', 'queued'].map(st => jsx('span', { 'data-st': st, children: hudCaps(t(`sw.st.${st}`)) }, st))
-      }, 'key')
+      }, 'key') : null
     ]
   })
 }
@@ -1961,16 +1963,17 @@ function telemetry(t, mainWord, subs, done, live) {
     className: 'sw-ortele', 'data-side': side, 'aria-hidden': 'true',
     children: rows.map(([k, v], i) => jsxs('div', {
       className: 'sw-otl', style: { '--i': i * 2 + (side === 'r' ? 1 : 0) },
-      children: [jsx('span', { children: hudCaps(k) }, 'k'), jsx('b', { children: v }, `v-${v}`)]
+      children: [jsx('span', { children: hudCaps(k) }, 'k'), jsx('b', { className: isNum(v) ? 'sw-num' : undefined, children: v }, `v-${v}`)]
     }, k))
   }, `tele-${side}`)
+  // no subagent: no WINGS line and no right column (WORKING / FAILED / WAITING would all read 00)
   return [
     col('l', [
       [t('sw.hudAgents.teleScan'), hudCaps(t(live ? 'sw.hudAgents.teleActive' : 'sw.hudAgents.teleStandby'))],
       [t('sw.hudAgents.teleCore'), hudCaps(mainWord)],
-      [t('sw.hudAgents.teleWings'), `${done}/${subs.length}`]
+      ...(subs.length ? [[t('sw.hudAgents.teleWings'), `${done}/${subs.length}`]] : [])
     ]),
-    col('r', ['running', 'failed', 'queued'].map(st => [t(`sw.st.${st}`), String(n(st)).padStart(2, '0')]))
+    subs.length ? col('r', ['running', 'failed', 'queued'].map(st => [t(`sw.st.${st}`), String(n(st)).padStart(2, '0')])) : null
   ]
 }
 
@@ -1983,7 +1986,8 @@ function Score({ t, subs }) {
   const tools = subs.reduce((n, u) => n + (Number(u.rec?.tool_calls ?? u.rec?.tool_count) || 0), 0)
   return jsx(HudPanel, {
     title: t('sw.hudAgents.spent'), span: 2, className: 'sw-hspent',
-    children: [jsxs('div', {
+    // no subagent: no cost, tokens, tools, ratio, cells or axis, only what will appear and when
+    children: subs.length ? [jsxs('div', {
       className: 'sw-score', role: 'group', 'aria-label': subs.length ? t('sw.score.label', done, subs.length) : t('sw.score.none'),
       children: [
         jsx('div', {
@@ -2018,7 +2022,7 @@ function Score({ t, subs }) {
           ]
         }, 'done')
       ]
-    }, 'score')]
+    }, 'score')] : [jsx('p', { className: 'sw-hnote', children: t('sw.hudAgents.noSpent') }, 'none')]
   })
 }
 
@@ -2067,7 +2071,8 @@ function FleetFiles({ t, files }) {
     title: t('sw.hudAgents.files'), span: 2, className: 'sw-hfiles',
     children: all.length
       ? [
-        jsxs('div', { className: 'sw-hrow', children: [jsx('b', { children: hudCaps(t('sw.hudAgents.changedN', n('changed'))) }, 'c'), jsx('b', { children: hudCaps(t('sw.hudAgents.readN', n('read'))) }, 'r')] }, 'n'),
+        // a kind with no file gets no count (no "CHANGED 0"); its legend entry stays as the key
+        jsxs('div', { className: 'sw-hrow', children: [n('changed') ? jsx('b', { children: hudCaps(t('sw.hudAgents.changedN', n('changed'))) }, 'c') : null, n('read') ? jsx('b', { children: hudCaps(t('sw.hudAgents.readN', n('read'))) }, 'r') : null] }, 'n'),
         jsxs('div', {
           className: 'sw-fcells', 'data-big': all.length <= 12 ? 'true' : undefined, role: 'img', 'aria-label': t('sw.hudAgents.filesLabel', n('changed'), n('failed'), n('read')),
           children: [
@@ -2091,9 +2096,11 @@ function FleetAgent({ t, u, subs, files, waitingOn }) {
   let rows
   if (u.main) {
     const mine = agentFiles(files.data?.files, '')
+    const anyFile = mine.changed.length + mine.failed.length + mine.read.length
     rows = [
       [t('sw.hudAgents.state'), statusWord(t, u, waitingOn)],
-      [t('sw.hudAgents.filesK'), t('sw.hudAgents.filesV', mine.changed.length, mine.failed.length, mine.read.length)]
+      // no file: no FILES row at all; a kind with no file is left out of the line (no "0 changed")
+      ...(anyFile ? [[t('sw.hudAgents.filesK'), t('sw.hudAgents.filesV', mine.changed.length, mine.failed.length, mine.read.length)]] : [])
     ]
   } else {
     const rec = u.rec || {}
@@ -2667,7 +2674,7 @@ function ProcRow({ t, p, now, selected, onPick }) {
       jsx('span', { className: 'sw-cmlt', children: fmtWhen(p.started_at, now, t) || '—' }, 'w'),
       jsx('span', { className: 'sw-cmls', 'aria-hidden': 'true', children: jsx('span', { children: t(`sw.proc.short.${p.status}`) }) }, 's'),
       jsx(Tip, { label: tipText(p.command), children: jsx('code', { className: 'sw-cmc', children: commandLine(p.command) }) }, 'c'),
-      jsxs('span', { className: 'sw-cmx', children: [exit ? jsx('span', { className: 'sw-cmxe', children: `${exit} · ` }, 'e') : null, time] }, 'x')
+      jsxs('span', { className: 'sw-cmx', children: [exit ? jsx('span', { className: 'sw-cmxe', children: `${exit} · ` }, 'e') : null, jsx('span', { className: 'sw-num', children: time }, 't')] }, 'x')
     ]
   })
 }
@@ -2802,7 +2809,11 @@ function Commands({ t, procs, now, storedId, onToast }) {
         ? jsxs('p', { className: 'sw-cmnote sw-cmwait', children: [jsx('span', { className: 'sw-spin', 'aria-hidden': 'true' }, 's'), t('sw.loading')] }, 'w')
         : sel
           ? jsx(ProcView, { t, p: sel, rows, now, storedId, onToast, onPick: setPick }, 'view')
-          : procs.error ? null : jsx('p', { className: 'sw-empty', children: t('sw.proc.none') }, 'none'),
+          : procs.error ? null : jsx('div', {
+            // no command: one panel with what will appear and when, no ORBIT and no list
+            className: 'sw-cmgrid sw-none',
+            children: jsx(HudPanel, { title: t('sw.tabs.commands'), span: 6, children: [jsx('p', { className: 'sw-hnote', children: t('sw.proc.none') }, 'none')] })
+          }, 'none'),
       unreadable ? jsx('p', { className: 'sw-pu', children: t('sw.proc.unreadable', unreadable) }, 'u') : null
     ]
   })
@@ -3123,9 +3134,67 @@ function useWires(heroRef, deps, list = '.sw-rlines', attr = 'data-h') {
   return wires ? JSON.parse(wires) : []
 }
 
+/** The scroll lists and line boxes that must end on a whole row. Their CSS max-height is the cap. */
+const WHOLE_ROWS = '.sw-hlog,.sw-cml,.sw-rtlist,.sw-rlines,.sw-out'
+
+/** Lower `el`'s max-height to the bottom of the last row that fits under its CSS cap, so a list that
+ * scrolls never ends on half a row or half a line at any width. A box whose rows all fit keeps its cap.
+ * Rows are the element's children; a wrapped row taller than the cap is left to its cap. */
+export function fitWholeRows(el) {
+  if (!el || typeof getComputedStyle !== 'function') return
+  el.style.maxHeight = ''
+  const cs = getComputedStyle(el)
+  const cap = parseFloat(cs.maxHeight)
+  if (!(cap > 0) || el.scrollHeight <= el.clientHeight + 1) return
+  // rows scroll under the padding too: the visible band is the padding box, from its top
+  const px = k => parseFloat(cs[k]) || 0
+  const borders = px('borderTopWidth') + px('borderBottomWidth'), pads = px('paddingTop') + px('paddingBottom')
+  const border = cs.boxSizing === 'border-box'
+  const room = border ? cap - borders : cap + pads
+  // rects are on-screen px; the page is zoomed (.sw-page zoom), so turn them back into CSS px
+  const box = el.getBoundingClientRect()
+  const k = el.offsetHeight && box.height ? box.height / el.offsetHeight : 1
+  const top = box.top + el.clientTop * k - el.scrollTop * k
+  let fit = 0
+  for (const row of el.children) {
+    const r = row.getBoundingClientRect()
+    if (!r.height) continue
+    const bottom = (r.bottom - top) / k
+    if (bottom > room + 0.5) break
+    fit = bottom
+  }
+  if (fit > 0) el.style.maxHeight = `${Math.floor((border ? fit + borders : fit - pads) * 100) / 100}px`
+}
+
+/** Keep every WHOLE_ROWS box under `pageRef` fitted: on any change of the page's content or size. */
+function useWholeRows(pageRef) {
+  useEffect(() => {
+    const page = pageRef.current
+    if (!page || typeof MutationObserver !== 'function') return undefined
+    let frame = 0
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(() => soon()) : null
+    const fit = () => { frame = 0; page.querySelectorAll(WHOLE_ROWS).forEach(el => { ro?.observe(el); fitWholeRows(el) }) }
+    const soon = () => { if (!frame) frame = requestAnimationFrame(fit) }
+    fit()
+    // rows change height on new content, on a state flip (typing done, a row picked, a fold opened)
+    // and on a width or font change; this hook only ever writes `style`, which it does not watch
+    const mo = new MutationObserver(soon)
+    mo.observe(page, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class', 'open', 'hidden', 'data-play', 'aria-pressed', 'aria-current', 'aria-expanded'] })
+    ro?.observe(page)
+    document.fonts?.ready?.then(soon)
+    page.addEventListener('animationend', soon)
+    return () => { mo.disconnect(); ro?.disconnect(); page.removeEventListener('animationend', soon); if (frame) cancelAnimationFrame(frame); frame = -1 }
+  }, [])
+}
+
+/** True when a key/value row's value is a value (a number, ratio, cost, %, tokens, duration or clock
+ * time), not words: such a value gets `.sw-num` (code font, tabular figures). */
+const NUM_RE = /^(?:[~≈]?[+\-−]?[$€£]?\d[\d,.]*\s?(?:[kKMB]|%)?|\d+\s?\/\s?\d+|\d{1,2}:\d{2}(?::\d{2})?|(?:\d+(?:\.\d+)?\s?(?:ms|s|m|h|d)\s*){1,3})$/
+export const isNum = v => (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && NUM_RE.test(v.trim()))
+
 /** A HUD key : value card. rows: [[label, value node], …]; labels are drawn in caps. */
 function HudKV({ rows, className = '' }) {
-  return jsx('dl', { className: `sw-kv ${className}`.trim(), children: rows.flatMap(([k, v], n) => [jsx('dt', { children: hudCaps(k) }, `k${n}`), jsx('dd', { children: v }, `v${n}`)]) })
+  return jsx('dl', { className: `sw-kv ${className}`.trim(), children: rows.flatMap(([k, v], n) => [jsx('dt', { children: hudCaps(k) }, `k${n}`), jsx('dd', { className: isNum(v) ? 'sw-num' : undefined, children: v }, `v${n}`)]) })
 }
 
 function stepWord(s, t) {
@@ -3378,7 +3447,7 @@ function ReplayWorm({ t, steps, i, go }) {
   const bars = Array.from({ length: 14 }, (_, k) => jsx('i', { className: k < Math.round((14 * (i + 1)) / n) ? 'on' : undefined, style: { '--k': k } }, k))
   const tele = (side, list) => jsx('div', {
     className: 'sw-ortele', 'data-side': side, 'aria-hidden': 'true',
-    children: list.map(([k, v], j) => jsxs('div', { className: 'sw-otl', style: { '--i': j * 2 + (side === 'r' ? 1 : 0) }, children: [jsx('span', { children: hudCaps(k) }, 'k'), jsx('b', { children: v }, `v-${v}`)] }, k))
+    children: list.map(([k, v], j) => jsxs('div', { className: 'sw-otl', style: { '--i': j * 2 + (side === 'r' ? 1 : 0) }, children: [jsx('span', { children: hudCaps(k) }, 'k'), jsx('b', { className: isNum(v) ? 'sw-num' : undefined, children: v }, `v-${v}`)] }, k))
   }, `tele-${side}`)
   return jsx(HudPanel, {
     title: t('sw.replay.worm'), span: 6, className: 'sw-rworm',
@@ -3445,7 +3514,7 @@ function Player({ t, turn, cwd, now, names, storedId, index, setIndex, playing, 
       jsx(HudPanel, {
         title: playing ? t('sw.replay.replaying') : t('sw.replay.playback'), span: 6, className: 'sw-rpb',
         children: [
-          jsxs('div', { className: 'sw-hrow', children: [jsx('b', { className: 'sw-rof', 'aria-live': 'polite', children: t('sw.replay.of', i + 1, steps.length) }, 'of'), jsx('b', { 'aria-hidden': 'true', children: `${pct}%` }, 'p')] }, 'r'),
+          jsxs('div', { className: 'sw-hrow', children: [jsx('b', { className: 'sw-rof', 'aria-live': 'polite', children: t('sw.replay.of', i + 1, steps.length) }, 'of'), jsx('b', { className: 'sw-num', 'aria-hidden': 'true', children: `${pct}%` }, 'p')] }, 'r'),
           jsx('div', {
             className: 'sw-rmarks', ref: marks, role: 'list',
             children: steps.map((s, k) => jsx('span', {
@@ -3543,7 +3612,11 @@ function Replay({ t, replay, now, names, storedId, onToast }) {
       replay.loading
         ? jsxs('p', { className: 'sw-cmnote sw-cmwait', children: [jsx('span', { className: 'sw-spin', 'aria-hidden': 'true' }, 's'), t('sw.loading')] }, 'w')
         : !turns.length
-          ? (replay.error ? null : jsx('p', { className: 'sw-empty', children: t('sw.replay.none') }, 'none'))
+          ? (replay.error ? null : jsx('div', {
+            // no edit: one panel with what will appear and when, no WORMHOLE
+            className: 'sw-rgrid sw-none',
+            children: jsx(HudPanel, { title: t('sw.tabs.replay'), span: 6, children: [jsx('p', { className: 'sw-hnote', children: t('sw.replay.none') }, 'none')] })
+          }, 'none'))
           : jsxs('div', {
             className: 'sw-rgrid',
             children: [
@@ -3712,6 +3785,7 @@ export function Page() {
   const pageRef = useRef(null)
   const [theme] = useTheme()
   const watched = useWatchedChat(pageRef)
+  useWholeRows(pageRef)
   const { runtimeId, storedId } = watched
   const busyBy = useValue(host.state.busyBySession || NO_ATOM)
   const history = useHistory(storedId)
@@ -4892,14 +4966,21 @@ const CSS = `${TM_PALETTE}
    rank comes from size and grey. Sizes stay the panel's own. --mono is the panel's text font here. */
 .sw-page[data-theme=terminal]{--mono:var(--dt-font-sans,system-ui,sans-serif);--code:var(--dt-font-mono,ui-monospace,monospace)}
 .sw-page[data-theme=terminal] .sw-panel,.sw-page[data-theme=terminal] .sw-panel *{font-weight:400!important}
-.sw-page[data-theme=terminal] :is(.sw-rlines,.sw-rlines *,.sw-out,.sw-out *,.sw-ol,.sw-hbig,.sw-hbig *,.sw-big,.sw-big *,.sw-money,.sw-roll,.sw-hln,.sw-hlt,.sw-copn,.sw-pg,.sw-chax,.sw-head code){font-family:var(--code)!important;font-variant-numeric:tabular-nums}
+.sw-page[data-theme=terminal] :is(.sw-rlines,.sw-rlines *,.sw-out,.sw-out *,.sw-ol,.sw-hbig,.sw-hbig *,.sw-big,.sw-big *,.sw-money,.sw-roll,.sw-hln,.sw-hlt,.sw-copn,.sw-pg,.sw-chax,.sw-head code){font-family:var(--code)!important;font-variant-numeric:tabular-nums!important}
+/* One rule for numerals: every slot whose whole text is a value (count, ratio, cost, %, tokens,
+   duration, clock time) is set in the code font with tabular figures, at its own size. A number inside
+   a label or a sentence ("CHANGED 12", "DONE · 5m 28s") stays in the text font. .sw-num marks a value
+   in a slot that can also hold words (a key/value row). Only the hero numbers glow (.sw-hbig, the
+   DETAIL tiles); a small value inside a glowing line does not. */
+.sw-page[data-theme=terminal] :is(.sw-num,.sw-tkh>b,.sw-tks>span,.sw-orp>b,.sw-orm,.sw-tabn,.sw-cmlt,.sw-rwhen,.sw-exit>b,.sw-tn){font-family:var(--code)!important;font-variant-numeric:tabular-nums!important}
+.sw-page[data-theme=terminal] :is(.sw-tabn,.sw-hbig small){text-shadow:none}
 .sw-tmore{margin:-4px 0 8px;color:var(--dim)}
 .sw-page[data-theme=terminal] :is(.sw-hpn,.sw-tkh .sw-1l,.sw-un,.sw-verb,.sw-rname,.sw-tl,.sw-tn){letter-spacing:0}
 .sw-page[data-theme=terminal] .sw-why{margin:0;padding:7px 12px;background:var(--raised);box-shadow:inset 0 0 0 1px var(--line);line-height:1.5}
 .sw-page[data-theme=terminal] .sw-runb{margin-bottom:8px;line-height:1.5}
 .sw-page[data-theme=terminal] .sw-tk{margin-bottom:12px}
 .sw-page[data-theme=terminal] .sw-tkax{margin-top:-4px}
-.sw-page[data-theme=terminal] .sw-fleg{flex-wrap:nowrap;white-space:nowrap}
+.sw-page[data-theme=terminal] .sw-fleg{flex-wrap:wrap;white-space:nowrap}
 .sw-page[data-theme=terminal] .sw-rpb .sw-btns{flex-wrap:nowrap}
 .sw-hfold>summary{cursor:pointer;list-style:none}
 .sw-hfold>summary::-webkit-details-marker{display:none}
@@ -4930,7 +5011,7 @@ const CSS = `${TM_PALETTE}
 .sw-rl[data-tag="@"]{align-items:center;gap:8px;margin:8px 0 3px;padding-left:6px;font-size:11.5px;letter-spacing:.04em;text-transform:uppercase}
 .sw-rl[data-tag="@"]:first-child{margin-top:0}
 .sw-rl[data-tag="@"]::before{content:"";flex:none;width:14px;height:1px;background:var(--a)}
-.sw-rl[data-tag="@"]::after{content:"";flex:1 0 40px;height:1px;background:var(--line)}
+.sw-rl[data-tag="@"]::after{content:"";flex:1 1 40px;min-width:0;height:1px;background:var(--line)}
 .sw-rmore{display:flex}
 /* Play: in order each removed line strikes through and dims; then each added line types in, letter by
    letter, behind a block cursor that stays on the line being typed (data-cur). The text is an
@@ -5000,6 +5081,7 @@ const CSS = `${TM_PALETTE}
  background:color-mix(in srgb,var(--c) 9%,var(--raised));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 34%,var(--raised))}
 .sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-head{font-size:14px;color:var(--tm-hi)}
 .sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:14px 0 0}
+@container (max-width:540px){.sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile{--tc:var(--a);position:relative;display:flex;flex-direction:column-reverse;justify-content:flex-end;gap:9px;min-width:0;padding:9px 11px 11px;
  background:color-mix(in srgb,var(--tc) 4%,transparent);box-shadow:inset 0 0 0 1px var(--line)}
 .sw-page[data-theme=terminal] .sw-hp.sw-hdetail .sw-tile[data-k=read]{--tc:var(--hud-teal-b)}
@@ -5095,6 +5177,10 @@ const CSS = `${TM_PALETTE}
 .sw-page .sw-hlog>button:nth-child(4){animation-delay:.21s}
 .sw-page .sw-hlog>button:nth-child(n+5){animation-delay:.28s}
 @container (max-width:540px){.sw-ortele{display:none}}
+/* Nothing is cut or overlaps at any width: a value or a key word stays whole and never shrinks; the
+   name beside it gives way (ellipsis); a legend or a row of tiles wraps instead of running out. */
+.sw-orl>.sw-orv,.sw-tkh>b{flex:none;max-width:none}
+.sw-orl>.sw-orn,.sw-tkh>.sw-1l{min-width:0}
 /* the live station canvas sits under the callouts; it draws the station, lines and MAIN box itself,
    so the SVG schematic hides while it runs (the SVG stays as the fallback without a 2D canvas) */
 .sw-orcv{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
