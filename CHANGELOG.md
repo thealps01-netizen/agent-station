@@ -3,6 +3,15 @@
 All notable changes to Agent Station. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 3.0.2 — 2026-10-17
+
+- Live updates no longer stop for good. After three failed `subagent.list` polls in a row the page
+  and the status-bar chip still say so, but keep asking every 30 s and clear the alert on the next
+  answer; before, they stopped until Try again.
+- A 4001 "session not found or not owned by this transport" is no longer shown as "live updates
+  stopped". Hermes answers it while a chat's runtime is being resumed or reconnected; the page now
+  asks again every 30 s without an alert, as the desktop's own pollers do.
+
 ## 3.0.1 — 2026-10-17
 
 - Cards sit closer to the page: their ground is the app's card colour mixed half-way into the page
