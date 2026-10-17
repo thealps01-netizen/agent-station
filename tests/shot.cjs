@@ -14,6 +14,8 @@
  * Terminal) — a screen missing in any look is RED, so a dropped frame cannot pass quietly. Every
  * frame of every look is measured; the narrow (380 px) frames must not scroll sideways either.
  *
+ * The in-page contrast rule lives in measure.cjs (shared with live.cjs, the real-panel harness).
+ *
  * Usage (from tests/):  node preview.mjs && <electron> shot.cjs preview.html preview.png
  *   <electron> = $HERMES_ELECTRON, or <core>/apps/desktop/node_modules/electron/dist/electron(.exe)
  * Output: one PNG per look — <out> (Terminal, the one the README shows; any further look <out>-<look>.png) — plus
@@ -22,6 +24,7 @@
 const { app, BrowserWindow } = require('electron')
 const fs = require('fs')
 const path = require('path')
+const { PAGE } = require('./measure.cjs')
 
 const [htmlArg, outArg] = process.argv.slice(2)
 const htmlPath = htmlArg || path.join(__dirname, 'preview.html')
@@ -34,111 +37,8 @@ const LOOKS = ['terminal']
 app.disableHardwareAcceleration()
 
 const PREPARE = `(() => {
-  // -- WCAG CONTRAST ------------------------------------------------------------------------------
-  // Chromium prints a legacy colour as rgb()/rgba() and a color-mix() result as color(srgb r g b / a).
-  const parseColor = value => {
-    const v = String(value || '').trim()
-    let m = v.match(/^rgba?\\(([^)]+)\\)$/i)
-    if (m) {
-      const p = m[1].split(/[,\\s/]+/).filter(Boolean).map(Number)
-      return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 }
-    }
-    m = v.match(/^color\\(srgb\\s+([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)(?:\\s*\\/\\s*([\\d.]+%?))?\\)$/i)
-    if (m) {
-      const al = m[4] === undefined ? 1 : (m[4].slice(-1) === '%' ? parseFloat(m[4]) / 100 : Number(m[4]))
-      return { r: Number(m[1]) * 255, g: Number(m[2]) * 255, b: Number(m[3]) * 255, a: al }
-    }
-    return null
-  }
-  const over = (t, b) => ({ r: t.r * t.a + b.r * (1 - t.a), g: t.g * t.a + b.g * (1 - t.a), b: t.b * t.a + b.b * (1 - t.a), a: 1 })
-  // What the eye sees UNDER the text: every semi-transparent ancestor ground, composited down to the
-  // first opaque one (the page ground is opaque, so this terminates).
-  const fillUnder = el => {
-    const stack = []
-    for (let n = el; n; n = n.parentElement) {
-      const c = parseColor(getComputedStyle(n).backgroundColor)
-      if (c && c.a > 0) { stack.push(c); if (c.a >= 0.999) break }
-    }
-    let base = { r: 255, g: 255, b: 255, a: 1 }
-    let used = 0
-    if (stack.length && stack[stack.length - 1].a >= 0.999) { base = stack[stack.length - 1]; used = 1 }
-    for (let i = stack.length - 1 - used; i >= 0; i -= 1) base = over(stack[i], base)
-    return base
-  }
-  // The nearest PAINTED fill (the node's own or the first ancestor that paints one): the surface the
-  // ink sits ON. A tone tint keeps the tone's channels and only scales its alpha, so an exact channel
-  // comparison tells whether the ink is painted over its own tone or over a neutral ground.
-  const paintUnder = el => {
-    for (let n = el; n; n = n.parentElement) {
-      const c = parseColor(getComputedStyle(n).backgroundColor)
-      if (c && c.a > 0) return c
-    }
-    return null
-  }
-  const chan = c => { const s = c / 255; return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4) }
-  const lum = c => 0.2126 * chan(c.r) + 0.7152 * chan(c.g) + 0.0722 * chan(c.b)
-  const ratio = (f, b) => Math.round(((Math.max(lum(f), lum(b)) + 0.05) / (Math.min(lum(f), lum(b)) + 0.05)) * 100) / 100
-  const rgbText = c => 'rgb(' + Math.round(c.r) + ', ' + Math.round(c.g) + ', ' + Math.round(c.b) + ')'
-  const same = (a, b) => Math.abs(a.r - b.r) <= 2 && Math.abs(a.g - b.g) <= 2 && Math.abs(a.b - b.b) <= 2
-  const probeEl = document.createElement('span')
-  document.body.appendChild(probeEl)
-  const token = name => {
-    probeEl.style.color = ''
-    probeEl.style.color = 'var(' + name + ')'
-    return getComputedStyle(probeEl).color
-  }
-  const TONES = {
-    green: parseColor(token('--ui-green')),
-    yellow: parseColor(token('--ui-yellow')),
-    red: parseColor(token('--ui-red')),
-    blue: parseColor(token('--ui-blue'))
-  }
-  const readingToken = token('--ui-text-primary')
-  probeEl.remove()
-  const toneName = c => {
-    for (const [name, t] of Object.entries(TONES)) if (t && same(c, t)) return name
-    return null
-  }
-  const root = document.body
-  const textRows = []
-  for (const el of [root, ...root.querySelectorAll('*')]) {
-    const own = [...el.childNodes]
-      .filter(n => n.nodeType === 3 && (n.nodeValue || '').trim())
-      .map(n => n.nodeValue.trim()).join(' ')
-    if (!own) continue
-    const cs = getComputedStyle(el)
-    if (cs.visibility === 'hidden' || cs.display === 'none') continue
-    const ink = parseColor(cs.color)
-    if (!ink || ink.a === 0) continue
-    const bg = fillUnder(el)
-    const paint = paintUnder(el)
-    const seen = ink.a >= 0.999 ? ink : over(ink, bg)
-    const px = parseFloat(cs.fontSize)
-    const bold = parseInt(cs.fontWeight, 10) >= 700
-    const large = px >= 18.7 || (px >= 14 && bold)
-    const need = large ? 3 : 4.5
-    const r = ratio(seen, bg)
-    const tone = toneName(ink)
-    const onOwnTone = tone ? Boolean(paint) && same(paint, ink) : null
-    const klass = !tone ? (ink.a >= 0.7 ? 'reading' : 'quiet') : (onOwnTone ? 'chip' : 'tone-as-text')
-    textRows.push({
-      sel: (typeof el.className === 'string' ? el.className.split(' ').slice(0, 2).join('.') : '') || el.tagName.toLowerCase(),
-      text: own.slice(0, 22),
-      ink: rgbText(ink),
-      inkAlpha: Math.round(ink.a * 100) / 100,
-      fill: rgbText(bg),
-      px,
-      weight: String(cs.fontWeight),
-      large,
-      need,
-      ratio: r,
-      tone,
-      klass,
-      pass: klass === 'chip' || klass === 'quiet' ? null : r >= need
-    })
-  }
-  textRows.sort((a, b) => a.ratio - b.ratio)
-  const gated = textRows.filter(x => x.pass !== null)
+  // WCAG contrast: measure.cjs, shared with live.cjs
+  const ct = window.__swMeasure.contrast(document.body)
   // A status label or a duration that clips its own text is a layout bug, not a style choice.
   const clipped = [...document.querySelectorAll('.sw-meta, .sw-us, .sw-cmx, .sw-mrx, .sw-fl, .sw-sbn')]
     .filter(el => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow !== 'ellipsis')
@@ -208,19 +108,7 @@ const PREPARE = `(() => {
     overlaps,
     rawKeyOnScreen: (document.body.textContent || '').match(/\\\\bsw\\\\.[a-z][a-zA-Z.]*/g),
     clipped,
-    contrast: {
-      rows: textRows,
-      count: textRows.length,
-      classes: {
-        gated: gated.length,
-        chip: textRows.filter(x => x.klass === 'chip').length,
-        quiet: textRows.filter(x => x.klass === 'quiet').length,
-        toneAsText: textRows.filter(x => x.klass === 'tone-as-text').length
-      },
-      violations: textRows.filter(x => x.pass === false),
-      lowestGated: gated.length ? gated[0] : null,
-      readingToken
-    }
+    contrast: ct
   }
 })()`
 
@@ -233,6 +121,7 @@ app.whenReady().then(async () => {
   win.webContents.on('render-process-gone', (_e, d) => problems.push(`render-process-gone: ${JSON.stringify(d)}`))
   await win.loadFile(htmlPath)
   await new Promise(r => setTimeout(r, 1500))
+  await win.webContents.executeJavaScript(PAGE)
   const measured = await win.webContents.executeJavaScript(PREPARE)
   measured.console = problems
   fs.writeFileSync(outPath.replace(/\.png$/i, '.measure.json'), JSON.stringify(measured, null, 1))
