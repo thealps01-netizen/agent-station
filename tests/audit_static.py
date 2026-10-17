@@ -4,7 +4,8 @@ Run: python audit_static.py        (exit 0 = clean, 1 = problems named, one per 
 Canary: python canary_audit.py     (breaks every rule once in a copy; each must turn this red)
 
 Rules
-  release      one version in plugin.yaml / manifest.json / CHANGELOG, installed copy in sync
+  release      one version in plugin.yaml / manifest.json / CHANGELOG, the README's supported range
+               matches `requires_hermes`, installed copy in sync
                (release_gate.py; its own canary is `python release_gate.py`)
   i18n         every literal `t('sw.…')` key resolves in the English bundle, and every template key
                `t(`sw.status.${…}`)` has a leaf for each value the page can hand it
@@ -24,11 +25,19 @@ Rules
                re-raises, counts or continues on purpose (FileNotFoundError / ImportError)
   readOnly     the backend opens state.db `mode=ro`, registers GET routes only, and never writes
                a file (no write_text / write_bytes / open(..., 'w') / unlink / mkdir)
+  identity     the old name (subagent-watch / Subagent Watch, any case or separator) is gone from
+               plugin.yaml, manifest.json, plugin.js, plugin_api.py, __init__.py and from README.md
+               outside its `## Moving from Subagent Watch` section — a stale name splits the install
+  license      LICENSE exists and its first line is `MIT License` (plugin.yaml says `license: MIT`)
+  privacy      no shipped file (`git ls-files`; every file of a copy that is not a git work tree)
+               names the author's account or a `<drive>:/Users/<name>` path other than the fixture
+               names `someone` and `x` — the repository is meant to be public
 """
 from __future__ import annotations
 
 import ast
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -38,6 +47,13 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 JS = ROOT / "desktop" / "plugin.js"
 BACKEND = ROOT / "dashboard" / "plugin_api.py"
+OLD_NAME = re.compile(r"subagent[-_ ]?watch", re.I)
+IDENTITY_FILES = ("plugin.yaml", "dashboard/manifest.json", "desktop/plugin.js", "dashboard/plugin_api.py", "__init__.py")
+MOVING_SECTION = "## Moving from Subagent Watch"
+# Assembled so this file does not name the account it looks for.
+ACCOUNT = re.compile("ene" + "sa", re.I)
+USER_PATH = re.compile(r"[A-Za-z]:[/\\]+Users[/\\]+([A-Za-z0-9._-]+)", re.I)
+FIXTURE_USERS = {"someone", "x"}
 
 problems: list[str] = []
 
@@ -202,6 +218,67 @@ def check_backend(source: str) -> None:
                        f"{'everything' if '<bare>' in names else ', '.join(sorted(names))} without a trace")
 
 
+def _shipped_files() -> list[Path]:
+    """What a release ships: `git ls-files` in a work tree; every plain file of a copy that is not one."""
+    try:
+        top = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--show-toplevel"], capture_output=True,
+                             text=True, encoding="utf-8", errors="replace")
+        tracked = top.returncode == 0 and Path(top.stdout.strip()).resolve() == ROOT.resolve()
+    except OSError as exc:  # no git on PATH: scan the folder instead
+        print(f"note: git unavailable ({exc}); privacy scans every file under {ROOT}")
+        tracked = False
+    if tracked:
+        listed = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, check=True)
+        return [ROOT / rel for rel in listed.stdout.decode("utf-8").split("\0") if rel and (ROOT / rel).is_file()]
+    skip = {"node_modules", "__pycache__"}
+    return [p for p in ROOT.rglob("*") if p.is_file()
+            and not any(part in skip or part.startswith(".") for part in p.relative_to(ROOT).parts[:-1])]
+
+
+def check_identity() -> None:
+    for rel in IDENTITY_FILES:
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if OLD_NAME.search(line):
+                report(f"identity: {rel} line {line_no} still names the old plugin ({OLD_NAME.search(line).group(0)}) "
+                       "— the plugin is Agent Station / agent-station")
+    readme = ROOT / "README.md"
+    if readme.is_file():
+        moving = False
+        for line_no, line in enumerate(readme.read_text(encoding="utf-8").splitlines(), 1):
+            if line.startswith("## "):
+                moving = line.strip() == MOVING_SECTION
+            if not moving and OLD_NAME.search(line):
+                report(f"identity: README.md line {line_no} names the old plugin outside "
+                       f"`{MOVING_SECTION}` — only that section may mention it")
+
+
+def check_license() -> None:
+    path = ROOT / "LICENSE"
+    first = path.read_text(encoding="utf-8").splitlines()[:1] if path.is_file() else []
+    if first != ["MIT License"]:
+        report(f"license: LICENSE {'first line is ' + repr(first[0]) if first else 'is missing'} — it must start "
+               "`MIT License` (plugin.yaml and the README say MIT)")
+
+
+def check_privacy() -> None:
+    for path in _shipped_files():
+        data = path.read_bytes()
+        if b"\0" in data[:8192]:
+            continue  # binary (images): no text to leak
+        rel = path.relative_to(ROOT).as_posix()
+        for line_no, line in enumerate(data.decode("utf-8", errors="replace").splitlines(), 1):
+            if ACCOUNT.search(line):
+                report(f"privacy: {rel} line {line_no} names the author's account — use a fixture name or a "
+                       "generic path")
+            for match in USER_PATH.finditer(line):
+                if match.group(1).lower() not in FIXTURE_USERS:
+                    report(f"privacy: {rel} line {line_no} carries a personal path ({match.group(0)}) — use "
+                           "C:/Users/someone or a generic placeholder")
+
+
 def main() -> int:
     js = JS.read_text(encoding="utf-8")
     release_gate.check(report)
@@ -211,6 +288,9 @@ def main() -> int:
     check_tone_ink(js)
     check_js_catches(js)
     check_backend(BACKEND.read_text(encoding="utf-8"))
+    check_identity()
+    check_license()
+    check_privacy()
     for problem in problems:
         print(f"PROBLEM  {problem}")
     print(f"static audit: {'clean' if not problems else f'{len(problems)} problem(s)'}")
