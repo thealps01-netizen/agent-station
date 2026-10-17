@@ -1,4 +1,4 @@
-"""Core contract: everything subagent-watch reads from Hermes still exists under the name it reads.
+"""Core contract: everything agent-station reads from Hermes still exists under the name it reads.
 
 Why: the panel never imports most of what it depends on. The backend opens `state.db` by column
 name and reads Hermes' own process files by key; the desktop page listens for gateway events by

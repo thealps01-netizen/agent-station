@@ -1,5 +1,5 @@
 /**
- * Subagent Watch — rendered in jsdom with the real React, driven like a user.
+ * Agent Station — rendered in jsdom with the real React, driven like a user.
  *
  * Run: cd tests && npm install && node render_check.mjs      (exit 0 = passed)
  *
@@ -248,7 +248,7 @@ const ctx = {
   },
   register: c => { registered.push(c); return () => {} },
   registerSettingsPage: page => { registered.push({ ...page, area: 'settings.plugins' }); return () => {} },
-  i18n: { register: b => stub.registerBundles('subagent-watch', b), t: k => k },
+  i18n: { register: b => stub.registerBundles('agent-station', b), t: k => k },
   onEvent: (type, fn) => {
     if (!listeners.has(type)) listeners.set(type, new Set())
     listeners.get(type).add(fn)
@@ -303,8 +303,8 @@ const quiet = async fn => { const w = console.warn; console.warn = () => {}; try
 mod.default.register(ctx)
 const route = registered.find(c => c.area === 'routes')
 const nav = registered.find(c => c.area === 'sidebar.nav')
-check(route && route.data.path === '/subagent-watch', 'routes page at /subagent-watch')
-check(nav && nav.data.path === '/subagent-watch' && nav.data.label === 'Subagents', 'sidebar entry with a resolved label')
+check(route && route.data.path === '/agent-station', 'routes page at /agent-station')
+check(nav && nav.data.path === '/agent-station' && nav.data.label === 'Agent Station', 'sidebar entry with a resolved label')
 check(!registered.some(c => String(c.area).startsWith('pane')), 'never registers a pane')
 
 // pure helpers
@@ -320,7 +320,7 @@ check(mod.fmtDuration(4000, (k, ...a) => `${k}:${a.join('/')}`) === 'sw.units.hm
   'duration and token units come from the bundle, not hard-coded strings')
 check(mod.modelLabel('anthropic/claude-opus-5-5') === 'claude-opus-5-5', 'model label drops the provider')
 check(mod.batchState(['completed', 'queued']) === 'queued' && mod.batchState(['completed', 'failed']) === 'failed', 'batch state never reads done while one is not')
-const tr = stub.usePluginI18n('subagent-watch')
+const tr = stub.usePluginI18n('agent-station')
 check(tr('sw.tabs.running', 1) === '1 command running' && tr('sw.tabs.running', 2) === '2 commands running', `command count is singular for one (${tr('sw.tabs.running', 1)})`)
 check(tr('sw.proc.unreadable', 1) === '1 record could not be read and is not listed' && tr('sw.proc.unreadable', 2).startsWith('2 records'),
   `unreadable count is singular for one (${tr('sw.proc.unreadable', 1)})`)
@@ -405,7 +405,7 @@ const refresh = async () => { await act(async () => { q('.sw-hd .sw-ib').click()
 check(q('.sw-page')?.dataset.theme === 'terminal' && !q('.sw-tg, .sw-tgb') && !registered.some(c => c.area === 'settings.plugins')
   && !/data-theme=cockpit|\.sw-tg|\.sw-dm|\.sw-utop|\.sw-map/.test(q('style')?.textContent || ''),
   'the page opens in Terminal, the only look: no look toggle, no Settings page, no rule of a removed look')
-check(q('h2.sw-ht')?.textContent === 'subagent-watch' && q('.sw-chatn')?.textContent === '// Refactor fleet routing' && !q('.sw-held'),
+check(q('h2.sw-ht')?.textContent === 'agent-station' && q('.sw-chatn')?.textContent === '// Refactor fleet routing' && !q('.sw-held'),
   `the header has the title and names the watched chat (${q('.sw-chatn')?.textContent})`)
 check(tab('agents')?.getAttribute('aria-selected') === 'true' && tab('commands')?.getAttribute('aria-selected') === 'false',
   'two tabs, Agents first and selected')
@@ -1259,7 +1259,7 @@ check(lastSaid?.[1]?.tone === 'error' && lastSaid?.[1]?.ttlMs === 8000, `the pet
 await emit('subagent.complete', 'rt-9', { subagent_id: 'p1', status: 'failed' })
 check(chip()?.querySelector('.sw-sbn')?.textContent === '3/3' && /1 failed/.test(chip()?.dataset.tip || ''), 'a late frame never changes a worker that already ended')
 await act(async () => { chip().click() })
-check(stub.calls.navigated.at(-1) === '/subagent-watch', 'the chip opens the Subagents page')
+check(stub.calls.navigated.at(-1) === '/agent-station', 'the chip opens Agent Station')
 await tick(8200)
 check(!chip() && stub.pet.cleared.includes('progress'), 'a finished batch lingers, then the chip and the pet line go')
 stub.state.list['rt-8'] = [{ subagent_id: 'r1', status: 'running', goal: 'r1' }, { subagent_id: 'r2', status: 'running', goal: 'r2' }]

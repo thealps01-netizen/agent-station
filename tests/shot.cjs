@@ -1,5 +1,5 @@
 /**
- * Renders the Subagent Watch preview in the REAL engine (the app's own Electron = Chromium), writes a
+ * Renders the Agent Station preview in the REAL engine (the app's own Electron = Chromium), writes a
  * PNG and runs the WCAG contrast gate on real pixels.
  *
  * Why: jsdom (render_check, preview.mjs) proves structure, never colour or layout. This is the only

@@ -1,4 +1,4 @@
-"""Static audit of subagent-watch: the rules no render test can see, checked on the source.
+"""Static audit of agent-station: the rules no render test can see, checked on the source.
 
 Run: python audit_static.py        (exit 0 = clean, 1 = problems named, one per line)
 Canary: python canary_audit.py     (breaks every rule once in a copy; each must turn this red)

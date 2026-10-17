@@ -1,4 +1,4 @@
-"""Canary run for subagent-watch: every lock is broken once and the gate that owns it must go red.
+"""Canary run for agent-station: every lock is broken once and the gate that owns it must go red.
 
 Why: a test that passes is only evidence when it is also known to FAIL on the bug it is named
 after. The notes used to say "mutation canaries were run by hand"; this is that list, repeatable.

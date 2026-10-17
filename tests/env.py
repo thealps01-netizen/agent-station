@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PLUGIN_ID = "subagent-watch"
+PLUGIN_ID = "agent-station"
 VENV_PYTHONS = ("venv/Scripts/python.exe", "venv/bin/python", ".venv/bin/python")
 
 

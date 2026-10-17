@@ -1,4 +1,4 @@
-"""Real-render harness for subagent-watch: the real panel in the app's own Electron, on fixture data.
+"""Real-render harness for agent-station: the real panel in the app's own Electron, on fixture data.
 
 Run from tests/ with the interpreter that runs check_api.py (it needs fastapi only):
     python live.py              the 56 shots below; exit 0 = no violation in any of them
