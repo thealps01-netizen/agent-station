@@ -1,7 +1,39 @@
 # Changelog
 
-All notable changes to subagent-watch. The top `## <version>` heading is checked against
+All notable changes to Agent Station. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
+
+## 3.0.0 — 2026-10-17
+
+The plugin is now called **Agent Station** (id `agent-station`, route `/agent-station`). The old name
+said "subagents", but the page shows the main agent and its subagents, the chat's background commands
+and a Replay of the file edits; the sidebar entry now reads "Agent Station" too.
+
+- **Install from the app.** Settings → Capabilities → Plugins → Install from Git, paste the
+  repository's web address, keep "Enable agent plugin after install" on. Hermes copies the desktop
+  page by itself: the manual copy step is gone. From a terminal: `hermes plugins install <repository
+  URL> --enable`.
+- **Requires Hermes 0.21.7 or newer, tested up to 0.22.2.** `plugin.yaml` declares it
+  (`requires_hermes`), so an older Hermes says so instead of loading a half-working page. Your Hermes
+  version is in Settings → About.
+- Settings: nothing to carry over. The page's only stored setting (the look) was never written, so
+  the new id starts exactly where the old one was.
+- The DETAIL panel is drawn in the HUD's style: no second portrait, no unlabelled bars, an "Edit
+  failed" list, and the folder column shortened once at its start.
+- A failed edit is never counted as a changed file: FILES, AGENT and DETAIL now agree.
+- Panel titles keep their letter O (no more Ø), menus and the canvas drawings sit on a solid ground,
+  and each agent has one name everywhere.
+- Nothing is cut off or overlapping at 915, 560 or 380 px wide: callout values, durations and the
+  FILES legend stay whole.
+- Empty panels follow one rule: they say there is nothing yet instead of drawing zeros and empty
+  axes.
+- Every number is set in the code font with even-width figures, so columns line up.
+- Scroll lists (LOG, COMMANDS, requests, diff, console) end on a whole row, never half a line.
+
+**Moving from Subagent Watch.** Remove the old plugin first: Plugins → Uninstall "subagent-watch", or
+`hermes plugins remove subagent-watch`. If a "Subagents" entry is still in the sidebar afterwards,
+uninstall the remaining Desktop row or delete `<Hermes home>/desktop-plugins/subagent-watch`. Then
+install Agent Station. Keeping both shows two sidebar entries and two status-bar chips.
 
 ## 2.4.0 — 2026-10-15
 

@@ -1,5 +1,5 @@
 /**
- * Static preview of Subagent Watch — look at the page without restarting the app.
+ * Static preview of Agent Station — look at the page without restarting the app.
  *
  * Run: cd tests && node render_check.mjs && node preview.mjs      (writes preview.html, exit 0 = ok)
  *
@@ -98,7 +98,7 @@ const SWARM_NAMES = ['atlas', 'beacon', 'cinder', 'delta', 'ember', 'fable', 'ga
 const PROCS = [
   { id: 'proc_kill', command: 'sleep 999', cwd: 'C:/work/panel', status: 'stopped', started_at: NOW - 3000, duration_s: 100, exit_code: -15 },
   { id: 'proc_bad', command: 'node build.mjs --release', cwd: 'C:/work/panel', status: 'failed', started_at: NOW - 1200, duration_s: 5, exit_code: 1 },
-  { id: 'proc_ok', command: 'python -m pytest tests/ -q --maxfail=1 --durations=10 --basetemp=C:/Users/someone/AppData/Local/hermes/cache/scratch/pytest', cwd: 'C:/Users/someone/AppData/Local/hermes/plugins/subagent-watch/tests', status: 'completed', started_at: NOW - 900, duration_s: 42, exit_code: 0 },
+  { id: 'proc_ok', command: 'python -m pytest tests/ -q --maxfail=1 --durations=10 --basetemp=C:/Users/someone/AppData/Local/hermes/cache/scratch/pytest', cwd: 'C:/Users/someone/AppData/Local/hermes/plugins/agent-station/tests', status: 'completed', started_at: NOW - 900, duration_s: 42, exit_code: 0 },
   { id: 'proc_run', command: 'npm run dev -- --port 5174', cwd: 'C:/work/panel', status: 'running', started_at: NOW - 95, duration_s: null, exit_code: null }
 ]
 // Screen 6: one command per open state.
@@ -164,7 +164,7 @@ function makeCtx(look, { fail = false, live = false, empty = false, loading = fa
   const ctx = {
     storage: { get: (key, fallback) => (key === 'theme' ? look : fallback), set: () => {}, remove: () => {} },
     register: c => { registered.push(c); return () => {} },
-    i18n: { register: b => stub.registerBundles('subagent-watch', b), t: k => k },
+    i18n: { register: b => stub.registerBundles('agent-station', b), t: k => k },
     onEvent: (type, fn) => {
       if (!listeners.has(type)) listeners.set(type, new Set())
       listeners.get(type).add(fn)
@@ -213,14 +213,14 @@ async function liveRun(emit) {
   const ev = (id, goal, extra = {}) => emit('subagent.start', { subagent_id: id, delegation_id: 'd1', goal, started_at: NOW - 140, ...extra })
   await emit('subagent.spawn_requested', { subagent_id: 's1', delegation_id: 'd1', goal: "Polish 'fleet-status' visuals", task_index: 0 })
   await emit('subagent.spawn_requested', { subagent_id: 's2', delegation_id: 'd1', goal: "Check 'wiki-watchdog' tests", task_index: 1 })
-  await emit('subagent.spawn_requested', { subagent_id: 's3', delegation_id: 'd1', goal: "Run 'subagent-watch' gates", task_index: 2 })
+  await emit('subagent.spawn_requested', { subagent_id: 's3', delegation_id: 'd1', goal: "Run 'agent-station' gates", task_index: 2 })
   await emit('subagent.spawn_requested', { subagent_id: 's4', delegation_id: 'd1', goal: "Write 'release-notes' draft", task_index: 3 })
   await ev('s1', "Polish 'fleet-status' visuals", { child_session_id: 'k1', model: 'anthropic/claude-opus-5-5' })
   await ev('s2', "Check 'wiki-watchdog' tests", { child_session_id: 'k2', model: 'anthropic/claude-sonnet-5' })
   await emit('subagent.tool', { subagent_id: 's2', tool_name: 'read_file', tool_preview: 'C:/work/panel/tests/render_check.mjs' })
   await ev('s1a', "Judge 'status-contrast' ratios", { parent_id: 's1', child_session_id: 'k1a', depth: 1, model: 'openai/gpt-5.2', started_at: NOW - 60 })
   await emit('subagent.tool', { subagent_id: 's1a', tool_name: 'read_file', tool_preview: 'C:/work/panel/desktop/plugin.js' })
-  await ev('s3', "Run 'subagent-watch' gates", { child_session_id: 'k3', model: 'anthropic/claude-sonnet-5' })
+  await ev('s3', "Run 'agent-station' gates", { child_session_id: 'k3', model: 'anthropic/claude-sonnet-5' })
   await emit('subagent.tool', { subagent_id: 's3', tool_name: 'terminal', tool_preview: 'node render_check.mjs' })
   await emit('subagent.complete', { subagent_id: 's2', status: 'error', summary: "The wiki-watchdog suite fails before it starts: Cannot find module './fixtures/state.db'. Nothing was changed.", duration_seconds: 74, cost_usd: 0.42 })
   await emit('subagent.tool', { subagent_id: 's1', tool_name: 'patch', tool_preview: 'C:/work/panel/desktop/plugin.js' })
@@ -413,7 +413,7 @@ ${frames.filter(f => f.screen === s && f.look === look).map(cell).join('\n')}</d
 
 const page = `<!doctype html>
 <html class="dark" lang="en">
-<head><meta charset="utf-8"><title>Subagent Watch — preview</title>
+<head><meta charset="utf-8"><title>Agent Station — preview</title>
 <style>${appCss}</style>
 <style>${DARK_SEEDS}</style>
 <style>

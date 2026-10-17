@@ -8,6 +8,8 @@ Rules:
   * `plugin.yaml` is the source of the version; `dashboard/manifest.json` and the top `## <version>`
     heading of `CHANGELOG.md` must carry the same one. A plugin that reports two versions depending on
     where you look has no version at all.
+  * `plugin.yaml` `requires_hermes: ">=X"` is the oldest supported Hermes; README.md § Supported Hermes
+    versions must say "X or newer". ci.yml's CORE_SHA pins the same core (a comment there, not checked).
   * The desktop app loads `$HERMES_HOME/desktop-plugins/<id>/plugin.js`, a COPY of
     `desktop/plugin.js`. The two must be identical up to line endings (a git checkout is LF by
     `.gitattributes`, a copy made on Windows may be CRLF, and the loader reads both alike); a missing
@@ -33,6 +35,7 @@ ROOT = HERE.parent
 PLUGIN_YAML = ROOT / "plugin.yaml"
 MANIFEST = ROOT / "dashboard" / "manifest.json"
 CHANGELOG = ROOT / "CHANGELOG.md"
+README = ROOT / "README.md"
 JS = ROOT / "desktop" / "plugin.js"
 AUDIT = HERE / "audit_static.py"
 
@@ -40,6 +43,19 @@ AUDIT = HERE / "audit_static.py"
 def _yaml_version() -> str | None:
     match = re.search(r"^version:\s*['\"]?([^'\"\s]+)", PLUGIN_YAML.read_text(encoding="utf-8"), re.M)
     return match.group(1) if match else None
+
+
+def _yaml_min_hermes() -> str | None:
+    """The floor `requires_hermes: ">=X"` declares (a bare version means >= to the core too)."""
+    match = re.search(r"^requires_hermes:\s*['\"]?(?:>=)?\s*([0-9][^'\"\s,]*)['\"]?\s*$",
+                      PLUGIN_YAML.read_text(encoding="utf-8"), re.M)
+    return match.group(1) if match else None
+
+
+def _readme_section(title: str) -> str:
+    text = README.read_text(encoding="utf-8") if README.is_file() else ""
+    match = re.search(rf"^## {re.escape(title)}\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+    return match.group(1) if match else ""
 
 
 def _lf(data: bytes) -> bytes:
@@ -68,6 +84,14 @@ def check(report) -> None:
         elif heading.group(1) != version:
             report(f"changelog drift: CHANGELOG.md starts at {heading.group(1)} but plugin.yaml says "
                    f"{version} — the top entry must be the version being shipped")
+    floor = _yaml_min_hermes()
+    if floor is None:
+        report("supported-range drift: plugin.yaml declares no `requires_hermes: \">=X\"` — the README's "
+               "supported range has nothing to match")
+    elif f"{floor} or newer" not in _readme_section("Supported Hermes versions"):
+        report(f"supported-range drift: plugin.yaml requires Hermes >={floor} but README.md § Supported Hermes "
+               f"versions does not say \"{floor} or newer\" — move requires_hermes, the README and ci.yml CORE_SHA "
+               "together")
     installed = env.installed_desktop_copy()
     if not installed.exists():
         print(f"note: no installed desktop copy at {installed} — sync check skipped")
@@ -141,12 +165,16 @@ def main() -> int:
              failures)
     _in_tree("manifest version drifts", MANIFEST, f'"version": "{version}"', '"version": "0.0.0-canary"',
              "version drift", failures)
+    floor = _yaml_min_hermes() or ""
+    _in_tree("requires_hermes drifts from the README", PLUGIN_YAML, f'requires_hermes: ">={floor}"',
+             'requires_hermes: ">=99.0.0"', "supported-range drift", failures)
     _installed(failures)
     code, _ = _audit()
     if code != 0 or failures:
         print(f"RELEASE GATE CANARY: problems found ({', '.join(failures) or f'audit exit {code} after reverts'})")
         return 1
-    print("RELEASE GATE CANARY clean — changelog, manifest and installed-copy rules each fire, files restored")
+    print("RELEASE GATE CANARY clean — changelog, manifest, supported-range and installed-copy rules each fire, "
+          "files restored")
     return 0
 
 

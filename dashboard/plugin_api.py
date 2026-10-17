@@ -1,4 +1,4 @@
-"""subagent-watch backend: read-only history of delegate_task workers.
+"""agent-station backend: read-only history of delegate_task workers.
 
 The desktop plugin SDK has no way to list a session's delegated child sessions or read a
 child's final output, so this router reads state.db directly — opened with SQLite's
@@ -13,7 +13,7 @@ A process belongs to a conversation when its ``parent_session_id`` is a link of 
 conversation's compression chain — the same ownership rule Hermes applies when it reloads a
 receipt (tools/process_registry_results.py::_owns_result).
 
-Routes (mounted at /api/plugins/subagent-watch/):
+Routes (mounted at /api/plugins/agent-station/):
   GET /children?session_id=<id>  -> workers delegated from that conversation, grouped into
                                     batches (children started within BATCH_GAP_S of each other);
                                     each worker carries Hermes' own cost record (see _cost)
@@ -97,7 +97,7 @@ def _results_dir() -> Path:
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     if not path.is_file():
-        log.warning("subagent-watch: state.db not found at %s", path)
+        log.warning("agent-station: state.db not found at %s", path)
         raise HTTPException(status_code=503, detail="state.db not found in this Hermes home")
     conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
@@ -106,7 +106,7 @@ def _connect() -> sqlite3.Connection:
 
 def _unreadable(what: str, exc: Exception) -> HTTPException:
     """A 503 that names the file and the error type; the full message (with its path) is only logged."""
-    log.warning("subagent-watch: %s unreadable: %s", what, exc)
+    log.warning("agent-station: %s unreadable: %s", what, exc)
     return HTTPException(status_code=503, detail=f"{what} unreadable ({type(exc).__name__})")
 
 
@@ -384,14 +384,14 @@ def _pid_is_ours(pid, start) -> bool:
 
         return bool(ProcessRegistry._host_pid_is_ours(pid, start))
     except Exception as exc:  # noqa: BLE001 - a private core API; any change must not become a 500
-        log.warning("subagent-watch: PID liveness check unavailable (%s: %s); asking psutil",
+        log.warning("agent-station: PID liveness check unavailable (%s: %s); asking psutil",
                     type(exc).__name__, exc)
     try:
         import psutil
 
         return bool(psutil.pid_exists(pid))
     except Exception as exc:  # noqa: BLE001 - no liveness source left; say so and read stopped
-        log.warning("subagent-watch: psutil liveness check failed (%s: %s); treating as stopped",
+        log.warning("agent-station: psutil liveness check failed (%s: %s); treating as stopped",
                     type(exc).__name__, exc)
         return False
 
@@ -571,7 +571,7 @@ def _patch_targets(args: dict) -> list[tuple[str, str]] | None:
 
         ops, error = parse_v4a_patch(text)
     except Exception as exc:  # noqa: BLE001 - a changed core parser must not become a 500
-        log.warning("subagent-watch: V4A parser unavailable (%s: %s)", type(exc).__name__, exc)
+        log.warning("agent-station: V4A parser unavailable (%s: %s)", type(exc).__name__, exc)
         return None
     if error or not ops:
         return None
@@ -880,7 +880,7 @@ def _edit_steps(name: str, args, result: str | None) -> list[dict] | None:
 
         ops, error = parse_v4a_patch(text)
     except Exception as exc:  # noqa: BLE001 - a changed core parser must not become a 500
-        log.warning("subagent-watch: V4A parser unavailable (%s: %s)", type(exc).__name__, exc)
+        log.warning("agent-station: V4A parser unavailable (%s: %s)", type(exc).__name__, exc)
         return None
     if error or not ops:
         return None

@@ -1,4 +1,4 @@
-"""Backend check for subagent-watch: runs plugin_api against a fixture state.db built here.
+"""Backend check for agent-station: runs plugin_api against a fixture state.db built here.
 
 Run from anywhere with the Hermes venv python (it provides fastapi):
     python tests/check_api.py            (exit 0 = passed)

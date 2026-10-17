@@ -69,7 +69,7 @@ const registered = []
 const ctx = {
   storage: { get: (k, f) => (k === 'theme' ? 'terminal' : f), set: () => {}, remove: () => {} },
   register: c => { registered.push(c); return () => {} },
-  i18n: { register: b => registerBundles('subagent-watch', b), t: k => k },
+  i18n: { register: b => registerBundles('agent-station', b), t: k => k },
   onEvent: () => () => {},
   setInterval: (fn, ms) => { const h = setInterval(fn, ms); return () => clearInterval(h) },
   setTimeout: (fn, ms) => { const h = setTimeout(fn, ms); return () => clearTimeout(h) },

@@ -1,5 +1,5 @@
 /**
- * Subagent Watch — read-only page for the focused chat's agents: the main agent, the delegate_task
+ * Agent Station — read-only page for the focused chat's agents: the main agent, the delegate_task
  * subagents it started, and the shell commands it left running in the background.
  *
  *   Agents    one run at a time — the running one, else the last; the run picker opens earlier
@@ -36,8 +36,8 @@ import { host, STATUSBAR_AREAS, Tip, usePluginI18n, useValue } from '@hermes/plu
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
-const ID = 'subagent-watch'
-const ROUTE = '/subagent-watch'
+const ID = 'agent-station'
+const ROUTE = '/agent-station'
 const POLL_MS = 3000
 const MAX_POLL_FAILS = 3
 // Earlier runs listed in the run picker before "Show N older runs".
@@ -102,7 +102,7 @@ const WatchedChat = createContext(null)
 const BUNDLES = {
   en: {
     sw: {
-      title: 'Subagents',
+      title: 'Agent Station',
       chat: {
         untitled: id => `Chat …${id}`,
         held: 'held',
@@ -397,7 +397,7 @@ This edit failed` : path),
           failed ? `${failed} failed or stopped` : '',
           running ? `${running} running` : '',
           cost ? `cost ${cost}` : ''
-        ].filter(Boolean).join(' · ') + '. Click to open the Subagents page.',
+        ].filter(Boolean).join(' · ') + '. Click to open Agent Station.',
         pet: (finished, total, cost) => [`Subagents ${finished}/${total} done`, cost].filter(Boolean).join(' · '),
         stalled: detail => `Subagent progress stopped updating: ${detail}`
       },
@@ -5197,7 +5197,7 @@ function navLabel() {
 
 export default {
   id: ID,
-  name: 'Subagent Watch',
+  name: 'Agent Station',
   register(ctx) {
     ctxRef = ctx
     ctx.i18n?.register?.(BUNDLES)

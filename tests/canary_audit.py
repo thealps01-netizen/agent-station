@@ -1,4 +1,4 @@
-"""Canary run for subagent-watch: every lock is broken once and the gate that owns it must go red.
+"""Canary run for agent-station: every lock is broken once and the gate that owns it must go red.
 
 Why: a test that passes is only evidence when it is also known to FAIL on the bug it is named
 after. The notes used to say "mutation canaries were run by hand"; this is that list, repeatable.
@@ -33,6 +33,18 @@ PY = "dashboard/plugin_api.py"
 
 # (gate, file, old, new, what the mutation breaks)
 MUTATIONS = [
+    # ── 3.0.0 distribution: the old name, the licence, personal paths ───────────────────────────
+    ("audit", JS, "  id: ID,\n  name: 'Agent Station',", "  id: ID,\n  name: 'Subagent Watch',",
+     "the panel's default export is named Subagent Watch again"),
+    ("audit", "plugin.yaml", "label: Agent Station\n", "label: Subagent Watch\n",
+     "plugin.yaml's label is Subagent Watch again"),
+    ("audit", "README.md", "# Agent Station\n", "# Subagent Watch\n",
+     "the README names the old plugin outside its Moving section"),
+    # Assembled so this file carries no personal path of its own.
+    ("audit", JS, " * Agent Station — read-only page", " * Agent Station (" + "C:/" + "Users/jdoe/notes) — read-only page",
+     "a personal C:/Users path ships in a plugin.js comment"),
+    ("audit", "LICENSE", "MIT License\n", "The MIT License\n",
+     "LICENSE no longer starts `MIT License`"),
     # ── ui-polish: what the real-render harness (live.py) measured, locked in render_check ───────
     # req 9: nothing cut or overlapping at any width
     ("render", JS, ".sw-orl>.sw-orv,.sw-tkh>b{flex:none;max-width:none}\n", "",
@@ -711,7 +723,7 @@ def _sha_tree(root: Path) -> str:
 
 
 def _copy_panel(dest: Path) -> None:
-    for rel in ("desktop", "dashboard", "plugin.yaml", "CHANGELOG.md"):
+    for rel in ("desktop", "dashboard", "plugin.yaml", "CHANGELOG.md", "README.md", "LICENSE", "__init__.py"):
         src = ROOT / rel
         if src.is_dir():
             shutil.copytree(src, dest / rel, ignore=shutil.ignore_patterns("__pycache__"))
