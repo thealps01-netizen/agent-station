@@ -230,3 +230,10 @@ Interrupt / steer / live transcript — the composer status stack already owns t
 - Visual pass: `node tests/preview.mjs` then `<electron> tests/shot.cjs preview.html preview.png` —
   real React output in the compiled app stylesheet, WCAG contrast gated in the app's own engine.
   It found the red `exit N` text at 3.3:1; failure text now uses the reading token (6.4:1).
+- `cd tests && python live.py [--selftest]` — the real-render harness: the real panel, canvas and app
+  stylesheet in the core's Electron on a synthetic fixture home, 56 shots (3 tabs × full/empty ×
+  dark/light × 915/560/380 px, plus opened states), each measured in the engine for clipped text,
+  overlap, sideways overflow, half rows in scroll lists, numerals off the code font, contrast and engine
+  errors. Its first run found cut corner readouts at 560 px, a FILES legend running out at 380 px,
+  scroll lists ending on half a row and numerals in mixed faces; all are fixed and locked in
+  render_check. `--selftest` proves each rule fires.
