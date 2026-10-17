@@ -4245,7 +4245,7 @@ function ProgressChip() {
 // everything toward the accent. No colour literals anywhere (audit_static.py).
 const TM_PALETTE = `
 .sw-page[data-theme=terminal]{--tm-acc:light-dark(oklch(from var(--ui-accent) min(l,.5) c h),oklch(from var(--ui-accent) max(l,.66) c h));--tm-ok:var(--tm-acc);
- --tm-bg:transparent;--tm-raised:var(--ui-bg-card);--tm-shade:var(--ui-bg-chrome);
+ --tm-bg:transparent;--tm-raised:color-mix(in srgb,var(--ui-bg-card) 50%,var(--dt-background));--tm-shade:var(--ui-bg-chrome);
  --tm-hi:var(--ui-text-primary);--tm-name:var(--ui-text-primary);--tm-ink:color-mix(in srgb,var(--ui-text-primary) 55%,var(--ui-text-secondary));
  --tm-dim:var(--ui-text-secondary);--tm-line:var(--ui-stroke-tertiary);
  --tm-badline:color-mix(in srgb,var(--ui-red) 40%,transparent);--tm-run:light-dark(oklch(from color-mix(in srgb,var(--ui-yellow) 82%,var(--ui-base)) min(l,.5) c h),color-mix(in srgb,var(--ui-yellow) 82%,var(--ui-base)));

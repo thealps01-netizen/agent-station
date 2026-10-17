@@ -619,12 +619,12 @@ check(stub.calls.request.some(([m, p]) => m === 'subagent.list' && p.session_id 
   // enough to read); the status-bar chip tints toward the accent. No colour literal anywhere.
   const hud = css.match(/\.sw-page\[data-theme=terminal\]\{--tm-acc:light-dark[^}]*\}/)?.[0] || ''
   const chip = css.match(/\.sw-sbw\[data-theme=terminal\]\{[^}]*\}/)?.[0] || ''
-  check(/\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-acc\)/.test(css) && /--tm-bg:transparent;--tm-raised:var\(--ui-bg-card\)/.test(hud) && /--tm-line:var\(--ui-stroke-tertiary\)/.test(hud) && /--hud-add:var\(--ui-diff-add-background\)/.test(hud)
+  check(/\.sw-page\[data-theme=terminal\]\{--a:var\(--tm-acc\)/.test(css) && /--tm-bg:transparent;--tm-raised:color-mix\(in srgb,var\(--ui-bg-card\) 50%,var\(--dt-background\)\);/.test(hud) && /--tm-line:var\(--ui-stroke-tertiary\)/.test(hud) && /--hud-add:var\(--ui-diff-add-background\)/.test(hud)
     && /--tm-acc:light-dark\(oklch\(from var\(--ui-accent\)/.test(hud) && /--tm-bad:light-dark\(oklch\(from color-mix\(in srgb,var\(--ui-red\) 82%,var\(--ui-base\)\) min\(l,\.5\) c h\),color-mix\(in srgb,var\(--ui-red\)/.test(hud)
     && /--tm-run:light-dark\(oklch\(from color-mix\(in srgb,var\(--ui-yellow\) 82%,var\(--ui-base\)\) min\(l,\.5\) c h\),color-mix\(in srgb,var\(--ui-yellow\)/.test(hud)
     && /--tm-acc:color-mix\(in srgb,var\(--ui-accent\)/.test(chip) && /--tm-ok:color-mix\(in srgb,var\(--ui-green\)/.test(chip) && /--tm-bad:color-mix\(in srgb,var\(--ui-red\)/.test(chip)
     && !/#[0-9a-f]{3,8}\b/i.test(css),
-    'Terminal: the page uses the app tokens as they are (see-through ground for the glass, translucent card, strokes, diff colours) and the chip tints from them — no literal anywhere')
+    'Terminal: the page uses the app tokens (see-through ground for the glass, strokes, diff colours; the card is the app card mixed half-way into the page ground) and the chip tints from them — no literal anywhere')
 }
 
 check(/\.sw-page\[data-theme=terminal\]\{[^}]*--solid:var\(--dt-background\);[^}]*--pop:color-mix\(in srgb,var\(--ui-text-primary\) 7%,var\(--dt-background\)\)/.test(css)
