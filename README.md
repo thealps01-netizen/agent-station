@@ -73,8 +73,8 @@ sidebar entries and two status-bar chips. There are no settings to carry over.
   or a file write ever appears.
 - **Local only.** The page talks only to your own Hermes. It makes no other network calls and sends
   no telemetry.
-- **Only the focused chat.** The page reads the chat you have open; a request for another chat's
-  session or command is refused (403).
+- **One chat at a time.** The page reads one chat at a time; a request for a worker, command or
+  edit that belongs to another chat is refused (403).
 
 ## Troubleshooting
 
