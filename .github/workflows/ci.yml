@@ -21,9 +21,11 @@ permissions:
 
 env:
   PYTHONUTF8: "1"   # Windows runners print cp1252 otherwise; audit messages carry non-ASCII
-  # The core revision this panel's contract is verified against. Bump deliberately.
+  # The core revision this panel's contract is verified against: v0.21.7, the oldest supported Hermes.
+  # It moves together with `requires_hermes` in plugin.yaml and the range in README.md ("Supported
+  # Hermes versions"). The newest core is checked weekly by newest-core.yml.
   CORE_REPO: https://github.com/NousResearch/hermes-agent.git
-  CORE_SHA: d4d2ab7b5d104166e7e22a02cafd12f1fe456a31
+  CORE_SHA: 71d34bad1045610252eda02ee79549436896e784
 
 jobs:
   gates:
@@ -65,7 +67,7 @@ jobs:
           git -C "$core" sparse-checkout init --no-cone
           # MSYS_NO_PATHCONV: Git Bash on Windows would rewrite /tools/ into C:/Program Files/Git/tools/
           MSYS_NO_PATHCONV=1 git -C "$core" sparse-checkout set /hermes_state_common.py /tools/ /agent/conversation_compression.py /agent/usage_pricing.py /agent/context_compressor.py \
-            /tui_gateway/contracts/ /tui_gateway/server.py /apps/desktop/src/sdk/ /apps/desktop/src/contrib/plugin.ts
+            /tui_gateway/contracts/ /tui_gateway/server.py /tui_gateway/agent_factory.py /apps/desktop/src/sdk/ /apps/desktop/src/contrib/plugin.ts
           for i in 1 2 3; do git -C "$core" fetch -q --depth 1 origin "$CORE_SHA" && break; sleep $((i*20)); done
           git -C "$core" checkout -q FETCH_HEAD
           test -f "$core/hermes_state_common.py" || { echo "core sources missing"; exit 1; }
