@@ -3,6 +3,12 @@
 All notable changes to Agent Station. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 3.0.1 — 2026-10-17
+
+- Cards sit closer to the page: their ground is the app's card colour mixed half-way into the page
+  background, so in dark mode they are darker and in light mode lighter. Borders and text are
+  unchanged.
+
 ## 3.0.0 — 2026-10-17
 
 The plugin is now called **Agent Station** (id `agent-station`, route `/agent-station`). The old name
