@@ -1,7 +1,7 @@
-# AGENTS.md — subagent-watch
+# AGENTS.md — agent-station
 
 Rules for anyone (person or coding agent) changing this repository. Build, test and release steps
-are in `README.md`; the design notes are in `Docs/subagent-watch-notes.md`.
+are in `README.md`; the design notes are in `Docs/agent-station-notes.md`.
 
 ## `main` changes only through a green pull request
 
@@ -13,6 +13,9 @@ are in `README.md`; the design notes are in `Docs/subagent-watch-notes.md`.
   repository), so the rule is the only guard. 1.1.9 was pushed straight to `main` and left it red:
   canary #12 had stopped applying and nobody saw it until the next change.
 - After a merge, check that the `push` run on `main` is green too.
+- `.github/workflows/newest-core.yml` checks the panel against the newest Hermes core (latest release
+  and `main`) every week. `ci.yml` pins the oldest supported core: `plugin.yaml` `requires_hermes`,
+  the README's supported range and `ci.yml` `CORE_SHA` move together.
 
 ## Fresh checkout: setup and validation
 
