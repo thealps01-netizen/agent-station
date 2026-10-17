@@ -39,5 +39,26 @@ folder before the gates. Without it, `audit_static.py` compares `desktop/plugin.
 user's installed copy of the panel and fails on any change; never copy a work-in-progress file into
 the user's install to silence it — that changes the app he is using.
 
-There is no dev server. The panel renders inside the Hermes desktop app; `node preview.mjs` builds a
-jsdom preview, and the measured Electron render needs the core's Electron (`HERMES_ELECTRON`).
+## Looking at the UI
+
+There is no dev server: the panel renders inside the Hermes desktop app. People and reviewers look at
+the UI through the real-render harness, which draws the real `desktop/plugin.js` with real React, the
+canvas scenes and the app's compiled stylesheet in the core's own Electron, on fixture data:
+
+```bash
+python live.py              # 56 shots; last line "LIVE: GREEN — 56 shots, 0 violations, …" or RED with each violation
+python live.py --selftest   # breaks each measured rule (M1–M6) once with injected CSS; GREEN = each was caught
+```
+
+- Prerequisites: `npm ci` in `tests/`, fastapi (as for `check_api.py`) and a built Hermes core. The
+  core is found like the other gates do; with `HERMES_HOME` set to an empty temporary folder, set
+  `HERMES_AGENT_DIR` to the core checkout (or `HERMES_ELECTRON` to its Electron binary). Without
+  either it exits 1 and says what it could not find.
+- Output, git-ignored: `tests/.out/live/<tab>-<data>-<mode>-<width>.png` (tab agents|commands|replay,
+  data full|empty, mode dark|light, width 915|560|380, plus opened states such as `agents-detail`),
+  each also cut into 560 px bands with 40 px overlap under `bands/`, and every measurement in
+  `report.json`. What each rule measures is in the header of `live.py`.
+- It runs on a synthetic fixture home under `tests/.out/live_home/` only. It never reads or writes the
+  user's Hermes home or the installed panel, and has no switch to do so.
+
+`node preview.mjs` still builds the jsdom preview that `shot.cjs` checks for contrast.

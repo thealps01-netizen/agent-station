@@ -983,8 +983,10 @@ await act(async () => { prs()[1].click() })
 check(pressed()[0] === prs()[1], 'another command is picked before the switch')
 await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
 await tick(10)
-check(rest.includes('/children?session_id=st-2') && rest.includes('/processes?session_id=st-2') && !prs().length && q('.sw-cmds .sw-empty')?.textContent === 'No background commands in this chat.',
-  'history and commands re-read for the new chat; none -> it says so')
+check(rest.includes('/children?session_id=st-2') && rest.includes('/processes?session_id=st-2') && !prs().length
+  && q('.sw-cmds .sw-hp p.sw-hnote')?.textContent === 'Background commands appear here when the agent leaves one running.'
+  && q('.sw-cmds .sw-hp .sw-hpt .sw-sr')?.textContent === 'Commands' && !q('.sw-cmds .sw-hp .sw-hpt .sw-hpn') && !q('.sw-cmds .sw-orbit, .sw-cmds .sw-cml, .sw-cmds .sw-empty'),
+  'history and commands re-read for the new chat; none -> one COMMANDS panel says what will appear and when, no ORBIT, no list')
 await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
 await tick(10)
 check(prs().length === 4 && pressed().length === 1 && pressed()[0] === prs()[0], 'switching chats shows the newest command again')
@@ -1170,7 +1172,25 @@ check(q('.sw-orbit') && !q('.sw-orw') && units().length === 1 && units()[0].data
   'a chat with no subagents shows the main agent and says when subagents appear')
 check(q('.sw-focus')?.dataset.kind === 'main' && q('.sw-focus [data-sec=none] .sw-empty')?.textContent === 'No files read or changed in this chat yet.' && !q('.sw-runb'),
   'its focus panel says no files yet; there is no run to pick')
-check(q('.sw-score')?.getAttribute('aria-label') === 'No subagents yet', 'the score says there are none yet')
+// req 10: one empty-state rule — no counter, ratio, bar, axis, key or zero for what is not there yet;
+// the panel says in one sentence what will appear and when
+{
+  const panel = cls => q(`.sw-hp.${cls}`)
+  const notes = cls => [...(panel(cls)?.querySelectorAll('p.sw-hnote') || [])].map(p => p.textContent)
+  check(!q('.sw-score') && notes('sw-hspent').join() === 'Cost, tokens and tool calls appear here when a subagent runs.'
+    && !panel('sw-hspent')?.querySelector('.sw-money, .sw-cells, .sw-chax, .sw-kv'),
+    `SPENT with no subagent: only its sentence, no cost, tokens, tools, DONE ratio, cells or axis (${notes('sw-hspent')})`)
+  check(!q('.sw-orbit .sw-orp') && !q('.sw-orbit .sw-orkey') && !q('.sw-ortele[data-side=r]')
+    && !qa('.sw-ortele[data-side=l] .sw-otl').some(r => /WINGS/i.test(r.textContent)),
+    'FLEET with no subagent: no n/total counter or bars under MAIN, no WINGS line, no right readout column, no key')
+  check(notes('sw-htime').join() === 'Each subagent\'s run time appears here when it starts.' && notes('sw-hlogp').join() === 'Each subagent gets a line here when it starts.',
+    `TIME PER AGENT and LOG with no subagent say what will appear and when (${notes('sw-htime')} | ${notes('sw-hlogp')})`)
+  const fh = panel('sw-hfiles')
+  check(!/\b0\b/.test(fh?.querySelector('.sw-hrow')?.textContent || '') && (fh?.querySelector('.sw-fcells') || notes('sw-hfiles').join() === 'Files appear here when an agent reads or changes one.'),
+    `FILES draws no zero count (no "CHANGED 0"); with no file it says what will appear (${fh?.textContent})`)
+  check(q('.sw-hagent') && !/\b0 (changed|read|failed)\b/.test(q('.sw-hagent').textContent), `AGENT draws no "0 changed" / "0 read" (${q('.sw-hagent')?.textContent})`)
+  check(mod.default && /filesV: \(changed, failed, read\) => \[changed \? /.test(src), 'the files line leaves out a kind with no file')
+}
 // 25. more live subagents than wings: five wings and a group, the main agent waiting on them
 for (let i = 0; i < 12; i++) await emit('subagent.spawn_requested', 'rt-e', { subagent_id: `e${i}`, goal: `Spawn 'eq-${i}'`, task_index: i })
 check(qa('.sw-orw').length === 6 && qa('.sw-orl:not(.is-grp)').length === 5 && q('.sw-orl.is-grp')?.getAttribute('aria-label') === '7 more subagents: 7 waiting'
@@ -1678,6 +1698,46 @@ mod.default.register(quietCtx({ storage: undefined }))
   check(!el.querySelectorAll('[title]').length, 'replay: no native title= (the themed Tip owns hover text)')
   await act(async () => r.unmount())
   mod.default.register(quietCtx({}))
+}
+// req 10: the Replay tab with no edits — the strip, then one REPLAY panel with what will appear; no WORMHOLE
+{
+  mod.default.register(quietCtx({ rest: async path => (path.startsWith('/replay') ? { session_id: 'st-1', cwd: 'D:/Proj', more_turns: 0, calls: 0, unreadable: 0, turns: [] } : ctx.rest(path)) }))
+  const { el, r } = await mountFresh()
+  await act(async () => { el.querySelector('[role=tab][data-tab=replay]').click() })
+  await tick(20)
+  const hp = [...el.querySelectorAll('.sw-replay .sw-hp')]
+  check(el.querySelector('.sw-replay .sw-why') && hp.length === 1 && hp[0].querySelector('.sw-hpt .sw-sr')?.textContent === 'Replay'
+    && hp[0].querySelector('p.sw-hnote')?.textContent === 'File edits appear here when the AI changes a file.'
+    && !el.querySelector('.sw-replay .sw-orbit, .sw-replay .sw-rtlist, .sw-replay .sw-empty'),
+    `replay with no edits: one REPLAY panel says what will appear and when, no WORMHOLE (${hp.map(h => h.textContent)})`)
+  await act(async () => r.unmount())
+  mod.default.register(quietCtx({}))
+}
+// req 11: one rule for numerals — a slot whose whole text is a value is set in the code font with
+// tabular figures; a value in a key/value row is told from words; a small value never glows
+{
+  const rule = css.match(/\.sw-page\[data-theme=terminal\] :is\(\.sw-num,([^)]*)\)\{font-family:var\(--code\)!important;font-variant-numeric:tabular-nums!important\}/)
+  const slots = (rule?.[1] || '').split(',')
+  check(rule && ['.sw-tkh>b', '.sw-tks>span', '.sw-orp>b', '.sw-orm', '.sw-tabn', '.sw-cmlt', '.sw-rwhen', '.sw-tn'].every(s => slots.includes(s)),
+    `numerals: readout values, the main box counter, group counts, durations, axis labels, list times and DETAIL tiles share --code with tabular figures (${slots})`)
+  check(/:is\(\.sw-tabn,\.sw-hbig small\)\{text-shadow:none\}/.test(css), 'numerals: a small value (DONE n/total, a tab count) does not glow')
+  check(['12', '0/0', '1.2k', '$0.42', '5m 28s', '00:12', '87%', 3].every(mod.isNum) && !['ACTIVE', 'CHANGED 12', 'DONE · 5m 28s', 'model x-1', ''].some(mod.isNum),
+    'numerals: a key/value value is a value only when its whole text is a number, ratio, cost, %, duration or time')
+}
+// req 12: a scroll list ends on a whole row — fitWholeRows lowers the cap to the last row that fits
+{
+  const rows = [0, 1, 2, 3, 4].map(i => ({ getBoundingClientRect: () => ({ top: i * 22, bottom: i * 22 + 22, height: 22 }) }))
+  const box = { style: { maxHeight: '' }, children: rows, scrollHeight: 110, clientHeight: 80, clientTop: 0, scrollTop: 0, getBoundingClientRect: () => ({ top: 0 }) }
+  const realCS = globalThis.getComputedStyle
+  globalThis.getComputedStyle = () => ({ maxHeight: '80px', boxSizing: 'content-box', paddingTop: '0px', paddingBottom: '0px', borderTopWidth: '0px', borderBottomWidth: '0px' })
+  try { mod.fitWholeRows(box) } finally { globalThis.getComputedStyle = realCS }
+  check(box.style.maxHeight === '66px' && /const WHOLE_ROWS = '\.sw-hlog,\.sw-cml,\.sw-rtlist,\.sw-rlines,\.sw-out'/.test(src) && /^  useWholeRows\(pageRef\)\r?$/m.test(src),
+    `scroll lists end on a whole row: an 80 px cap over 22 px rows becomes 66 px (${box.style.maxHeight}); LOG, COMMANDS, requests, diff and console are fitted`)
+  // req 9: nothing is cut or overlaps — values and key words stay whole, the name gives way, legends and tiles wrap
+  check(/\.sw-orl>\.sw-orv,\.sw-tkh>b\{flex:none;max-width:none\}/.test(css) && /\.sw-page\[data-theme=terminal\] \.sw-fleg\{flex-wrap:wrap;/.test(css)
+    && /\.sw-rl\[data-tag="@"\]::after\{content:"";flex:1 1 40px;min-width:0;/.test(css)
+    && /@container \(max-width:540px\)\{\.sw-page\[data-theme=terminal\] \.sw-hp\.sw-hdetail \.sw-tiles\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}\}/.test(css),
+    'no clipping or overlap: a callout value and a duration never shrink, the FILES legend wraps whole, a part header line gives way, DETAIL tiles go two across when narrow')
 }
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED')
 process.exit(failures ? 1 : 0)

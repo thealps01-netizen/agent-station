@@ -33,6 +33,34 @@ PY = "dashboard/plugin_api.py"
 
 # (gate, file, old, new, what the mutation breaks)
 MUTATIONS = [
+    # ── ui-polish: what the real-render harness (live.py) measured, locked in render_check ───────
+    # req 9: nothing cut or overlapping at any width
+    ("render", JS, ".sw-orl>.sw-orv,.sw-tkh>b{flex:none;max-width:none}\n", "",
+     "a callout value or a track duration shrinks under its name again (cut at 560 / 380 px)"),
+    ("render", JS, ".sw-page[data-theme=terminal] .sw-fleg{flex-wrap:wrap;", ".sw-page[data-theme=terminal] .sw-fleg{flex-wrap:nowrap;",
+     "the FILES legend no longer wraps and READ runs out of the panel"),
+    # req 10: one empty-state rule
+    ("render", JS, "    children: subs.length ? [jsxs('div', {", "    children: true ? [jsxs('div', {",
+     "SPENT with no subagent draws its dash, 0 tools, 0/0 and an empty axis again"),
+    ("render", JS, "      ...(subs.length ? [[t('sw.hudAgents.teleWings'), `${done}/${subs.length}`]] : [])",
+     "      [t('sw.hudAgents.teleWings'), `${done}/${subs.length}`]",
+     "FLEET with no subagent draws WINGS 0/0 again"),
+    ("render", JS, "children: jsx(HudPanel, { title: t('sw.tabs.commands'), span: 6, children: [jsx('p', { className: 'sw-hnote', children: t('sw.proc.none') }, 'none')] })",
+     "children: jsx('p', { className: 'sw-empty', children: t('sw.proc.none') })",
+     "the Commands tab with no command shows a bare sentence again, not a COMMANDS panel"),
+    ("render", JS, "        filesV: (changed, failed, read) => [changed ? `${changed} changed` : '',",
+     "        filesV: (changed, failed, read) => [`${changed} changed`,",
+     "AGENT says \"0 changed\" again"),
+    # req 11: one rule for numerals
+    ("render", JS, ":is(.sw-num,.sw-tkh>b,", ":is(.sw-num,",
+     "track durations fall back to the text font with proportional figures"),
+    ("render", JS, "|\\d+\\s?\\/\\s?\\d+|", "|",
+     "a ratio such as 8/12 in a key/value row is no longer told from words (text font)"),
+    # req 12: scroll lists end on a whole row
+    ("render", JS, "    if (bottom > room + 0.5) break", "    if (bottom > room + 30) break",
+     "a scroll list is fitted past its cap and ends on half a row"),
+    ("render", JS, "  useWholeRows(pageRef)\n", "",
+     "the page no longer fits LOG, COMMANDS, requests, diff and console to whole rows"),
     # ── 2.4.0 Replay WORMHOLE ───────────────────────────────────────────────────
     ("render", JS, "      jsx(ReplayWorm, { t, steps, i, go }, 'worm'),\n", "",
      "the Replay tab no longer shows its WORMHOLE panel"),
