@@ -15,7 +15,7 @@
  *    7. A chat with no subagents yet: the main agent and its files.
  *    8. No chat selected · loading · several sources failing (three frames).
  *    9. Narrow (380 px): units wrap into rows, nothing scrolls sideways.
- *   10. The status-bar chip, and the header's "held" state after a click inside the page.
+ *   10. The status-bar chip.
  *   11. 40 subagents: the grouped swarm (failed by name, working, waiting, done).
  *   12. The Replay tab: a request's edits, one open as removed / added lines; a failed edit; narrow.
  *
@@ -265,7 +265,7 @@ const TITLES = {
   7: '7 · A chat with no subagents yet — the main agent and its files',
   8: '8 · No chat selected · loading · several sources failing',
   9: '9 · Narrow (380 px): the station stays, its callouts drop under it as a list; nothing scrolls sideways',
-  10: '10 · The status-bar chip · the header "held" state after a click inside the page',
+  10: '10 · The status-bar chip',
   11: '11 · 40 subagents: five wings for those that need eyes, the sixth holds the rest',
   12: "12 · Replay tab — a request's edits one at a time: removed and added lines, a failed edit, narrow"
 }
@@ -308,13 +308,6 @@ for (const look of LOOKS) {
       await emit('subagent.start', { subagent_id: `n${i}`, delegation_id: 'd1', goal: `Blind-review '${name}-panel' score`, model: 'anthropic/claude-opus-5-5', started_at: NOW - 28 })
       await emit('subagent.tool', { subagent_id: `n${i}`, tool_name: 'read_file', tool_preview: 'plugin.js' })
     }
-  })
-  // 10: the held header — a click inside the page, then the app names another chat as focused.
-  await frame(10, look, `${TITLES[10]} — held`, {}, async ({ q }) => {
-    await act(async () => { q('.sw-tabs').dispatchEvent(new window.Event('pointerdown', { bubbles: true })) })
-    await act(async () => { stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2') })
-    await tick(20)
-    if (!q('.sw-held')) problems.push(`10/${look}: the held tag did not show`)
   })
   // 10: the status-bar chip, in a strip the height of the app's status bar.
   {

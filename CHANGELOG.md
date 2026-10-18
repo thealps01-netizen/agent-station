@@ -3,6 +3,13 @@
 All notable changes to Agent Station. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 3.0.3 — 2026-10-18
+
+- The page follows the chat the app has focused, as the plugin SDK reports it, and no longer reads
+  the app's pane markup to decide. Desktop itself now keeps the chat being worked focused while this
+  page, another plugin page or a preview has focus, so a click inside the page still never jumps to
+  the main chat. The `held` header tag is gone with it.
+
 ## 3.0.2 — 2026-10-17
 
 - Live updates no longer stop for good. After three failed `subagent.list` polls in a row the page

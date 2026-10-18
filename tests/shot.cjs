@@ -75,7 +75,7 @@ const PREPARE = `(() => {
       }
     }
     // A box can keep its size while its text spills out of it: measure the TEXT, not the box.
-    for (const pill of hd.querySelectorAll('.sw-held, .sw-tg')) {
+    for (const pill of hd.querySelectorAll('.sw-tg')) {
       // Text nodes only: the icon sits on its own baseline and is not a second line.
       const lines = new Set()
       const walk = document.createTreeWalker(pill, NodeFilter.SHOW_TEXT)

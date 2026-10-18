@@ -25,8 +25,8 @@
  *  10. Live polls never stop: three failures slow them to SLOW_POLL_MS and a later answer clears the
  *      alert by itself; Refresh polls at once; a runtime Hermes does not hold (4001) is no failure.
  *  11. A clipboard rejection on any copy button is a "Copy failed" toast, never an unhandled rejection.
- *  15. The watched chat: a click inside the page (or on another page's route tile) keeps the chat the
- *      page shows and marks it held; a click on a chat, in the Sessions sidebar, or elsewhere follows.
+ *  15. The watched chat is the SDK's focused chat: a click inside the page does not move it, the
+ *      page follows any chat the app names as focused, and it reads none of the app's markup.
  *  16. Live races: a queued worker not yet listed stays queued; a stale snapshot never revives a
  *      finished worker; a dead chat's failed poll does not count against the new chat.
  *  17. Cost: the score shows what the subagents spent (~ estimate, billed, subscription apart, never
@@ -419,7 +419,7 @@ const refresh = async () => { await act(async () => { q('.sw-hd .sw-ib').click()
 check(q('.sw-page')?.dataset.theme === 'terminal' && !q('.sw-tg, .sw-tgb') && !registered.some(c => c.area === 'settings.plugins')
   && !/data-theme=cockpit|\.sw-tg|\.sw-dm|\.sw-utop|\.sw-map/.test(q('style')?.textContent || ''),
   'the page opens in Terminal, the only look: no look toggle, no Settings page, no rule of a removed look')
-check(q('h2.sw-ht')?.textContent === 'agent-station' && q('.sw-chatn')?.textContent === '// Refactor fleet routing' && !q('.sw-held'),
+check(q('h2.sw-ht')?.textContent === 'agent-station' && q('.sw-chatn')?.textContent === '// Refactor fleet routing',
   `the header has the title and names the watched chat (${q('.sw-chatn')?.textContent})`)
 check(tab('agents')?.getAttribute('aria-selected') === 'true' && tab('commands')?.getAttribute('aria-selected') === 'false',
   'two tabs, Agents first and selected')
@@ -1071,37 +1071,31 @@ await act(async () => { releaseProcs() })
 await tick(10)
 check(!q('.sw-cmds .sw-cmwait') && prs().length === 4, 'the loading state gives way to the commands')
 
-// 15. the watched chat survives clicks that are not a chat switch
+// 15. the watched chat is the app's focused chat from the SDK, nothing else: a click inside the page
+// does not move it by itself, and whatever chat the app names as focused (wherever the click landed),
+// the page follows. It reads none of the app's markup to decide (catalog rule 8).
 const pointer = el => el.dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
-const chatTab = id => { const el = document.createElement('div'); el.setAttribute('data-tree-tab', id); document.body.appendChild(el); return el }
-await act(async () => { pointer(document.body) })
 await tick(10)
 check(prs().length === 4, `watching the first chat before the clicks (${prs().length})`)
 let mark = rest.length
+await act(async () => { pointer(q('.sw-cmrow')) })
+await tick(10)
+check(!rest.slice(mark).some(p => /session_id=/.test(p) && !p.includes('session_id=st-1')) && prs().length === 4,
+  `a click inside the page leaves the watched chat as it is (${rest.slice(mark).join(' ')})`)
+mark = rest.length
 await act(async () => {
   appFocusNext = ['rt-2', 'st-2']
   pointer(q('.sw-cmrow'))
 })
 await tick(10)
-check(!rest.slice(mark).some(p => p.includes('session_id=st-2')) && prs().length === 4, `a click inside the page keeps the watched chat (${rest.slice(mark).join(' ')})`)
-check(q('.sw-held')?.textContent === '[held]' && /Click a chat/.test(q('.sw-held')?.dataset.tip || '') && q('.sw-held')?.tabIndex === 0, 'a held chat is marked as held in the header')
-mark = rest.length
-await act(async () => { pointer(chatTab('session-tile:st-2')) })
+check(rest.slice(mark).includes('/processes?session_id=st-2') && !prs().length,
+  `the page follows the chat the app names as focused, wherever the click landed (${rest.slice(mark).join(' ')})`)
+await act(async () => { stub.atoms.focusedSessionId.set('rt-1'); stub.atoms.focusedStoredSessionId.set('st-1') })
 await tick(10)
-check(rest.slice(mark).includes('/processes?session_id=st-2') && !prs().length, `a click on a chat moves the page to that chat (${rest.slice(mark).join(' ')})`)
-mark = rest.length
+check(prs().length === 4, 'and follows it back')
+check(!/data-tree-|\[data-(slot|tour|sidebar|testid)/.test(src), "the page reads none of the app's pane markup")
 await act(async () => {
-  appFocusNext = ['rt-1', 'st-1']
-  pointer(chatTab('route-tile:/approvals'))
-})
-await tick(10)
-check(!rest.slice(mark).some(p => p.includes('session_id=st-1')) && !prs().length, "a click on another page's tab keeps the watched chat")
-await act(async () => { pointer(document.body) })
-await tick(10)
-check(prs().length === 4, 'a click outside the page follows the focused chat again')
-check(!q('.sw-held'), 'following the app again drops the held marker')
-await act(async () => {
-  pointer(chatTab('sessions'))
+  pointer(document.body)
   stub.atoms.focusedSessionId.set('rt-2'); stub.atoms.focusedStoredSessionId.set('st-2')
 })
 await tick(10)
