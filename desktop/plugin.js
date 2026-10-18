@@ -115,9 +115,7 @@ const BUNDLES = {
     sw: {
       title: 'Agent Station',
       chat: {
-        untitled: id => `Chat …${id}`,
-        held: 'held',
-        heldTip: 'You clicked inside this page, so it keeps showing this chat. Click a chat to follow it again.'
+        untitled: id => `Chat …${id}`
       },
       tabs: {
         label: 'Sections', agents: 'Agents', commands: 'Commands', replay: 'Replay',
@@ -3752,56 +3750,16 @@ export function fileGroups(files, touching) {
 
 // ── page ─────────────────────────────────────────────────────────────────────
 
-// Zones whose click makes the app name its MAIN chat as focused although no chat was picked: this
-// page's own route tile, other plugin pages and previews. A click in them keeps the watched chat.
-const HOLD_PANES = ['route-tile:', 'preview-tile:']
-
-function heldBy(target, pageEl) {
-  if (typeof target?.closest !== 'function') return false
-  if (pageEl && pageEl.contains(target)) return true
-  const zone = target.closest('[data-tree-group]')
-  const pane = target.closest('[data-tree-tab]')?.getAttribute('data-tree-tab')
-    || zone?.querySelector('[data-tree-tab][aria-selected="true"]')?.getAttribute('data-tree-tab')
-    || ''
-  return HOLD_PANES.some(p => pane.startsWith(p))
-}
-
 /**
- * The chat this page watches. It follows the app's focused chat, except while the last click (or
- * focus move) landed in this page or in another page's tile: there the app falls back to the main
- * chat, and following it made a click on a worker row show another chat's (empty) history.
+ * The chat this page watches: the app's focused chat, as the SDK reports it. Desktop keeps the chat
+ * being worked in focused while a non-chat pane (this page, another plugin page, a preview, the
+ * sidebar) has focus (apps/desktop/src/store/session-focus.ts, in every supported core), so a click
+ * inside the page never moves it and the page reads no app markup to tell.
  */
-function useWatchedChat(pageRef) {
-  const appRuntime = useValue(host.state.focusedSessionId)
-  const appStored = useValue(host.state.focusedStoredSessionId)
-  const [watched, setWatched] = useState({ runtimeId: appRuntime, storedId: appStored })
-  const held = useRef(false)
-
-  useEffect(() => {
-    const onInteract = event => {
-      held.current = heldBy(event.target, pageRef.current)
-      if (!held.current) {
-        setWatched({ runtimeId: host.state.focusedSessionId.get(), storedId: host.state.focusedStoredSessionId.get() })
-      }
-    }
-    window.addEventListener('pointerdown', onInteract, true)
-    window.addEventListener('focusin', onInteract, true)
-    return () => {
-      window.removeEventListener('pointerdown', onInteract, true)
-      window.removeEventListener('focusin', onInteract, true)
-    }
-  }, [])
-
-  useEffect(() => {
-    // Decided after the click has run every listener: the app moves its focused chat in its own
-    // pointerdown listener, and React can render that before this page's listener has seen the click.
-    return ctxRef.setTimeout(() => {
-      if (!held.current) setWatched({ runtimeId: host.state.focusedSessionId.get(), storedId: host.state.focusedStoredSessionId.get() })
-    }, 0)
-  }, [appRuntime, appStored])
-
-  // Held: the page shows another chat than the one the app has focused (see above) — said in the header.
-  return { ...watched, held: Boolean(watched.storedId) && watched.storedId !== appStored }
+function useWatchedChat() {
+  const runtimeId = useValue(host.state.focusedSessionId)
+  const storedId = useValue(host.state.focusedStoredSessionId)
+  return { runtimeId, storedId }
 }
 
 const NO_ATOM = { get: () => null, listen: () => () => {} }
@@ -3810,7 +3768,7 @@ export function Page() {
   const t = usePluginI18n(ID)
   const pageRef = useRef(null)
   const [theme] = useTheme()
-  const watched = useWatchedChat(pageRef)
+  const watched = useWatchedChat()
   useWholeRows(pageRef)
   const { runtimeId, storedId } = watched
   const busyBy = useValue(host.state.busyBySession || NO_ATOM)
@@ -4030,9 +3988,8 @@ export function Page() {
             className: 'sw-hd',
             children: [
               jsx('h2', { className: 'sw-ht', children: theme === 'terminal' ? ID : t('sw.title') }, 't'),
-              // Which chat this is: the page can hold a chat the app no longer has focused.
+              // Which chat this is.
               chatName ? jsx('span', { className: 'sw-chatn', children: theme === 'terminal' ? `// ${chatName}` : chatName }, 'c') : null,
-              watched.held ? jsx(Tip, { label: t('sw.chat.heldTip'), children: jsx('span', { className: 'sw-held', tabIndex: 0, children: theme === 'terminal' ? `[${t('sw.chat.held')}]` : t('sw.chat.held') }) }, 'held') : null,
               noChat ? null : jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: refreshAll, disabled: !storedId }, 'r')
             ]
           }, 'h'),
@@ -4364,8 +4321,6 @@ const CSS = `${TM_PALETTE}
 .sw-page[data-theme=terminal] .sw-ht{letter-spacing:.04em;color:var(--tm-hi)}
 .sw-chatn{min-width:0;flex:0 1 auto;font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sw-page[data-theme=terminal] .sw-chatn{text-transform:lowercase}
-.sw-held{flex:none;font:600 11.5px var(--mono);letter-spacing:.04em;text-transform:uppercase;padding:0 6px;color:var(--ink);background:color-mix(in srgb,var(--a) 22%,var(--bg));box-shadow:inset 0 0 0 1px var(--a)}
-.sw-page[data-theme=terminal] .sw-held{background:none;color:var(--run);letter-spacing:0}
 .sw-ib{display:inline-grid;place-items:center;width:26px;height:26px;color:var(--dim);box-shadow:inset 0 0 0 1px var(--line)}
 .sw-hd>.sw-ib{flex:none;margin-left:auto}
 .sw-ib svg{width:14px;height:14px}

@@ -7,8 +7,7 @@ it are in `CHANGELOG.md` (3.0.0) and the README.
 
 ## Layout
 - **Header** — the same card as the batches: icon, title, the watched chat's name (its newest
-  titled link, else `Chat …<last 6 of the id>`; a `held` tag when the page holds a chat the app no
-  longer has focused — see below), batch / worker / background-command counts, a running pill that
+  titled link, else `Chat …<last 6 of the id>` — see below), batch / worker / background-command counts, a running pill that
   counts workers and commands (`2 workers · 1 command running`), refresh. Its tint is red when a read
   failed, yellow while anything runs, neutral otherwise — never green: it used to fall back to green,
   so a page where nothing could be read looked fine.
@@ -66,7 +65,7 @@ it are in `CHANGELOG.md` (3.0.0) and the README.
 ## Data
 | What | Source |
 |---|---|
-| Watched chat | the app's focused chat (`focusedStoredSessionId` / `focusedSessionId`), held while the last pointerdown/focusin landed in this page or in a `route-tile:` / `preview-tile:` zone — see below |
+| Watched chat | the app's focused chat (`focusedStoredSessionId` / `focusedSessionId`) — see below |
 | Live workers | gateway events `subagent.spawn_requested/start/progress/tool/complete`, filtered to the focused runtime session id; reconciled every 3 s by `subagent.list({session_id})` — see "Live reconciliation" |
 | Earlier batches | `GET /api/plugins/agent-station/children?session_id=<stored id>` — `dashboard/plugin_api.py` |
 | Full output | `GET /api/plugins/agent-station/output?session_id=<stored id>&worker_id=<child id>` — 403 unless the child was delegated from that chat (or a worker of it) |
@@ -138,17 +137,13 @@ Nothing is parsed out of chat text. Both sources are files Hermes itself writes,
   level is not a list, is a 503 shown in the page's alert box.
 
 ### Which chat the page watches
-The app derives its focused chat from the last clicked zone (`store/session-focus.ts`): a
-`session-tile:` pane is that chat, ANY other zone falls back to the main chat. This page is such a
-zone, so following the app blindly made a click on a worker row switch the page to the main chat
-whenever the watched chat was open as a tab beside another main chat (1.1.10 fix).
-`useWatchedChat` listens to `pointerdown` / `focusin` (capture) and holds the watched chat while
-the target is inside this page, or in a zone whose tab (clicked or active) is a `route-tile:` /
-`preview-tile:` pane. Any other interaction — a chat tile, the Sessions sidebar, outside every
-zone — follows the app again. Depends on the app's `data-tree-group` / `data-tree-tab` /
-`aria-selected` markup; if the app renames it, the hold stops working and the page falls back to
-the old behaviour (it never shows a wrong chat that the app did not name). A chat switch made only
-by keyboard while the hold is on is picked up at the next click outside the panel.
+The app's focused chat, as the SDK reports it (`host.state.focusedStoredSessionId` /
+`focusedSessionId`), and nothing else. Desktop keeps the chat being worked in focused while a
+non-chat zone has focus — this page, another plugin page, a preview, the sidebar
+(`store/session-focus.ts`, in every supported core) — so a click on a worker row never moves the
+page to the main chat. Up to 3.0.2 the page held the chat itself by reading the app's pane markup
+(`data-tree-group` / `data-tree-tab`); that hold predates the app's own and broke catalog rule 8
+(plugins stay inside the SDK surface), so 3.0.3 removed it.
 
 ### Files
 Source: the `tool_calls` of every message in the chat's compression chain and its workers' sessions
