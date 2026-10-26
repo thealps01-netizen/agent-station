@@ -50,7 +50,10 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-OUT = HERE / ".out" / "live"
+LOCALE = os.environ.get("SW_LOCALE", "en")
+if LOCALE not in ("en", "zh"):
+    raise ValueError("SW_LOCALE must be en or zh")
+OUT = HERE / ".out" / ("live" if LOCALE == "en" else f"live-{LOCALE}")
 HOME = HERE / ".out" / "live_home"
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT / "dashboard"))
@@ -379,7 +382,7 @@ def main() -> int:
     config = {
         "api": f"http://127.0.0.1:{server.server_address[1]}", "plugin": str(ROOT / "desktop" / "plugin.js"),
         "nodeModules": str(HERE / "node_modules"), "out": str(OUT), "sheets": [str(sheets[-1])] + [str(t) for t in tips[-1:]],
-        "sessions": SESSION, "live": fixture["live"], "shots": shots,
+        "sessions": SESSION, "live": fixture["live"], "shots": shots, "locale": LOCALE,
     }
     (OUT / "config.json").write_text(json.dumps(config, indent=1), encoding="utf-8")
     started = time.time()

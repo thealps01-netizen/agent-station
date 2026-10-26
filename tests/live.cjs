@@ -50,7 +50,7 @@ export function useValue(a) { return useSyncExternalStore(a.listen, a.get) }
 const bundles = new Map()
 export function registerBundles(id, b) { bundles.set(id, b) }
 export function usePluginI18n(id) {
-  return (key, ...args) => { let node = bundles.get(id)?.en; for (const p of key.split('.')) node = node?.[p]; return typeof node === 'function' ? node(...args) : (node ?? key) }
+  return (key, ...args) => { const b = bundles.get(id); const get = l => key.split('.').reduce((n, p) => n?.[p], b?.[l]); const node = get(window.__SW.locale) ?? get('en'); return typeof node === 'function' ? node(...args) : (node ?? key) }
 }
 export function Tip({ label, children }) { return isValidElement(children) ? cloneElement(children, { 'data-tip': label }) : children }
 export const host = {
@@ -155,7 +155,7 @@ async function take(shot) {
     if (lv === 3 || lv === 'error') errors.push(String(e && e.message !== undefined ? e.message : message))
   })
   win.webContents.on('render-process-gone', (_e, d) => errors.push(`render-process-gone ${JSON.stringify(d)}`))
-  const state = { ...shot, session: CFG.sessions[shot.data], api: CFG.api, live: shot.data === 'full' ? CFG.live : [] }
+  const state = { ...shot, locale: CFG.locale || 'en', session: CFG.sessions[shot.data], api: CFG.api, live: shot.data === 'full' ? CFG.live : [] }
   const violations = []
   const v = (rule, sel, text, detail) => violations.push({ rule, sel, text, detail })
   try {
