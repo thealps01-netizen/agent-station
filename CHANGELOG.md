@@ -3,6 +3,14 @@
 All notable changes to Agent Station. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 3.0.4 — 2026-10-26
+
+- The panel uses the full width of its pane again. The two-look page had brought back a cap, this
+  time at 860 px, so on a wide pane the panel stayed in the middle with empty bands beside it. The
+  station and wormhole scenes keep their shape and grow with the width.
+- `tests/live.py` measures it: rule M8 fails a shot whose panel is narrower than its page, and
+  `--selftest` breaks it once.
+
 ## 3.0.3 — 2026-10-18
 
 - The page follows the chat the app has focused, as the plugin SDK reports it, and no longer reads

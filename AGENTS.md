@@ -50,7 +50,7 @@ canvas scenes and the app's compiled stylesheet in the core's own Electron, on f
 
 ```bash
 python live.py              # 56 shots; last line "LIVE: GREEN — 56 shots, 0 violations, …" or RED with each violation
-python live.py --selftest   # breaks each measured rule (M1–M6) once with injected CSS; GREEN = each was caught
+python live.py --selftest   # breaks each measured rule (M1–M6, M8) once with injected CSS; GREEN = each was caught
 ```
 
 - Prerequisites: `npm ci` in `tests/`, fastapi (as for `check_api.py`) and a built Hermes core. The
