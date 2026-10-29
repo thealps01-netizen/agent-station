@@ -114,6 +114,7 @@ const BUNDLES = {
   en: {
     sw: {
       title: 'Agent Station',
+      terminalTitle: 'agent-station',
       chat: {
         untitled: id => `Chat …${id}`
       },
@@ -132,6 +133,7 @@ const BUNDLES = {
       allFailed: 'Nothing to show while every read fails.',
       noChat: { title: 'No chat selected', body: 'Open a chat to see its agents and their files.' },
       run: {
+        prefix: 'run:',
         current: 'Current run',
         last: 'Last run',
         live: ago => `live · started ${ago}`,
@@ -433,6 +435,161 @@ This edit failed` : path),
   }
 }
 
+// Hermes uses `zh` for Simplified Chinese. Keep English as the SDK fallback.
+BUNDLES.zh = {
+  sw: {
+    title: '智能体空间站',
+    terminalTitle: '智能体空间站',
+    chat: { untitled: id => `对话 …${id}` },
+    tabs: { label: '页面', agents: '智能体', commands: '后台命令', replay: '修改回放', running: n => `${n} 条命令运行中` },
+    retry: '重试', refresh: '刷新', nothingToCopy: '内容为空，无法复制', copying: '正在复制…',
+    copied: '已复制', copyFailed: '复制失败', countFailed: '未知：无法读取数据来源',
+    loading: '正在读取此对话…', allFailed: '暂时无法读取任何数据。',
+    noChat: { title: '尚未选择对话', body: '打开一个对话，即可查看其中的智能体和文件。' },
+    run: {
+      prefix: '运行：',
+      current: '本次运行', last: '上次运行', live: ago => `运行中 · 开始于${ago}`,
+      lastMeta: (ago, took) => ['上次运行', ago, took ? `耗时 ${took}` : ''].filter(Boolean).join(' · '),
+      past: (ago, took) => ['历史运行', ago, took ? `耗时 ${took}` : ''].filter(Boolean).join(' · '),
+      back: '返回当前', earlier: '历史运行', older: n => `再显示 ${n} 次历史运行`,
+      name: (first, others) => (others ? `${first} +${others}` : first),
+      meta: (ago, done, total, cost) => [ago, `${done}/${total}`, cost].filter(Boolean).join(' · '),
+      liveMeta: (done, total, cost) => ['运行中', `${done}/${total}`, cost].filter(Boolean).join(' · '),
+      pick: '选择要查看的运行记录'
+    },
+    ago: { now: '刚刚', m: n => `${n} 分钟前`, h: n => `${n} 小时前`, yesterday: '昨天', d: n => `${n} 天前` },
+    score: {
+      status: '状态', done: '已完成的子智能体', none: '暂无子智能体', spent: '用量',
+      leg: (n, word) => `${n} ${word}`, label: (done, total) => `${total} 个子智能体中已有 ${done} 个完成`
+    },
+    agents: '本次运行的智能体', noSubagents: '主智能体分派任务后，子智能体会显示在这里。',
+    main: { name: '主智能体', tag: '主控' },
+    st: {
+      running: '工作中', completed: '已完成', failed: '失败', stopped: '已停止', queued: '等待中', idle: '空闲',
+      waitingOn: n => `等待 ${n} 个`
+    },
+    act: { edit: '编辑中', read: '读取中', run: '运行中', think: '工作中', wait: '等待中' },
+    tag: {
+      edit: '[编辑]', read: '[读取]', run: '[运行]', think: '[工作]', wait: '[等待]', completed: '[完成]',
+      failed: '[失败]', stopped: '[停止]', queued: '[等待]', idle: '[空闲]'
+    },
+    verb: {
+      read: '读取文件', write: '写入文件', edit: '编辑文件', search: '搜索中', run: '运行命令',
+      code: '运行代码', delegate: '启动子智能体', web: '浏览网页', other: name => `使用 ${name}`
+    },
+    focus: {
+      mainLabel: '详情 · 主智能体 · 当前对话', subLabel: '详情 · 子智能体',
+      main: {
+        working: verb => verb, waiting: n => `等待 ${n} 个子智能体`, busy: '当前没有工具在运行',
+        idle: '等待你的消息', unknown: '当前没有工具在运行', in: dir => `位于 ${dir}`
+      },
+      line: {
+        running: (time, act) => [time ? `已工作 ${time}` : '工作中', act].filter(Boolean).join(' — '),
+        queued: '正在排队', completed: time => (time ? `已完成，耗时 ${time}` : '已完成'),
+        failed: time => (time ? `运行 ${time} 后失败` : '失败'), stopped: '已停止：完成前被关闭'
+      },
+      did: (changed, read) => (changed ? `修改了 ${changed} 个文件` : read ? `未修改，读取了 ${read} 个文件` : '未读取或修改文件'),
+      startedBy: name => `由 ${name} 启动`, now: '当前正在处理', changed: '已修改', failedH: '修改失败',
+      read: '仅读取', files: '文件', noFiles: '此对话尚未读取或修改文件。', noFilesSub: '尚未通过文件工具读取或修改文件。',
+      more: n => `再显示 ${n} 项`,
+      note: '点击文件可复制路径。这里不列出通过终端命令或代码运行产生的修改；查看全部修改请前往「审阅 › 上一轮」。',
+      task: '任务', showAll: '展开全部', showLess: '收起', answer: '回复',
+      answerCut: '此处仅显示部分内容；「复制回复」可复制全文。', noAnswer: '未记录回复。', copy: '复制回复', open: '打开对话'
+    },
+    hero: {
+      now: verb => `▶\uFE0E 正在${verb}`, waiting: n => `⧗ 等待 ${n} 个子智能体`, working: '▶\uFE0E 工作中',
+      idle: '○ 空闲', queued: '⧗ 等待启动', completed: '✓ 已完成', failed: '✕ 因错误而停止', stopped: '■ 完成前已停止'
+    },
+    tile: {
+      onTask: '首次至末次文件操作', changed: '已修改', failed: '修改失败', read: '仅读取',
+      runTime: '运行时长', tools: '工具调用', tokens: '词元', cost: '费用'
+    },
+    hudAgents: {
+      fleet: run => (run ? `舰队 · ${run}` : '舰队'), done: (done, total) => `${done}/${total} 完成`,
+      orbitMain: word => `主控 · ${word}`, teleScan: '扫描', teleActive: '活跃', teleStandby: '待命', teleCore: '核心', teleWings: '舱翼',
+      orbitMore: n => `另 ${n} 个`, orbitMoreLabel: (n, parts) => `另有 ${n} 个子智能体：${parts}`,
+      time: '各智能体耗时', timeMore: (n, done) => `另 ${n} 个 · ${done} 个完成`,
+      noTime: '子智能体启动后，这里会显示运行时长。', noSpent: '子智能体运行后，这里会显示费用、词元和工具调用量。',
+      spent: '用量', tokens: '词元', toolCalls: '工具', agents: '智能体', agentsV: (n, done) => `${n} · ${done} 完成`,
+      doneK: '完成', files: '文件', changedN: n => `修改 ${n}`, readN: n => `读取 ${n}`,
+      legChanged: '已修改', legFailed: '失败', legRead: '已读取',
+      filesLabel: (changed, failed, read) => `${changed} 个已修改，${failed} 个失败，${read} 个仅读取`,
+      moreFiles: n => `+${n}`, noFiles: '智能体读取或修改文件后，文件会显示在这里。',
+      agent: '智能体', model: '模型', timeK: '耗时', toolsK: '工具',
+      toolsV: (tools, tokens, cost) => [String(tools), tokens ? `${tokens} 词元` : '', cost].filter(Boolean).join(' · '),
+      task: '任务', state: '状态', subagents: '子智能体', filesK: '文件',
+      filesV: (changed, failed, read) => [changed ? `${changed} 个已修改` : '', failed ? `${failed} 个失败` : '', read ? `${read} 个已读取` : ''].filter(Boolean).join(' · '),
+      log: '日志', noLog: '每个子智能体启动后，这里会增加一条记录。', detail: '详情', pastRun: '历史运行'
+    },
+    modelTip: (model, effort) => (effort ? `${model} · 推理强度 ${effort}` : model),
+    replay: {
+      why: '逐步查看每次请求后的文件修改。仅供查看，不包含脚本或命令产生的修改。',
+      requests: '你的请求（最新在前）', beforeFirst: '首次请求之前', noText: '（无文字的请求）',
+      count: (edits, files) => `${edits} 次修改 · ${files} 个文件`, failedCount: n => `${n} 次失败`,
+      olderTurns: n => `另有 ${n} 次更早的请求含有修改，未列出`, moreSteps: n => `此请求另有 ${n} 次修改未列出`,
+      unreadable: n => `${n} 次修改无法读取`, none: 'AI 修改文件后，修改记录会显示在这里。',
+      of: (i, n) => `第 ${i}/${n} 次修改`, prev: '上一次修改', next: '下一次修改', play: '播放', pause: '暂停',
+      playTip: '自动播放修改过程：划掉删除的行，逐字显示新增内容，然后播放下一次修改',
+      stepLabel: (i, name, failed) => `修改 ${i}：${name}${failed ? '（失败）' : ''}`,
+      markTip: (path, failed) => (failed ? `${path}\n此次修改失败` : path),
+      by: name => `子智能体：${name}`, byMain: '由主智能体修改', at: when => `时间：${when}`,
+      whole: n => `写入整个文件 · ${n} 行`, changed: (added, removed) => `新增 ${added} 行 · 删除 ${removed} 行`,
+      deleted: '已删除文件', moved: to => `已将文件移至 ${to}`, failed: why => (why ? `此次修改失败：${why}` : '此次修改失败'),
+      failedNote: '仅尝试了修改，未实际应用；文件没有变化。', noLines: '没有行变更', from: n => (n ? `从第 ${n} 行起` : '下一部分'),
+      part: (added, removed) => (added && removed ? `替换 ${removed} 行` : added ? `新增 ${added} 行` : `删除 ${removed} 行`),
+      removedSign: '删除', addedSign: '新增', rest: n => `显示剩余内容（另 ${n} 行）`,
+      notLoaded: n => `此次修改另有 ${n} 行未加载（内容过长）`, reading: '正在读取此次修改…',
+      diff: '差异', applied: '已应用', notApplied: '未应用', replaying: '正在回放…', paused: '已暂停', playback: '回放',
+      linesChanged: '行变更', thisEdit: '此次修改', lines: n => `${n} 行`, max: n => `最多 ${n}`, soFar: '累计行数',
+      file: '文件', folder: '文件夹', change: '变更', request: '请求', log: n => `日志 · ${n} 次修改`,
+      word: { edit: '修改', whole: '写入', delete: '删除', move: '移动', failed: '失败' },
+      worm: '虫洞', wormLabel: '以虫洞环展示此请求的各次修改', wormMain: (k, n) => `回放 · 修改 ${k}/${n}`,
+      teleEdits: '修改', teleWrites: '写入', teleFailed: '失败', teleAdded: '新增', teleRemoved: '删除', teleFiles: '文件'
+    },
+    hudCommands: {
+      console: '控制台', list: n => `命令 · ${n}`, process: '进程', command: '命令', lines: '行数',
+      finished: '已结束', failed: '失败', running: '运行中', stopped: '已停止', firstError: '首个错误', line: n => `第 ${n} 行`,
+      orbit: '轨道', orbitLabel: '轨道上的后台命令', orbitMain: n => n ? `轨道 · ${n} 条运行中` : '轨道 · 待命',
+      teleLink: '连接', teleOrbits: '轨道', teleEnded: '已结束'
+    },
+    file: {
+      op: { active: '正在处理', write: n => `${n} 次修改`, delete: '已删除', failed: n => `${n} 次失败`, read: n => `读取 ×${n}` },
+      nowBadge: '当前', nowLabel: label => `${label}，正在处理`, tip: path => `${path}\n点击复制路径`,
+      name: (name, dir, label) => `${dir} 中的 ${name}：${label}`, copied: '路径已复制', here: '对话目录',
+      notListed: n => `另有 ${n} 个较早的文件未列出`, unreadable: n => `${n} 次工具调用无法读取`
+    },
+    proc: {
+      why: '智能体启动并留在后台运行的终端命令，不是子智能体。', none: '智能体启动后台命令后，命令会显示在这里。',
+      short: { running: '运行中', completed: '已结束', failed: '失败', stopped: '已停止' },
+      status: { running: '运行中', completed: '已结束（退出码 0）', failed: '失败', stopped: '完成前已停止' },
+      exit: c => `退出码 ${c}`, noExit: '未记录退出码', exitTag: '退出码', killed: '已终止', killedTag: '已终止',
+      dirK: '目录', ranK: '耗时', runningK: '已运行', lines: n => `${n} 行`, noSignal: '无信号',
+      copyCommand: '复制命令', copyOutput: '复制输出', output: '输出末尾', outputCut: n => `最后 ${n} 个字符`,
+      commandCut: n => `此命令仅显示和复制前 ${n} 个字符。`, noOutput: '未记录输出。', printedNothing: '— 无输出 —',
+      whileRunning: '仍在运行；结束后会在这里显示输出。', reading: '正在读取输出…', unreadable: n => `${n} 条记录无法读取，未列出`
+    },
+    status: { completed: '已完成', failed: '失败', running: '运行中', queued: '排队中', stopped: '已停止：完成前被关闭' },
+    cost: {
+      est: amount => `~${amount}`, under: '<$0.01', included: '订阅内',
+      tip: (priced, included, unknown) => ['Hermes 记录的费用（~ 表示估算值）', priced ? `${priced} 项已计价` : '',
+        included ? `${included} 项包含在订阅内` : '', unknown ? `${unknown} 项尚未计价` : ''].filter(Boolean).join(' · ')
+    },
+    progress: {
+      tip: (finished, total, failed, running, cost) => [`此对话的子智能体：${finished}/${total} 已结束`,
+        failed ? `${failed} 个失败或停止` : '', running ? `${running} 个运行中` : '', cost ? `费用 ${cost}` : ''
+      ].filter(Boolean).join(' · ') + '。点击打开智能体空间站。',
+      pet: (finished, total, cost) => [`子智能体 ${finished}/${total} 已结束`, cost].filter(Boolean).join(' · '),
+      stalled: detail => `子智能体进度未更新，正在重试：${detail}`
+    },
+    units: { hm: (h, m) => `${h}时 ${m}分`, ms: (m, s) => `${m}分 ${s}秒`, s: s => `${s}秒`, k: n => `${n}k` },
+    err: {
+      replay: '修改回放', replayStep: '此次修改', title: '部分内容无法读取：', history: '历史运行',
+      live: '实时更新失败，正在重试', procs: '后台命令', files: '文件列表', item: (what, detail) => `${what} — ${detail}`,
+      output: '无法读取完整回复', procOutput: '无法读取输出', withDetail: (what, detail) => `${what}：${detail}`
+    }
+  }
+}
+
 // ── pure helpers (exported for the render check) ─────────────────────────────
 
 /** The English bundle as a `t`, for helpers called without the page's translator. */
@@ -440,6 +597,12 @@ function enT(key, ...args) {
   let node = BUNDLES.en
   for (const part of key.split('.')) node = node?.[part]
   return typeof node === 'function' ? node(...args) : (node ?? key)
+}
+
+// Non-React surfaces (navigation and the pet) use the same active locale as the page.
+function appT(key, ...args) {
+  const translated = ctxRef?.i18n?.t?.(key, ...args)
+  return translated && translated !== key ? translated : enT(key, ...args)
 }
 
 export function fmtDuration(s, t = enT) {
@@ -521,7 +684,7 @@ export function distinctNames(goals) {
 
 /** A name as the Terminal theme prints it: 'Pact weapon marker' -> 'pact-weapon-marker'. */
 export function slugName(name) {
-  return String(name || '').toLowerCase().replace(/[^a-z0-9…]+/g, '-').replace(/^-+|-+$/g, '') || '-'
+  return String(name || '').toLowerCase().replace(/[^\p{L}\p{M}\p{N}…]+/gu, '-').replace(/^-+|-+$/g, '') || '-'
 }
 
 /** Model slug without a provider prefix: 'anthropic/claude-opus-5-5' -> 'claude-opus-5-5'. */
@@ -2584,7 +2747,7 @@ function RunBar({ t, view, runs, onPick, onBack }) {
     className: 'sw-runb', ref,
     children: [
       jsx('button', {
-        type: 'button', className: 'sw-pick', 'aria-haspopup': 'menu', 'aria-expanded': open, 'aria-label': t('sw.run.pick'), onClick: () => setOpen(v => !v),
+        type: 'button', className: 'sw-pick', 'data-prefix': t('sw.run.prefix'), 'aria-haspopup': 'menu', 'aria-expanded': open, 'aria-label': t('sw.run.pick'), onClick: () => setOpen(v => !v),
         children: [jsx('span', { className: 'sw-pickn', children: view.name }, 'n'), jsx('span', { className: 'sw-pickv', 'aria-hidden': 'true', children: ICON.chev(true) }, 'v')]
       }, 'p'),
       view.kind === 'live' ? jsx('span', { className: 'sw-ld', 'aria-hidden': 'true' }, 'ld') : null,
@@ -3213,7 +3376,7 @@ function useWholeRows(pageRef) {
 
 /** True when a key/value row's value is a value (a number, ratio, cost, %, tokens, duration or clock
  * time), not words: such a value gets `.sw-num` (code font, tabular figures). */
-const NUM_RE = /^(?:[~≈]?[+\-−]?[$€£]?\d[\d,.]*\s?(?:[kKMB]|%)?|\d+\s?\/\s?\d+|\d{1,2}:\d{2}(?::\d{2})?|(?:\d+(?:\.\d+)?\s?(?:ms|s|m|h|d)\s*){1,3})$/
+const NUM_RE = /^(?:[~≈]?[+\-−]?[$€£]?\d[\d,.]*\s?(?:[kKMB]|%)?|\d+\s?\/\s?\d+|\d{1,2}:\d{2}(?::\d{2})?|(?:\d+(?:\.\d+)?\s?(?:ms|s|m|h|d|时|分|秒)\s*){1,3})$/
 export const isNum = v => (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && NUM_RE.test(v.trim()))
 
 /** A HUD key : value card. rows: [[label, value node], …]; labels are drawn in caps. */
@@ -3987,7 +4150,7 @@ export function Page() {
           jsxs('header', {
             className: 'sw-hd',
             children: [
-              jsx('h2', { className: 'sw-ht', children: theme === 'terminal' ? ID : t('sw.title') }, 't'),
+              jsx('h2', { className: 'sw-ht', children: t(theme === 'terminal' ? 'sw.terminalTitle' : 'sw.title') }, 't'),
               // Which chat this is.
               chatName ? jsx('span', { className: 'sw-chatn', children: theme === 'terminal' ? `// ${chatName}` : chatName }, 'c') : null,
               noChat ? null : jsx(IconButton, { label: t('sw.refresh'), icon: ICON.refresh, onClick: refreshAll, disabled: !storedId }, 'r')
@@ -4124,7 +4287,7 @@ function petUpdate() {
     return
   }
   const pr = progressOf(track)
-  const text = enT('sw.progress.pet', pr.finished, pr.total, fmtCost(pr.cost.usd, pr.cost.status))
+  const text = appT('sw.progress.pet', pr.finished, pr.total, fmtCost(pr.cost.usd, pr.cost.status, appT))
   if (text === petLine) return
   petLine = text
   pet.say(text, {
@@ -4377,7 +4540,7 @@ const CSS = `${TM_PALETTE}
 .sw-pick{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;color:var(--ink)!important;font:12px var(--mono)!important;letter-spacing:.04em;text-transform:uppercase;box-shadow:inset 0 0 0 1px var(--line)}
 .sw-pickv{display:inline-flex;width:12px;height:12px}.sw-pickv svg{width:100%;height:100%}
 .sw-page[data-theme=terminal] .sw-pick{padding:0;box-shadow:none;text-transform:lowercase;letter-spacing:0}
-.sw-page[data-theme=terminal] .sw-pick::before{content:"run:";color:var(--tm-hi)}
+.sw-page[data-theme=terminal] .sw-pick::before{content:attr(data-prefix);color:var(--tm-hi)}
 .sw-ld{width:7px;height:7px;flex:none;background:var(--run);box-shadow:0 0 8px var(--run);transform:rotate(45deg);animation:sw-pulse 1.6s ease-in-out infinite}
 .sw-runm{flex:1 1 0}
 .sw-pick{max-width:100%;min-width:0}
@@ -5187,8 +5350,7 @@ const CSS = `${TM_PALETTE}
 
 
 function navLabel() {
-  const viaApp = ctxRef?.i18n?.t?.('sw.title')
-  return viaApp && viaApp !== 'sw.title' ? viaApp : BUNDLES.en.sw.title
+  return appT('sw.title')
 }
 
 export default {
@@ -5198,7 +5360,13 @@ export default {
     ctxRef = ctx
     ctx.i18n?.register?.(BUNDLES)
     ctx.register({ id: 'page', area: 'routes', data: { path: ROUTE }, render: () => jsx(Page, {}) })
-    ctx.register({ id: 'nav', area: 'sidebar.nav', data: { path: ROUTE, label: navLabel(), codicon: 'type-hierarchy-sub' } })
+    const registerNav = () => ctx.register({ id: 'nav', area: 'sidebar.nav', data: { path: ROUTE, label: navLabel(), codicon: 'type-hierarchy-sub' } })
+    let removeNav = registerNav()
+    ctx.i18n?.onLocaleChange?.(() => {
+      removeNav?.()
+      removeNav = registerNav()
+      petUpdate()
+    })
     ctx.register({ id: 'progress', area: STATUSBAR_AREAS.right, order: 125, render: () => jsx(ProgressChip, {}) })
     for (const type of SUBAGENT_EVENTS) ctx.onEvent(type, event => trackEvent(type, event))
     // A pet shown later, or a chat switch, gets the current line at once.

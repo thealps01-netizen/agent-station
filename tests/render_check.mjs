@@ -90,12 +90,15 @@ export function useValue(a) { return useSyncExternalStore(a.listen, a.get) }
 
 const bundles = new Map()
 export function registerBundles(id, b) { bundles.set(id, b) }
+export const locale = atom('en')
+export function translate(id, key, ...args) {
+  const get = lang => key.split('.').reduce((n, p) => n?.[p], bundles.get(id)?.[lang])
+  const node = get(locale.get()) ?? get('en')
+  return typeof node === 'function' ? node(...args) : (node ?? key)
+}
 export function usePluginI18n(id) {
-  return (key, ...args) => {
-    let node = bundles.get(id)?.en
-    for (const p of key.split('.')) node = node?.[p]
-    return typeof node === 'function' ? node(...args) : (node ?? key)
-  }
+  useValue(locale)
+  return (key, ...args) => translate(id, key, ...args)
 }
 export function Tip({ label, children }) {
   return isValidElement(children) ? cloneElement(children, { 'data-tip': label }) : children
@@ -334,7 +337,7 @@ check(mod.fmtDuration(4000, (k, ...a) => `${k}:${a.join('/')}`) === 'sw.units.hm
   'duration and token units come from the bundle, not hard-coded strings')
 check(mod.modelLabel('anthropic/claude-opus-5-5') === 'claude-opus-5-5', 'model label drops the provider')
 check(mod.batchState(['completed', 'queued']) === 'queued' && mod.batchState(['completed', 'failed']) === 'failed', 'batch state never reads done while one is not')
-const tr = stub.usePluginI18n('agent-station')
+const tr = (key, ...args) => stub.translate('agent-station', key, ...args)
 check(tr('sw.tabs.running', 1) === '1 command running' && tr('sw.tabs.running', 2) === '2 commands running', `command count is singular for one (${tr('sw.tabs.running', 1)})`)
 check(tr('sw.proc.unreadable', 1) === '1 record could not be read and is not listed' && tr('sw.proc.unreadable', 2).startsWith('2 records'),
   `unreadable count is singular for one (${tr('sw.proc.unreadable', 1)})`)
@@ -1214,7 +1217,8 @@ check(q('.sw-focus')?.dataset.kind === 'main' && q('.sw-focus [data-sec=none] .s
   check(!/\b0\b/.test(fh?.querySelector('.sw-hrow')?.textContent || '') && (fh?.querySelector('.sw-fcells') || notes('sw-hfiles').join() === 'Files appear here when an agent reads or changes one.'),
     `FILES draws no zero count (no "CHANGED 0"); with no file it says what will appear (${fh?.textContent})`)
   check(q('.sw-hagent') && !/\b0 (changed|read|failed)\b/.test(q('.sw-hagent').textContent), `AGENT draws no "0 changed" / "0 read" (${q('.sw-hagent')?.textContent})`)
-  check(mod.default && /filesV: \(changed, failed, read\) => \[changed \? /.test(src), 'the files line leaves out a kind with no file')
+  check(tr('sw.hudAgents.filesV', 0, 0, 1) === '1 read' && tr('sw.hudAgents.filesV', 0, 0, 0) === '',
+    'the files line leaves out a kind with no file')
 }
 // 25. more live subagents than wings: five wings and a group, the main agent waiting on them
 for (let i = 0; i < 12; i++) await emit('subagent.spawn_requested', 'rt-e', { subagent_id: `e${i}`, goal: `Spawn 'eq-${i}'`, task_index: i })
@@ -1770,6 +1774,37 @@ mod.default.register(quietCtx({ storage: undefined }))
     && /\.sw-rl\[data-tag="@"\]::after\{content:"";flex:1 1 40px;min-width:0;/.test(css)
     && /@container \(max-width:540px\)\{\.sw-page\[data-theme=terminal\] \.sw-hp\.sw-hdetail \.sw-tiles\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}\}/.test(css),
     'no clipping or overlap: a callout value and a duration never shrink, the FILES legend wraps whole, a part header line gives way, DETAIL tiles go two across when narrow')
+}
+// A mounted page follows the host language; dynamic strings and errors keep their arguments.
+{
+  const navs = new Map()
+  let localeChanged
+  mod.default.register(quietCtx({
+    register: c => { navs.set(c.id, c); return () => navs.delete(c.id) },
+    i18n: {
+      register: b => stub.registerBundles('agent-station', b),
+      t: (key, ...args) => stub.translate('agent-station', key, ...args),
+      onLocaleChange: fn => { localeChanged = fn }
+    }
+  }))
+  const { el, r } = await mountFresh()
+  await act(async () => { stub.locale.set('zh'); localeChanged() })
+  await tick(20)
+  check(navs.get('nav').data.label === '智能体空间站' && navs.size === 3, 'Chinese sidebar updates without duplicate registrations')
+  check(el.querySelector('#sw-tabb-agents')?.textContent.includes('智能体') && el.textContent.includes('主智能体'), 'mounted Agents page switches to Chinese')
+  await act(async () => el.querySelector('#sw-tabb-commands').click())
+  await tick(20)
+  check(el.querySelector('#sw-tab-commands') && el.textContent.includes('后台命令'), 'Chinese Commands tab renders')
+  await act(async () => el.querySelector('#sw-tabb-replay').click())
+  await tick(20)
+  check(el.textContent.includes('修改回放'), 'Chinese Replay tab renders')
+  check(stub.translate('agent-station', 'sw.progress.pet', 2, 5, '$1.25') === '子智能体 2/5 已结束 · $1.25', 'Chinese progress preserves counts and cost')
+  check(['1时 2分', '5分 28秒', '3秒'].every(mod.isNum) && !mod.isNum('工作 3秒'), 'Chinese durations retain numeric typography')
+  check(mod.slugName('主智能体') === '主智能体' && mod.slugName('检查 文件') === '检查-文件' && mod.slugName('Café') === 'café', 'Unicode agent names remain readable')
+  await act(async () => { stub.locale.set('fr'); localeChanged() })
+  check(navs.get('nav').data.label === 'Agent Station' && el.querySelector('#sw-tabb-replay').textContent.includes('Replay'), 'unsupported locale falls back to English')
+  await act(async () => { stub.locale.set('en'); localeChanged(); r.unmount() })
+  mod.default.register(quietCtx({}))
 }
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED')
 process.exit(failures ? 1 : 0)

@@ -80,7 +80,7 @@ jobs:
 
       - name: Render and behaviour (jsdom)
         working-directory: tests
-        run: node render_check.mjs
+        run: node i18n_check.mjs && node render_check.mjs
 
       - name: Static audit (includes the release gate)
         working-directory: tests
