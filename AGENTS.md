@@ -9,9 +9,12 @@ are in `README.md`; the design notes are in `Docs/agent-station-notes.md`.
 - Merge only when every CI check on the pull request is green (`gh pr checks <n>`). A red or
   pending check blocks the merge, including a failure that looks unrelated to the change: fix it or
   report it, do not merge past it.
-- Why: GitHub cannot enforce this here (branch protection and rulesets need GitHub Pro on a private
-  repository), so the rule is the only guard. 1.1.9 was pushed straight to `main` and left it red:
-  canary #12 had stopped applying and nobody saw it until the next change.
+- Why: 1.1.9 was pushed straight to `main` and left it red: canary #12 had stopped applying and
+  nobody saw it until the next change. A repository ruleset on `main` ("main: pull request + green
+  CI") now enforces this: no deletion or force push, a pull request for every change, and both
+  `gates (…)` checks green from GitHub Actions on a branch that is up to date with `main`. Nobody
+  bypasses it, admins included. A renamed CI job must be renamed in the ruleset too, or every pull
+  request waits forever for the old check name.
 - After a merge, check that the `push` run on `main` is green too.
 - `.github/workflows/newest-core.yml` checks the panel against the newest Hermes core (latest release
   and `main`) every week. `ci.yml` pins the oldest supported core: `plugin.yaml` `requires_hermes`,
