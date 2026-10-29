@@ -363,8 +363,20 @@ function pageLib() {
     }))
   }
 
-  window.__swMeasure = { contrast, clipped, overlap, sideways, halfRows, numerals, contrastViolations, isValue,
-    all: () => [...clipped(), ...overlap(), ...sideways(), ...halfRows(), ...numerals(), ...contrastViolations()] }
+  // ── M8 narrow ────────────────────────────────────────────────────────────────────────────────
+  // the panel fills the content box of its page: a max-width cap (560 px until 1.1.9, 860 px again in
+  // the two-look page) left empty bands beside it on a wide pane, and no shot measured it
+  function narrow(root = scope()) {
+    const panel = root.querySelector(':scope > .sw-panel')
+    if (!panel) return []
+    const s = style(root), k = root.offsetWidth ? root.getBoundingClientRect().width / root.offsetWidth : 1
+    const want = (root.clientWidth - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight)) * k
+    const got = panel.getBoundingClientRect().width
+    return got < want - 2 ? [{ rule: 'M8', sel: selOf(panel), text: '', detail: `${Math.round(got)} px wide in a ${Math.round(want)} px page` }] : []
+  }
+
+  window.__swMeasure = { contrast, clipped, overlap, sideways, halfRows, numerals, contrastViolations, narrow, isValue,
+    all: () => [...clipped(), ...overlap(), ...sideways(), ...halfRows(), ...numerals(), ...contrastViolations(), ...narrow()] }
   return true
 }
 

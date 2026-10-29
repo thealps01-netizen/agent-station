@@ -1,6 +1,6 @@
 name: agent-station
 label: Agent Station
-version: 3.0.3
+version: 3.0.4
 description: >-
   Agent Station — read-only desktop page for the focused chat: the main agent and its
   delegate_task subagents (what each works on, its files, answer and cost, earlier runs in a

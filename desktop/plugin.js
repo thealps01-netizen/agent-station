@@ -4467,7 +4467,7 @@ const CSS = `${TM_PALETTE}
 .sw-page [data-st=completed]{--c:var(--ok)}
 .sw-page [data-st=failed]{--c:var(--bad)}
 .sw-page [data-st=stopped],.sw-page [data-st=queued],.sw-page [data-st=idle]{--c:var(--idle)}
-.sw-panel{position:relative;container-type:inline-size;max-width:860px;margin:0 auto;padding:16px 18px 18px;color:var(--ink);background:var(--bg)}
+.sw-panel{position:relative;container-type:inline-size;padding:16px 18px 18px;color:var(--ink);background:var(--bg)}
 /* the HUD is scaled so its smallest text (11.5px) lands at 11px, the size the user picked */
 .sw-page[data-theme=terminal]{zoom:.9566;padding:8px;background:var(--hud-page)}
 .sw-page[data-theme=terminal] .sw-panel{padding:8px 8px 12px;font:350 11.5px/1.5 var(--mono);font-variant-ligatures:none;-webkit-font-smoothing:antialiased;overflow:hidden}

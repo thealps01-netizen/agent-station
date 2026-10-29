@@ -30,6 +30,7 @@ Rules, each a violation naming the shot, the selector and the text:
   M6 contrast  reading / tone-as-text ink below 4.5:1 (3:1 large), shot.cjs's rule
   M7 engine    an engine error, no route, an alert box on fixture data, or (full base shots) a FLEET /
                ORBIT / WORMHOLE panel that did not switch to its canvas
+  M8 narrow    the panel is narrower than its page's content box (a max-width cap on a wide pane)
 
 It reads and writes only tests/.out/: the fixture home is synthetic and English, and the user's own
 Hermes home and installed panel are never opened. There is no switch to point it elsewhere.
@@ -73,11 +74,13 @@ BREAKS = {
     "M1": ".sw-hp .sw-hpt{max-width:18px!important;overflow:hidden!important;text-overflow:clip!important}",
     "M2": ".sw-hp .sw-hph{margin-bottom:-26px!important}",
     "M3": ".sw-panel{min-width:1400px!important}",
-    "M4": ".sw-hlog{max-height:101px!important}",
+    # mid-row at 915 px; 101 px fell on a row edge once the panel took the full width (M8)
+    "M4": ".sw-hlog{max-height:90px!important}",
     # :root + .sw-page[data-theme] outranks the theme's own `.sw-page[data-theme=terminal] :is(…)` rules
     "M5": ":root .sw-page[data-theme] .sw-hbig,:root .sw-page[data-theme] .sw-hbig *{font-family:serif!important}",
     # mid grey #777 is under 4.5:1 on both the dark (~4.0:1) and the light (~4.1:1) panel fill
     "M6": ":root .sw-page[data-theme] .sw-hp .sw-hpt,:root .sw-page[data-theme] .sw-hp .sw-hpt *{color:#777!important}",
+    "M8": ".sw-panel{max-width:600px!important;margin:0 auto!important}",
 }
 
 
@@ -409,7 +412,7 @@ def main() -> int:
         if missed or len(report["shots"]) != len(shots):
             print(f"LIVE SELFTEST: RED — not caught: {', '.join(missed) or 'shots missing'}")
             return 1
-        print(f"LIVE SELFTEST: GREEN — M1–M6 each caught in dark and light ({len(shots)} shots, {seconds} s)")
+        print(f"LIVE SELFTEST: GREEN — M1–M6 and M8 each caught in dark and light ({len(shots)} shots, {seconds} s)")
         return 0
 
     violations = []
