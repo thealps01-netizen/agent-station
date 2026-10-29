@@ -156,8 +156,9 @@ silently passed.
 - `live.py` needs the core's built desktop app, its Electron and a display, so it stays local: run it
   before a release.
 
-`main` has no GitHub-enforced protection, so the rule lives in `AGENTS.md`: every change reaches
-`main` through a pull request whose CI is green.
+`main` is protected by a repository ruleset: every change reaches `main` through a pull request whose
+`gates (ubuntu-latest)` and `gates (windows-latest)` checks are green on a branch that is up to date
+with `main`; force pushes and deletion are blocked, with no bypass. `AGENTS.md` gives the reasons.
 
 ### Versioning
 
