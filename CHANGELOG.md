@@ -3,6 +3,20 @@
 All notable changes to Agent Station. The top `## <version>` heading is checked against
 `plugin.yaml` and `dashboard/manifest.json` by `tests/release_gate.py`; bump all three together.
 
+## 3.1.0 — 2026-10-29
+
+- Simplified Chinese. The page follows the Hermes interface language: with Hermes set to Simplified
+  Chinese every label, tooltip, status and progress line, and the pet line, is in Chinese, and the
+  page is named **智能体空间站**. Other languages still fall back to English. The sidebar label and the
+  status-bar pet line follow a language change without a restart. Contributed by @i-iooi-i (#6).
+- Agent names written in non-Latin letters (Chinese, for example) are kept instead of collapsing to
+  a dash, and Chinese duration units get the same number typography as English ones.
+- `tests/i18n_check.mjs` checks that the Chinese bundle has exactly the English keys, message types
+  and interpolation arguments (a dropped or duplicated argument fails, and the done/total order of the
+  score label is fixed), and CI runs it.
+  `render_check.mjs` switches the language on a mounted page and back; `SW_LOCALE=zh python live.py`
+  measures the Chinese layout.
+
 ## 3.0.4 — 2026-10-26
 
 - The panel uses the full width of its pane again. The two-look page had brought back a cap, this
