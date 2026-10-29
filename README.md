@@ -66,6 +66,17 @@ sidebar afterwards, uninstall the remaining Desktop row or delete
 `<Hermes home>/desktop-plugins/subagent-watch`. Then install Agent Station. Keeping both shows two
 sidebar entries and two status-bar chips. There are no settings to carry over.
 
+## Languages
+
+Agent Station follows the Hermes interface language. English (`en`) and Simplified Chinese (`zh`)
+are included; other languages fall back to English. In Simplified Chinese the panel is named
+**智能体空间站**. Agent names, commands, file contents and replies stay as recorded.
+
+Translations live in `BUNDLES` in `desktop/plugin.js`. Keep message keys and interpolation arguments
+aligned with English. Run `node i18n_check.mjs` from `tests/` to check coverage; `render_check.mjs`
+also checks language switching. Set `SW_LOCALE=zh` when running `python live.py` for Chinese layout
+screenshots (English remains the default). Chinese screenshots are saved under `tests/.out/live-zh/`.
+
 ## Privacy
 
 - **Read-only.** The backend opens Hermes' `state.db` with SQLite `mode=ro`, so it cannot write, and
