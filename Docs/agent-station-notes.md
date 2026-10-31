@@ -130,11 +130,13 @@ Nothing is parsed out of chat text. Both sources are files Hermes itself writes,
 - **Cost:** a receipt never changes after it is written, so each is parsed once and cached by
   (path, mtime, size) without its output; a poll is a directory listing plus `processes.json`
   (~3 ms on this machine). The list never carries output; `/process_output` reads one receipt.
-- **Failures are shown:** an unreadable receipt — or valid JSON of the wrong shape (a list, a
-  non-text owner) — is counted and printed beside the section title with the failed mark (the text
+- **Failures are shown:** an unreadable receipt — or valid JSON of the wrong shape (a list, not an
+  object) — is counted and printed beside the section title with the failed mark (the text
   keeps its reading colour for contrast); the other records are still listed. A checkpoint entry
   that is not an object is counted the same way. An unreadable `processes.json`, or one whose top
   level is not a list, is a 503 shown in the page's alert box.
+- **A receipt whose owner is not text belongs to no chat:** a `parent_session_id` that is a number,
+  list or object is never listed and never counted, and its output is a 403.
 
 ### Which chat the page watches
 The app's focused chat, as the SDK reports it (`host.state.focusedStoredSessionId` /
