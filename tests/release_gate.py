@@ -8,6 +8,10 @@ Rules:
   * `plugin.yaml` is the source of the version; `dashboard/manifest.json` and the top `## <version>`
     heading of `CHANGELOG.md` must carry the same one. A plugin that reports two versions depending on
     where you look has no version at all.
+  * The web dashboard (`hermes dashboard`) loads `dashboard/<entry>` (default `dist/index.js`) for
+    every manifest and lists a tab for it unless `tab.hidden` is true. This plugin's page is
+    desktop-only, so while no such script ships the manifest must hide the tab; a listed tab would
+    open on "Could not load this plugin's script".
   * `plugin.yaml` `requires_hermes: ">=X"` is the oldest supported Hermes; README.md § Supported Hermes
     versions must say "X or newer". ci.yml's CORE_SHA pins the same core (a comment there, not checked).
   * The desktop app loads `$HERMES_HOME/desktop-plugins/<id>/plugin.js`, a COPY of
@@ -38,6 +42,8 @@ CHANGELOG = ROOT / "CHANGELOG.md"
 README = ROOT / "README.md"
 JS = ROOT / "desktop" / "plugin.js"
 AUDIT = HERE / "audit_static.py"
+# The script the web dashboard loads when the manifest names no `entry` (the core's default).
+DEFAULT_ENTRY = "dist/index.js"
 
 
 def _yaml_version() -> str | None:
@@ -75,6 +81,13 @@ def check(report) -> None:
     if isinstance(manifest, dict) and manifest.get("version") != version:
         report(f"version drift: plugin.yaml says {version} while dashboard/manifest.json says "
                f"{manifest.get('version')!r} — bump both in the same change")
+    if isinstance(manifest, dict) and manifest:
+        entry = manifest.get("entry", DEFAULT_ENTRY)
+        tab = manifest.get("tab") if isinstance(manifest.get("tab"), dict) else {}
+        if not (isinstance(entry, str) and (MANIFEST.parent / entry).is_file()) and not tab.get("hidden"):
+            report(f"phantom dashboard tab: dashboard/manifest.json shows a tab but its script dashboard/{entry} "
+                   "does not exist — the web dashboard would open a tab that fails to load; set "
+                   '`"tab": {"hidden": true}` or ship the script')
     if not CHANGELOG.is_file():
         report("CHANGELOG.md is missing — nothing records what shipped")
     else:
@@ -165,6 +178,8 @@ def main() -> int:
              failures)
     _in_tree("manifest version drifts", MANIFEST, f'"version": "{version}"', '"version": "0.0.0-canary"',
              "version drift", failures)
+    _in_tree("dashboard tab is shown without a script", MANIFEST, '"hidden": true', '"hidden": false',
+             "phantom dashboard tab", failures)
     floor = _yaml_min_hermes() or ""
     _in_tree("requires_hermes drifts from the README", PLUGIN_YAML, f'requires_hermes: ">={floor}"',
              'requires_hermes: ">=99.0.0"', "supported-range drift", failures)
@@ -173,8 +188,8 @@ def main() -> int:
     if code != 0 or failures:
         print(f"RELEASE GATE CANARY: problems found ({', '.join(failures) or f'audit exit {code} after reverts'})")
         return 1
-    print("RELEASE GATE CANARY clean — changelog, manifest, supported-range and installed-copy rules each fire, "
-          "files restored")
+    print("RELEASE GATE CANARY clean — changelog, manifest, dashboard-tab, supported-range and installed-copy rules "
+          "each fire, files restored")
     return 0
 
 
