@@ -122,7 +122,7 @@ python check_api.py                 # backend against a fixture state.db   (--li
 node render_check.mjs               # jsdom + real React, driven like a user
 python audit_static.py              # i18n, a11y, colours, silent catches, read-only backend, release, name, licence, privacy
 python contract_core.py             # everything read from the core still exists (--selftest)
-python release_gate.py              # version / changelog / supported range / installed copy rules each fire
+python release_gate.py              # version / changelog / dashboard tab / supported range / installed copy rules each fire
 python canary_audit.py              # every mutation must turn its gate red
 python live.py                      # the real panel in the core's Electron on fixture data (--selftest)
 ```
