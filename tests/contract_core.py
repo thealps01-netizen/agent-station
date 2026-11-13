@@ -17,7 +17,8 @@ Checked against the core checkout (`HERMES_AGENT_DIR`, see env.py):
              method, and every wire status of `SubagentStatus` maps to a mark (`STATUS_OF`)
   cost       a worker's complete frame still carries `cost_usd`; Hermes' CostStatus still names
              the statuses the backend and page read (actual / estimated / included / unknown)
-  sdk        every name the page imports from `@hermes/plugin-sdk` is exported, the two
+  sdk        every name the page imports from `@hermes/plugin-sdk` is exported (by the entry file
+             or by a file it re-exports whole, `export * from './areas'`), the two
              `host.state` atoms it reads exist, `host.state.busyBySession` exists (the main agent's
              busy state), `host.navigate` exists (the progress chip opens the page), `ctx.pet` keeps
              `say` / `clear` / `visible` (the progress line), and `ctx.storage` keeps a synchronous
@@ -68,6 +69,7 @@ SERVER_FILE = "tui_gateway/server.py"
 AGENT_FACTORY_FILE = "tui_gateway/agent_factory.py"
 LIFECYCLE_FILES = (SERVER_FILE, AGENT_FACTORY_FILE)
 LIFECYCLE = "<the file defining _TOOL_LIFECYCLE_UI_TOOLS>"  # a BREAKS target resolved per core
+STATUSBAR = "<the SDK file exporting STATUSBAR_AREAS>"  # a BREAKS target resolved per core
 _LIFECYCLE_SET = re.compile(r"_TOOL_LIFECYCLE_UI_TOOLS = frozenset\(\{(.*?)\}\)", re.S)
 COMPRESSOR_FILE = "agent/context_compressor.py"
 FILE_TOOL_NAMES = ("read_file", "write_file", "patch")
@@ -95,6 +97,34 @@ def _lifecycle_file(core: Path) -> str | None:
     for rel in LIFECYCLE_FILES:
         path = core / rel
         if path.is_file() and _LIFECYCLE_SET.search(path.read_text(encoding="utf-8")):
+            return rel
+    return None
+
+
+def _sdk_files(core: Path) -> list[str]:
+    """The SDK entry, then each file it re-exports whole (`export * from './areas'`), one level deep."""
+    entry = core / SDK_FILE
+    if not entry.is_file():
+        return []
+    rels = [SDK_FILE]
+    folder = SDK_FILE.rsplit("/", 1)[0]
+    for target in re.findall(r"^export \* from '\./([\w./-]+)'", entry.read_text(encoding="utf-8"), re.M):
+        for suffix in (".ts", ".tsx"):
+            if (core / folder / (target + suffix)).is_file():
+                rels.append(f"{folder}/{target}{suffix}")
+    return rels
+
+
+def _exported_names(source: str) -> set[str]:
+    lists = " ".join(re.findall(r"export \{([^}]*)\}", source))
+    names = set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", lists))
+    names |= set(re.findall(r"export (?:const|function) ([A-Za-z_][A-Za-z0-9_]*)", source))
+    return names
+
+
+def _statusbar_file(core: Path) -> str | None:
+    for rel in _sdk_files(core):
+        if "STATUSBAR_AREAS" in _exported_names((core / rel).read_text(encoding="utf-8")):
             return rel
     return None
 
@@ -244,9 +274,9 @@ def check(core: Path) -> list[str]:
     if sdk:
         if not re.search(r"^\s+navigate: \(path", sdk, re.M):
             problems.append(f"{SDK_FILE}: `host.navigate` is gone — the progress chip opens the page with it")
-        exported = set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", " ".join(
-            re.findall(r"export \{([^}]*)\}", sdk) + re.findall(r"export (?:const|function) ([A-Za-z_]+)", sdk))))
-        exported |= set(re.findall(r"as ([A-Za-z_]+)", " ".join(re.findall(r"export \{([^}]*)\}", sdk))))
+        exported: set[str] = set()
+        for rel in _sdk_files(core):
+            exported |= _exported_names((core / rel).read_text(encoding="utf-8"))
         for name in sorted(_page_imports(page) - exported):
             problems.append(f"{SDK_FILE}: `{name}` is not exported — the page imports it")
         for atom in HOST_STATE_ATOMS:
@@ -327,7 +357,7 @@ BREAKS = [
     (PET_FILE, "get<T>(key: string, fallback: T): T", "get<T>(key: string, fallback: T): Promise<T>", "no longer synchronous"),
     (SDK_FILE, "    focusedStoredSessionId: readonlyAtom", "    storedSessionId: readonlyAtom", "`host.state.focusedStoredSessionId` is gone"),
     (SDK_FILE, "  navigate: (path", "  go: (path", "`host.navigate` is gone"),
-    (SDK_FILE, "STATUSBAR_AREAS, ", "", "`STATUSBAR_AREAS` is not exported"),
+    (STATUSBAR, "STATUSBAR_AREAS", "STATUSBAR_ZONES", "`STATUSBAR_AREAS` is not exported"),
     (SCHEMA_FILE, "    cost_status TEXT,", "    billing_status TEXT,", "`sessions.cost_status` is gone"),
     (CHILD_RUN_FILE, "complete_kwargs[\"cost_usd\"]", "complete_kwargs[\"spend\"]", "no longer carries `cost_usd`"),
     (PRICING_FILE, "\"included\", ", "", "cost status `included` is gone"),
@@ -357,7 +387,7 @@ def selftest(core: Path) -> int:
         fake = Path(tmp)
         rels = {SCHEMA_FILE, DELEGATE_FILE, COMPRESSION_FILE, RESULTS_FILE, REGISTRY_FILE, EVENTS_FILE,
                 STATUS_FILE, SDK_FILE, CHILD_RUN_FILE, PRICING_FILE, PET_FILE, FILE_TOOLS_FILE, PATCH_PARSER_FILE,
-                SERVER_FILE, COMPRESSOR_FILE} | {str(p.relative_to(core)).replace("\\", "/")
+                SERVER_FILE, COMPRESSOR_FILE} | set(_sdk_files(core)) | {str(p.relative_to(core)).replace("\\", "/")
                                            for p in (core / CONTRACTS_DIR).glob("*.py")}
         if (core / AGENT_FACTORY_FILE).is_file():
             rels.add(AGENT_FACTORY_FILE)
@@ -369,7 +399,11 @@ def selftest(core: Path) -> int:
             print(f"FAIL  the copied core is not clean before the breaks: {clean}")
             return 1
         for rel, old, new, fragment in BREAKS:
-            rel = _lifecycle_file(fake) if rel == LIFECYCLE else rel
+            rel = _lifecycle_file(fake) if rel == LIFECYCLE else _statusbar_file(fake) if rel == STATUSBAR else rel
+            if rel is None:
+                print(f"FAIL  no file for the break {fragment!r} — the break could not be injected")
+                fails += 1
+                continue
             path = fake / rel
             original = path.read_text(encoding="utf-8")
             if old not in original:
